@@ -37,7 +37,7 @@ class ContainmentTests(unittest.TestCase):
         self.assertFalse(has_traversal("a/..b/x"))
         for bad in ("CON", "con.mp4", "out/NUL.mp4", "COM1.mov", "LPT9", "clip?.mp4", "a<b.mp4", "trailing. ", "x/y./z.mp4", 'q"uote.mp4', "C:\\x\\aux.txt"):
             self.assertIsNotNone(reserved_component(bad), bad)
-        for ok in ("console.mp4", "out/final.mp4", "C:\\w\\a.mp4", "comma,x.mp4", "consul/lpt10.mp4", "コピー.mp4"):
+        for ok in ("console.mp4", "out/final.mp4", "C:\\w\\a.mp4", "comma,x.mp4", "consul/lpt10.mp4", "コピー.mp4", ".", "./out/a.mp4", "a/./b.mp4"):
             self.assertIsNone(reserved_component(ok), ok)
 
 

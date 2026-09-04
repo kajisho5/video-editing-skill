@@ -22,7 +22,7 @@ from .contract_check import run_check
 from .doctor import doctor_report, format_doctor
 from .errors import EditError
 from .executor import Executor, _Failed
-from .ffmpeg_skill import install_signal_handlers, locate, tool_versions
+from .ffmpeg_skill import engine_doctor, install_signal_handlers, locate, tool_versions
 from .paths import PathPolicy
 from .project import parse_request
 
@@ -56,13 +56,13 @@ def _read_request(arg: str) -> Dict[str, Any]:
             with open(arg, "rb") as fh:
                 raw = fh.read(MAX_REQUEST_BYTES + 1)
         except OSError as exc:
-            raise EditError("INVALID_REQUEST", f"cannot read request file: {exc.strerror}")
+            raise EditError("INVALID_REQUEST", f"cannot read request file: {exc.strerror}") from exc
     if len(raw) > MAX_REQUEST_BYTES:
         raise EditError("INVALID_REQUEST", f"request larger than {MAX_REQUEST_BYTES} bytes", {"reason": "oversized"})
     try:
         doc = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError) as exc:
-        raise EditError("INVALID_REQUEST", f"request is not valid UTF-8 JSON: {exc}")
+        raise EditError("INVALID_REQUEST", f"request is not valid UTF-8 JSON: {exc}") from exc
     return doc
 
 
@@ -72,10 +72,11 @@ def _engine(args: argparse.Namespace):
         raise EditError("TOOL_ERROR", "ffmpeg-skill not found (set VIDEO_EDITING_FFMPEG_SKILL_DIR or --ffmpeg-skill-dir)", retryable=False)
     if not skill.version_supported() or skill.missing_tools():
         raise EditError("TOOL_ERROR", f"ffmpeg-skill {skill.version} at {skill.root} is not supported (missing tools {skill.missing_tools()})", retryable=False)
-    versions = tool_versions()
-    if not versions.get("ffmpeg") or not versions.get("ffprobe"):
-        raise EditError("TOOL_ERROR", "ffmpeg / ffprobe not on PATH", retryable=False)
-    return skill, versions
+    doctor = engine_doctor(skill)
+    if not doctor["ok"]:
+        raise EditError("TOOL_ERROR", doctor.get("detail") or "ffmpeg-skill is not ready (ffmpeg / ffprobe missing)",
+                        {"ffmpeg_skill_error": "missing_tool", "missing": doctor.get("missing", [])}, retryable=False)
+    return skill, tool_versions(doctor)
 
 
 def _policy(args: argparse.Namespace) -> PathPolicy:

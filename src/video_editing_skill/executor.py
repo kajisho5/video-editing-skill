@@ -303,7 +303,7 @@ class Executor:
                 os.replace(partial, out.path)
             except OSError as exc:
                 _remove(partial)
-                raise EditError("OUTPUT_ERROR", f"output {ref!r}: cannot write {os.path.basename(out.path)}: {exc.strerror}")
+                raise EditError("OUTPUT_ERROR", f"output {ref!r}: cannot write {os.path.basename(out.path)}: {exc.strerror}") from exc
 
     def _outputs_doc(self, delivered: bool) -> List[Dict[str, Any]]:
         docs = []

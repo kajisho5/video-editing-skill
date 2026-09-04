@@ -6,7 +6,7 @@ import platform
 from typing import Any, Dict, List, Optional
 
 from . import DOCTOR_SCHEMA, SKILL_ID, VERSION
-from .ffmpeg_skill import ENV_DIR, REQUIRED_TOOLS, locate, tool_versions
+from .ffmpeg_skill import ENV_DIR, REQUIRED_TOOLS, engine_doctor, locate
 from .paths import PathPolicy
 from .errors import EditError
 
@@ -33,12 +33,19 @@ def doctor_report(ffmpeg_skill_dir: Optional[str] = None, workspace: Optional[st
         for t in REQUIRED_TOOLS:
             checks.append({"check": f"tool:ffmpeg-skill/{t}", "status": "AVAILABLE" if t in skill.tools else "MISSING"})
 
-    versions = tool_versions()
-    for name in ("ffmpeg", "ffprobe"):
-        v = versions.get(name)
-        checks.append({"check": name, "status": "AVAILABLE" if v else "MISSING", "version": v})
-        if not v:
-            problems.append(f"{name} not on PATH")
+    if skill is not None:
+        eng = engine_doctor(skill)
+        for name in ("ffmpeg", "ffprobe"):
+            v = eng.get(name)
+            checks.append({"check": name, "status": "AVAILABLE" if v else "MISSING", "version": v, "source": "ffmpeg-skill doctor"})
+            if not v:
+                problems.append(f"{name} not available to ffmpeg-skill")
+        if eng.get("missing"):
+            checks.append({"check": "ffmpeg-skill:capabilities", "status": "DEGRADED", "missing": eng["missing"], "detail": eng.get("detail")})
+            problems.append("ffmpeg-skill reports missing capabilities")
+    else:
+        for name in ("ffmpeg", "ffprobe"):
+            checks.append({"check": name, "status": "UNKNOWN", "detail": "reported by ffmpeg-skill doctor once ffmpeg-skill is found"})
 
     if workspace:
         try:

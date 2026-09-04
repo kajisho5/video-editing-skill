@@ -11,13 +11,12 @@ Location (first hit wins): VIDEO_EDITING_FFMPEG_SKILL_DIR, --ffmpeg-skill-dir (C
 import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .errors import EditError
 
@@ -83,21 +82,36 @@ def locate(explicit: Optional[str] = None) -> Optional[FfmpegSkill]:
     return None
 
 
-def tool_versions() -> Dict[str, Optional[str]]:
-    out: Dict[str, Optional[str]] = {}
-    for name in ("ffmpeg", "ffprobe"):
-        exe = shutil.which(name)
-        if not exe:
-            out[name] = None
-            continue
-        try:
-            proc = subprocess.run([exe, "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=20, env=clean_env())
-            first = (proc.stdout or "").splitlines()[0] if proc.stdout else ""
-            m = re.search(r"version\s+(\S+)", first)
-            out[name] = m.group(1) if m else (first or "unknown")
-        except (OSError, subprocess.SubprocessError):
-            out[name] = None
-    return out
+def engine_doctor(skill: FfmpegSkill, timeout: float = 60.0) -> Dict[str, Any]:
+    """ffmpeg-skill's own doctor (`scripts/_contract.py doctor --json`): ffmpeg / ffprobe versions and whether
+    its required capabilities are present. This skill never runs ffmpeg or ffprobe itself, not even for a
+    version string; ffmpeg-skill is the only FFmpeg boundary."""
+    script = os.path.join(skill.root, "scripts", "_contract.py")
+    result: Dict[str, Any] = {"ffmpeg": None, "ffprobe": None, "ok": False, "missing": [], "detail": None}
+    if not os.path.isfile(script):
+        result["detail"] = "ffmpeg-skill has no scripts/_contract.py doctor"
+        return result
+    cmd = [sys.executable, script, "doctor", "--json"]
+    try:
+        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, env=clean_env(), timeout=timeout, **_group_kwargs())
+    except (OSError, subprocess.SubprocessError) as exc:
+        result["detail"] = f"doctor could not run: {exc}"
+        return result
+    doc = _parse_json(proc.stdout.decode("utf-8", errors="replace"))
+    if not isinstance(doc, dict):
+        result["detail"] = "doctor printed no JSON: " + proc.stderr.decode("utf-8", errors="replace").strip()[-200:]
+        return result
+    result["ffmpeg"] = doc.get("ffmpeg") or None
+    result["ffprobe"] = doc.get("ffprobe") or None
+    result["missing"] = [m for m in doc.get("missing", []) if isinstance(m, str)]
+    result["ok"] = bool(doc.get("ok")) and bool(result["ffmpeg"]) and bool(result["ffprobe"])
+    if not result["ok"]:
+        result["detail"] = "ffmpeg-skill doctor: missing " + ", ".join(result["missing"] or ["ffmpeg / ffprobe"])
+    return result
+
+
+def tool_versions(doctor: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    return {"ffmpeg": doctor.get("ffmpeg"), "ffprobe": doctor.get("ffprobe")}
 
 
 def clean_env() -> Dict[str, str]:
@@ -183,7 +197,7 @@ def run_tool(skill: FfmpegSkill, tool: str, argv: List[str], timeout: float, dry
     try:
         proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=clean_env(), **_group_kwargs())
     except OSError as exc:
-        raise EditError("TOOL_ERROR", f"cannot start ffmpeg-skill/{tool}: {exc}", retryable=False)
+        raise EditError("TOOL_ERROR", f"cannot start ffmpeg-skill/{tool}: {exc}", retryable=False) from exc
     out_b = err_b = b""
     timed_out = interrupted = False
     deadline = t0 + timeout
@@ -257,5 +271,3 @@ def tool_error(run: ToolRun, what: str) -> EditError:
                      {"tool": run.tool, "exit_code": run.exit_code, "ffmpeg_skill_error": kind}, retryable=True)
 
 
-def version_tuple(skill: FfmpegSkill) -> Tuple[str, Dict[str, Optional[str]]]:
-    return skill.version, tool_versions()

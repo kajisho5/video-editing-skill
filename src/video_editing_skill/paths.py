@@ -46,7 +46,7 @@ def has_traversal(raw: str) -> bool:
 def reserved_component(raw: str) -> Optional[str]:
     """The first path component that Windows would refuse or treat as a device, else None."""
     for part in raw.replace("\\", "/").split("/"):
-        if not part:
+        if not part or part in (".", ".."):  # '.' is the current directory; '..' is handled by has_traversal
             continue
         stem = part.split(".")[0].strip().upper()
         if stem in _RESERVED:
@@ -84,13 +84,19 @@ class PathPolicy:
         if not os.path.isdir(self.workspace):
             raise EditError("PATH_NOT_ALLOWED", "workspace is not an existing directory", {"reason": "workspace_missing"})
         roots: List[str] = []
+        raw_roots: List[str] = [os.path.abspath(workspace)]
         for r in allowed_input_roots or []:
             check_raw(r, "allowed_input_roots")
             rr = os.path.realpath(os.path.abspath(r))
             if not os.path.isdir(rr):
                 raise EditError("PATH_NOT_ALLOWED", f"allowed input root is not a directory: {os.path.basename(r) or r}", {"reason": "root_not_directory"})
             roots.append(rr)
+            raw_roots.append(os.path.abspath(r))
         self.allowed_input_roots = roots or [self.workspace]
+        # the roots as given (before symlink resolution): a path that *looks* inside one of them but resolves
+        # outside is a symlink escape; a path that never looked inside is simply outside. (/var vs /private/var
+        # on macOS and 8.3 short names on Windows make "raw != resolved" useless as the escape signal.)
+        self._apparent_roots = raw_roots[1:] if roots else raw_roots[:1]
 
     # ---- inputs
     def resolve_input(self, raw: str, what: str, extensions: Iterable[str]) -> str:
@@ -99,7 +105,8 @@ class PathPolicy:
         absolute = os.path.abspath(raw if os.path.isabs(raw) else os.path.join(self.workspace, raw))
         resolved = os.path.realpath(absolute)
         if not any(is_within(root, resolved) for root in self.allowed_input_roots):
-            escaped = os.path.islink(absolute) or os.path.normcase(os.path.normpath(absolute)) != os.path.normcase(resolved)
+            apparent = os.path.normpath(absolute)
+            escaped = any(is_within(r, apparent) for r in self._apparent_roots + self.allowed_input_roots)
             raise EditError("PATH_NOT_ALLOWED", f"{what}: input is outside the allowed input roots: {os.path.basename(raw) or raw}",
                             {"reason": "symlink_escape" if escaped else "outside_allowed_roots"})
         if not os.path.lexists(absolute) or not os.path.exists(resolved):

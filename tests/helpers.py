@@ -41,7 +41,7 @@ def cli(args, stdin=None, env=None):
     e = dict(os.environ)
     if env:
         e.update(env)
-    proc = subprocess.run([sys.executable, "-m", "video_editing_skill", *args], input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    proc = subprocess.run([sys.executable, "-m", "video_editing_skill", *args], input=stdin, capture_output=True,
                           env=dict(e, PYTHONPATH=SRC + os.pathsep + e.get("PYTHONPATH", "")))
     out = proc.stdout.decode("utf-8", errors="replace")
     try:

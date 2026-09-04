@@ -29,6 +29,10 @@ testpaths = ["tests"]
 line-length = 160
 target-version = "py39"
 
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP"]
+ignore = ["E501", "UP006", "UP007", "UP035", "UP045"]  # line length is advisory; keep typing.List / Optional spellings (Python 3.9)
+
 [tool.mypy]
 python_version = "3.9"
 ignore_missing_imports = true

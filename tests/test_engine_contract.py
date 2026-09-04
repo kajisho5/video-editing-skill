@@ -90,7 +90,7 @@ class FakeEngineTests(unittest.TestCase):
         self.assertEqual(out["status"], "completed")
         rec = out["execution"]["operations"][0]
         self.assertEqual(rec["status"], "completed")
-        self.assertEqual(rec["tool_versions"]["ffmpeg-skill"], "0.9.0")
+        self.assertEqual(rec["tool_versions"], {"ffmpeg-skill": "0.9.0", "ffmpeg": "fake-6.0", "ffprobe": "fake-6.0"})
         self.assertTrue(os.path.isfile(out["execution"]["outputs"][0]["path"]))
         self.assertTrue(out["execution"]["outputs"][0]["delivered"])
         # the engine flags are the compiled ones, nothing more
@@ -105,6 +105,14 @@ class FakeEngineTests(unittest.TestCase):
     def test_missing_ffmpeg_is_tool_error_not_retryable(self):
         set_mode(self.root, "missing_tool")
         self.assert_failed(self.doc(), "TOOL_ERROR", False)
+
+    def test_engine_doctor_not_ready_is_tool_error(self):
+        set_mode(self.root, "no_ffmpeg")
+        out = self.assert_failed(self.doc(), "TOOL_ERROR", False)
+        self.assertEqual(out["error"]["details"].get("ffmpeg_skill_error"), "missing_tool")
+        rc, rep, _ = cli(["doctor", "--json", "--workspace", self.ws], env=self.env)
+        self.assertEqual(rc, 1)
+        self.assertFalse(rep["ok"])
 
     def test_success_without_file_is_output_error(self):
         set_mode(self.root, "no_output")

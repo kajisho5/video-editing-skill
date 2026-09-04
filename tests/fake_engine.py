@@ -13,6 +13,7 @@ Modes (written to <root>/MODE):
   missing_tool   tool exits 127 with kind missing_tool
   hang           tool sleeps 60 s (for timeout / cancellation)
   noisy          like ok, but prints junk before the JSON on stdout
+  no_ffmpeg      doctor reports ffmpeg / ffprobe missing (tools never run)
 """
 import json
 import os
@@ -83,12 +84,24 @@ SCRIPT = textwrap.dedent('''
 ''')
 
 
+DOCTOR = textwrap.dedent('''
+    import json, os, sys
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    mode = open(os.path.join(ROOT, "MODE")).read().strip()
+    if mode == "no_ffmpeg":
+        print(json.dumps({"ok": False, "ffmpeg": None, "ffprobe": None, "missing": ["ffmpeg", "ffprobe"], "python": "3"})); sys.exit(1)
+    print(json.dumps({"ok": True, "ffmpeg": "fake-6.0", "ffprobe": "fake-6.0", "missing": [], "python": "3"}))
+''')
+
+
 def make_fake_skill(root: str, mode: str = "ok", version: str = "0.9.0") -> str:
     scripts = os.path.join(root, "scripts")
     os.makedirs(scripts, exist_ok=True)
     for name in ("probe", "cut", "join", "fit", "overlay"):
         with open(os.path.join(scripts, name + ".py"), "w", encoding="utf-8") as fh:
             fh.write(SCRIPT)
+    with open(os.path.join(scripts, "_contract.py"), "w", encoding="utf-8") as fh:
+        fh.write(DOCTOR)
     with open(os.path.join(root, "package.json"), "w", encoding="utf-8") as fh:
         json.dump({"name": "ffmpeg-skill", "version": version}, fh)
     set_mode(root, mode)

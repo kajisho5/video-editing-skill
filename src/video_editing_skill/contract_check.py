@@ -111,7 +111,7 @@ def verify_docs(root: Optional[str] = None) -> List[str]:
             if f"`{t}`" not in text and f"| {t}" not in text and f" {t} " not in text and f"{t}," not in text and f"{t} " not in text:
                 problems.append(f"{name} does not mention supported operation {t}")
         if name == "README.md":
-            for t, u in UNSUPPORTED.items():
+            for t in UNSUPPORTED:
                 if t in ("REORDER", "TRANSITION"):
                     continue
                 if f"`{t}`" not in text:
