@@ -1,0 +1,23 @@
+{
+  "schema": "video-editing/request@1",
+  "project": {
+    "id": "demo",
+    "sources": [
+      {"id": "camA", "path": "in/a.mp4"},
+      {"id": "camB", "path": "in/b.mp4"},
+      {"id": "logo", "path": "in/logo.png", "kind": "image"}
+    ],
+    "operations": [
+      {"id": "trimA", "type": "TRIM", "input": "camA", "params": {"start": "0:01", "end": "0:03.5"}},
+      {"id": "fillA", "type": "FILL", "input": "trimA", "params": {"aspect": "16:9", "width": 640}},
+      {"id": "trimB", "type": "TRIM", "input": "camB", "params": {"start": {"frames": 25, "fps": 25}, "end": 4}},
+      {"id": "fast", "type": "SPEED", "input": "trimB", "params": {"factor": 2}},
+      {"id": "cat", "type": "CONCAT", "inputs": ["fillA", "fast"], "params": {"width": 640, "height": 360, "fps": 30, "transition": {"type": "fade", "duration": 0.5}}},
+      {"id": "branded", "type": "OVERLAY", "input": "cat", "params": {"image": "logo", "position": "top-right", "start": 0, "end": 2, "opacity": 0.9}}
+    ],
+    "outputs": [
+      {"id": "final", "operation": "branded", "path": "out/final.mp4"}
+    ]
+  },
+  "options": {"timeout_seconds": 600, "overwrite": false, "reuse": true}
+}

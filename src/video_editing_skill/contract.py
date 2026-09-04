@@ -1,0 +1,110 @@
+"""Machine-readable contract (`video-editing contract --json` / `skill --json`).
+
+Derived from the operation table and the error table, never maintained beside them. Field names follow
+video-production-agent's SkillPackage / ToolSpec where they overlap (skill_id, name, version, description,
+capabilities, tools[] with tool_id, skill_id, version, required_capabilities, inputs, produces_output,
+deterministic, result_keys).
+"""
+from typing import Any, Dict, List
+
+from . import CONTRACT_SCHEMA, DOCTOR_SCHEMA, PACKAGE_NAME, PLAN_SCHEMA, REQUEST_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
+from .errors import DEFAULT_RETRYABLE, ERROR_CODES, EXIT_CODES
+from .ffmpeg_skill import REQUIRED_TOOLS, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
+from .operations import OPERATIONS, POSITIONS, TRANSITIONS, capability_list, unsupported_list
+from .paths import IMAGE_EXTENSIONS, OUTPUT_EXTENSIONS, VIDEO_EXTENSIONS
+
+TOOL_REQUIREMENTS = {
+    "ffmpeg-skill/cut": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
+    "ffmpeg-skill/join": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade"],
+    "ffmpeg-skill/fit": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
+    "ffmpeg-skill/overlay": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
+    "ffmpeg-skill/probe": ["ffprobe"],
+}
+
+PARAM_DOCS: Dict[str, Dict[str, str]] = {
+    "TRIM": {"start": "time", "end": "time (> start)", "precision": "frame (default, re-encode) | keyframe (lossless when possible)"},
+    "CUT": {"keep": "[{start, end}, ...] in output order", "precision": "frame | keyframe"},
+    "CONCAT": {"transition": "{type: " + "|".join(TRANSITIONS) + ", duration: time 0.01..10} (optional)",
+               "width": "even int (optional)", "height": "even int (optional)", "fps": "number or N/D (optional)",
+               "mode": "pad | crop (how inputs of another aspect reach the frame)", "pad_color": "named colour or 0xRRGGBB"},
+    "SPEED": {"factor": "number or N/D in [1/4, 4], not 1"},
+    "FIT": {"aspect": "W:H", "width": "even int (optional)", "pad_color": "named colour or 0xRRGGBB", "fps": "optional"},
+    "FILL": {"aspect": "W:H", "width": "even int (optional)", "fps": "optional"},
+    "RESIZE": {"width": "even int", "fps": "optional"},
+    "OVERLAY": {"image": "image source id", "position": "|".join(POSITIONS) + " or {x, y} px", "margin": "int px", "scale": "image width px (optional)",
+                "opacity": "(0, 1]", "start": "time (optional)", "end": "time (optional)", "fade": "seconds 0..10 (optional)"},
+}
+
+
+def tool_specs() -> List[Dict[str, Any]]:
+    specs = []
+    for t in sorted(OPERATIONS):
+        spec = OPERATIONS[t]
+        specs.append({
+            "tool_id": f"{SKILL_ID}/{t.lower()}", "skill_id": SKILL_ID, "version": VERSION, "operation_type": t,
+            "capability": spec["capability"], "description": spec["summary"],
+            "required_capabilities": list(TOOL_REQUIREMENTS[spec["tool"]]),
+            "inputs": ["input"] if spec["arity"] == "one" else ["inputs"], "input_arity": spec["arity"],
+            "parameters": PARAM_DOCS[t],
+            "produces_output": True, "writes_media": True, "deterministic": True, "idempotency_hint": "content_equivalent",
+            "result_keys": ["operation_id", "output", "probe", "commands", "provenance"],
+            "executed_by": spec["tool"], "kind": "transform",
+        })
+    return specs
+
+
+def skill_contract() -> Dict[str, Any]:
+    return {
+        "schema": CONTRACT_SCHEMA,
+        "skill_id": SKILL_ID, "name": "Video Editing Skill", "package": PACKAGE_NAME, "version": VERSION,
+        "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, image overlay) "
+                       "compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing "
+                       "decisions, no LLM, no commands.",
+        "role": "execution",
+        "repository": "https://github.com/kajisho5/video-editing-skill",
+        "not_provided": ["AI reasoning", "editing decisions", "production plans", "project IR", "speaker / scene detection", "transcription",
+                         "captions", "colour grading", "audio mastering", "thumbnails", "QC beyond output validation"],
+        "capabilities": capability_list(),
+        "capability_names": sorted({c["capability"] for c in capability_list()}),
+        "unsupported": unsupported_list(),
+        "tools": tool_specs(),
+        "operations": {t: {"capability": s["capability"], "tool": s["tool"], "arity": s["arity"], "parameters": PARAM_DOCS[t]} for t, s in sorted(OPERATIONS.items())},
+        "engine": {"id": "ffmpeg-skill", "version_range": f">={'.'.join(map(str, SUPPORTED_MIN))},<{'.'.join(map(str, SUPPORTED_MAX_EXCLUSIVE))}",
+                   "tools_used": [f"ffmpeg-skill/{t}" for t in REQUIRED_TOOLS],
+                   "location": "VIDEO_EDITING_FFMPEG_SKILL_DIR | --ffmpeg-skill-dir | ~/.claude/skills/ffmpeg-skill | ./vendor/ffmpeg-skill | ../ffmpeg-skill",
+                   "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout"},
+        "execution": {
+            "mode": "local_subprocess",
+            "canonical_invocation": ["video-editing", "run", "-", "--json", "--workspace", "<dir>", "--allowed-input", "<root>"],
+            "stdin": "EditRequest JSON when the request argument is '-'",
+            "stdout": "exactly one response document when --json is given",
+            "stderr": "diagnostics only; never part of the contract",
+            "shell": False, "arbitrary_executables": False, "raw_ffmpeg_arguments": False, "filter_strings": False, "network": False, "ai": False,
+            "input_mutation": False,
+            "executable_resolution": "ffmpeg-skill directory from environment / CLI only; ffmpeg and ffprobe from PATH by ffmpeg-skill; nothing from the request",
+            "output_location": "request output paths are relative to --workspace and may not leave it",
+            "dry_run": "plan - --json compiles, checks ranges against probed durations and asks ffmpeg-skill --dry-run for commands; no media is written",
+        },
+        "schemas": {"request": REQUEST_SCHEMA, "response": RESPONSE_SCHEMA, "plan": PLAN_SCHEMA, "contract": CONTRACT_SCHEMA, "doctor": DOCTOR_SCHEMA},
+        "request_shape": {
+            "schema": REQUEST_SCHEMA,
+            "project": {"id": "optional label", "sources": [{"id": "label", "path": "file under an allowed root", "kind": "video | image"}],
+                        "operations": [{"id": "label", "type": "one of operations", "input": "source or operation id", "inputs": "[ids] for CONCAT", "params": {}}],
+                        "outputs": [{"id": "label", "operation": "operation id", "path": "relative path under the workspace (.mp4 | .mov | .mkv)"}]},
+            "options": {"timeout_seconds": "1..86400 (default 3600)", "overwrite": "bool (default false)", "reuse": "bool (default true)"},
+        },
+        "time": {"forms": ["number (seconds)", "'ss.fff' | 'mm:ss' | 'hh:mm:ss.fff'", "{seconds}", "{rational: 'N/D'}", "{frames, timebase}", "{frames, fps}"],
+                 "representation": "exact rationals; serialised as {seconds: 'fixed 6 places', rational: 'N/D'}",
+                 "mapping": "every output carries a timeline: tracks[].segments[] with source_range and timeline_range per source"},
+        "formats": {"video_inputs": list(VIDEO_EXTENSIONS), "image_inputs": list(IMAGE_EXTENSIONS), "outputs": list(OUTPUT_EXTENSIONS)},
+        "identity": {"operation_id": "op_ + sha256(type, canonical params, input identities)[:16]; input identity = sha256 of source bytes or upstream operation_id",
+                     "idempotency_key": "sha256(operation_id, tool, tool versions, skill version, container)",
+                     "reuse": "a work-dir intermediate whose record matches the idempotency key and hash is reused and reported status: reused"},
+        "provenance": {"per_operation": ["skill", "skill_version", "tool", "tool_versions", "operation_id", "type", "inputs[].sha256", "output.sha256",
+                                         "parameters", "commands", "started_at", "finished_at", "status"],
+                       "observation": "probe documents are OBSERVED with source ffmpeg-skill/probe@<version>; request values are never reported as observations"},
+        "errors": {"codes": list(ERROR_CODES), "exit_codes": dict(EXIT_CODES), "retryable_default": dict(DEFAULT_RETRYABLE),
+                   "shape": {"ok": False, "error": {"code": "...", "message": "...", "retryable": False, "details": {}}}},
+        "response_shape": {"ok": True, "schema": RESPONSE_SCHEMA, "skill": {"id": SKILL_ID, "version": VERSION}, "status": "completed | reused",
+                           "project": "...", "execution": {"operations": ["provenance records"], "outputs": ["path, sha256, timeline, observation"]}},
+    }

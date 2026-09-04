@@ -1,0 +1,44 @@
+name: tests
+
+# Manual trigger only for now (the account's Actions minutes are limited; the sibling skills use the same policy).
+on:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e .
+      - run: python -m unittest test_unit test_paths test_security
+        working-directory: tests
+      - run: video-editing skill --json > /dev/null
+        shell: bash
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - uses: actions/checkout@v4
+        with:
+          repository: kajisho5/ffmpeg-skill
+          path: vendor/ffmpeg-skill
+      - run: pip install -e .
+      - run: video-editing doctor --json --workspace .
+        env:
+          VIDEO_EDITING_FFMPEG_SKILL_DIR: ${{ github.workspace }}/vendor/ffmpeg-skill
+      - run: python -m unittest -v test_integration
+        working-directory: tests
+        env:
+          VIDEO_EDITING_FFMPEG_SKILL_DIR: ${{ github.workspace }}/vendor/ffmpeg-skill
