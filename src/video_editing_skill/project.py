@@ -279,7 +279,7 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
         raw_path = o["path"]
         if not isinstance(raw_path, str):
             raise EditError("INVALID_REQUEST", f"{what}.path: must be a string")
-        if os.path.isabs(raw_path) or re.match(r"^[A-Za-z]:", raw_path) or raw_path.startswith(("\\\\", "//")):
+        if os.path.isabs(raw_path) or re.match(r"^[A-Za-z]:", raw_path) or raw_path.startswith(("/", "\\")):
             raise EditError("PATH_NOT_ALLOWED", f"{what}.path: output paths are relative to the workspace, never absolute", {"reason": "absolute_output"})
         path = policy.resolve_output(raw_path, what + ".path", input_paths, overwrite=options.overwrite)
         if os.path.normcase(path) in seen_paths:

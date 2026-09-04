@@ -6,7 +6,7 @@ from fractions import Fraction
 
 from helpers import make_workspace, request, write_fake_media
 
-from video_editing_skill import contract, operations
+from video_editing_skill import contract, contract_check, operations
 from video_editing_skill.canonical import canonical_json, stable_hash
 from video_editing_skill.errors import ERROR_CODES, EXIT_CODES, EditError
 from video_editing_skill.compiler import compile_project
@@ -309,6 +309,46 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(t["tool_id"].split("/")[0], c["skill_id"])
         json.dumps(c)
         self.assertEqual(stable_hash(c), stable_hash(contract.skill_contract()))
+
+    def test_implementation_matches_contract_and_golden(self):
+        self.assertEqual(contract_check.verify_implementation(), [])
+        golden = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")
+        with open(golden, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        rep = contract_check.run_check(saved)
+        self.assertTrue(rep["ok"], rep)
+        self.assertEqual(rep["drift"]["status"], "ok", rep["drift"])
+
+    def test_drift_is_detected(self):
+        live = contract.skill_contract()
+        for mutate, expect in (
+            (lambda d: d["tools"][0].update(required_capabilities=["ffmpeg"]), "required_capabilities changed"),
+            (lambda d: d["tools"][0].update(result_keys=["x"]), "result_keys changed"),
+            (lambda d: d["tools"][0].update(produces_output=False), "produces_output changed"),
+            (lambda d: d["tools"].pop(), "tool added"),
+            (lambda d: d["tools"].append({"tool_id": "video-editing/freeze"}), "tool removed"),
+            (lambda d: d.update(version="9.9.9"), "version changed"),
+            (lambda d: d.update(skill_id="other"), "skill_id changed"),
+            (lambda d: d["errors"]["exit_codes"].update(TOOL_ERROR=99), "errors (codes / exit codes / retryable) changed"),
+            (lambda d: d["unsupported"].pop(), "unsupported list changed"),
+            (lambda d: d["operations"].pop("TRIM"), "operations (types / parameters) changed"),
+        ):
+            saved = json.loads(json.dumps(live))
+            mutate(saved)
+            rep = contract_check.check_saved(saved, live)
+            self.assertEqual(rep["status"], "drift", expect)
+            self.assertTrue(any(expect in p for p in rep["problems"]), (expect, rep["problems"]))
+        self.assertEqual(contract_check.check_saved("junk", live)["status"], "drift")
+        # a contract that lies about the implementation is caught too
+        lying = json.loads(json.dumps(live))
+        lying["capabilities"].append({"capability": "video.freeze", "operations": ["FREEZE"], "tool": "x"})
+        self.assertTrue(any("capabilities differ" in p for p in contract_check.verify_implementation(lying)))
+        lying = json.loads(json.dumps(live))
+        lying["operations"]["FREEZE"] = {}
+        self.assertTrue(any("allowlist" in p for p in contract_check.verify_implementation(lying)))
+        lying = json.loads(json.dumps(live))
+        lying["execution"]["shell"] = True
+        self.assertTrue(any("execution.shell" in p for p in contract_check.verify_implementation(lying)))
 
     def test_error_exit_codes_unique(self):
         self.assertEqual(len(set(EXIT_CODES.values())), len(EXIT_CODES))

@@ -65,7 +65,13 @@ Modules: `timebase` (exact rational time), `paths` (workspace boundary), `operat
 
 ## Contract
 
-`video-editing contract --json` (alias `skill --json`) prints the machine-readable contract:
+`video-editing contract --json` (alias `skill --json`) prints the machine-readable contract;
+`video-editing contract --check [FILE|-]` verifies it against the implementation and the docs (operation
+allowlist, compiler flags, capabilities, unsupported list, error table, execution guarantees) and, with a saved
+copy, reports drift in the fields an agent registry keys on (`tool_id`, `skill_id`, `version`,
+`required_capabilities`, `inputs`, `produces_output`, `deterministic`, `result_keys`, …). CI runs it against
+`tests/contract/contract.json`; regenerate that file with `video-editing contract --json > tests/contract/contract.json`
+when a contract change is intended. The contract prints:
 `skill_id`, `version`, `capabilities`, `unsupported`, `tools[]` (ToolSpec fields aligned with
 video-production-agent: `tool_id`, `skill_id`, `version`, `required_capabilities`, `inputs`, `produces_output`,
 `deterministic`, `result_keys`), `operations` with parameter docs, `engine`, `execution`, `request_shape`,
@@ -186,9 +192,9 @@ One request document on stdin (`-`) or a file, **exactly one** JSON document on 
 | `MISSING_INPUT` | 7 | no | referenced file does not exist |
 | `INVALID_TIME_RANGE` | 8 | no | start ≥ end, negative, beyond the input duration, transition too long |
 | `DEPENDENCY_ERROR` | 9 | no | unknown reference, cycle, orphan operation, conflicting outputs |
-| `TOOL_ERROR` | 10 | yes | ffmpeg-skill / ffmpeg failed or missing |
-| `OUTPUT_ERROR` | 11 | no | output could not be written |
-| `VALIDATION_ERROR` | 12 | no | output exists but is not what was requested (duration, frame size, stream) |
+| `TOOL_ERROR` | 10 | yes | the engine failed: ffmpeg error, ffmpeg-skill exit ≠ 0, could not start (missing ffmpeg is `retryable: false`) |
+| `OUTPUT_ERROR` | 11 | no | the engine reported success but no readable, non-empty file exists, or the output could not be written |
+| `VALIDATION_ERROR` | 12 | no | a file exists but is not what was requested (no video stream, no duration, wrong frame size, duration off) |
 | `CANCELLED` | 130 | yes | SIGINT / SIGTERM or `timeout_seconds` |
 | `INTERNAL_ERROR` | 1 | no | a bug; still one JSON document, never a traceback on stdout |
 
@@ -247,14 +253,20 @@ VIDEO_EDITING_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill python -m unittest -v test_
 - `test_security.py`: AST scan (no shell / eval / exec / importlib / network, subprocess with lists only), and
   black-box attacks through the CLI: command keys, shell metacharacters, executable and filter injection,
   traversal and absolute outputs, request-level workspace override, malformed JSON, oversized input.
+- `test_engine_contract.py`: the error contract at the engine boundary with a fake ffmpeg-skill (a test double for
+  the *boundary only*, never reported as integration): TOOL_ERROR vs OUTPUT_ERROR vs VALIDATION_ERROR vs
+  CANCELLED, no partial left behind, plan writes nothing, reuse / invalidation / tampered intermediate,
+  unsupported engine version.
 - `test_integration.py` (skipped, never faked, without ffmpeg + ffmpeg-skill): trim, cut + reorder, concat +
   transition + reorder, fill / resize / fit, speed + overlay, the full pipeline (trim → fill → second source →
   concat → validation, plan before run, reuse, chained invalidation), range beyond duration, transition too
   long, corrupt input, still image as video, timeout → `CANCELLED`, doctor. Fixtures are generated with
   ffmpeg lavfi at test time; the suite asserts sources are byte-identical afterwards.
 
-CI (`.github/workflows/tests.yml`, manual trigger like the sibling skills): unit on Linux / Windows / macOS ×
-Python 3.9 / 3.11; integration on Ubuntu with apt ffmpeg and a checkout of kajisho5/ffmpeg-skill.
+CI (`.github/workflows/tests.yml`, manual trigger like the sibling skills; GitHub offers the trigger only once the
+file is on the default branch): lint (ruff, mypy, compileall, `contract --check`); unit + engine-contract on
+Linux / Windows / macOS × Python 3.9 / 3.11; integration on Ubuntu with apt ffmpeg and a checkout of
+kajisho5/ffmpeg-skill.
 
 ## ffmpeg-skill relationship
 

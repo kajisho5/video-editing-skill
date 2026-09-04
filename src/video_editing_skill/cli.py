@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from . import PLAN_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
 from .contract import skill_contract
+from .contract_check import run_check
 from .doctor import doctor_report, format_doctor
 from .errors import EditError
 from .executor import Executor, _Failed
@@ -26,6 +27,15 @@ from .paths import PathPolicy
 from .project import parse_request
 
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
+
+
+def _utf8_streams() -> None:
+    """stdout carries JSON with ensure_ascii=False; never let a legacy console code page (cp932, cp1252) break it."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
 
 
 def _print_json(doc: Any) -> None:
@@ -84,6 +94,16 @@ def _envelope(project, extra: Dict[str, Any]) -> Dict[str, Any]:
 
 # ---------------------------------------------------------------- commands
 def cmd_skill(args: argparse.Namespace) -> int:
+    if getattr(args, "check", None) is not None:
+        saved = _read_request(args.check) if args.check else None
+        rep = run_check(saved)
+        if args.json:
+            _print_json(rep)
+        else:
+            print(f"contract check: {rep['status']}")
+            for p in rep["implementation"]["problems"] + (rep.get("drift", {}).get("problems", [])):
+                print("  - " + p)
+        return 0 if rep["ok"] else 1
     doc = skill_contract()
     if args.json:
         _print_json(doc)
@@ -164,6 +184,8 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("skill", "contract"):
         s = sub.add_parser(name, help="machine-readable contract")
         _add_common(s, request=False)
+        s.add_argument("--check", nargs="?", const="", metavar="FILE", default=None,
+                       help="verify the contract against the implementation and docs; with FILE (or -) also report drift from that saved contract; exit 1 on any problem")
         s.set_defaults(func=cmd_skill)
     d = sub.add_parser("doctor", help="environment report")
     _add_common(d, request=False)
@@ -182,6 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    _utf8_streams()
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

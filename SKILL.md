@@ -20,4 +20,11 @@ Workflow for a caller:
    operation carries a provenance record. On failure `{"ok": false, "error": {code, message, retryable}}` and no
    output file is left behind.
 
+Operation types (the allowlist): `TRIM`, `CUT`, `CONCAT` (with `params.transition`), `SPEED`, `FIT`, `FILL`,
+`RESIZE`, `OVERLAY`. Anything else (`CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION` included) is refused
+with `UNSUPPORTED_OPERATION`; the contract's `unsupported` list says why.
+
 Times are exact: `"1:30"`, `"00:01:30.250"`, `{"frames": 300, "fps": "30000/1001"}` or a number of seconds.
+
+`contract --check tests/contract/contract.json` verifies the live contract against the implementation, the docs
+and that saved copy; exit 1 on any problem.

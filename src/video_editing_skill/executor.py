@@ -44,7 +44,7 @@ class Executor:
         self.tool_versions = {"ffmpeg-skill": skill.version, **tool_versions}
         self.log = log or (lambda msg: None)
         self.steps: Dict[str, Step] = compile_project(project)
-        self.work = project.policy.work_dir()
+        self.work = project.policy.work_dir(create=False)
         self.durations: Dict[str, Optional[Time]] = {}
         self.source_probes: Dict[str, Dict[str, Any]] = {}
         self.clips: Dict[str, Clip] = {}
@@ -140,6 +140,7 @@ class Executor:
         status = "completed"
         error: Optional[EditError] = None
         try:
+            self.work = self.project.policy.work_dir(create=True)
             for ref in self.project.order:
                 if cancelled():
                     raise EditError("CANCELLED", "interrupted before operation " + ref)

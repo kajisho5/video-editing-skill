@@ -151,10 +151,11 @@ class PathPolicy:
         resolved = os.path.realpath(probe)
         return os.path.join(resolved, *rest) if rest else resolved
 
-    def work_dir(self) -> str:
-        """<workspace>/.video-editing/work, created, verified inside the workspace."""
+    def work_dir(self, create: bool = True) -> str:
+        """<workspace>/.video-editing/work, verified inside the workspace; created only when `create` (run, not plan)."""
         base = os.path.join(self.workspace, ".video-editing", "work")
-        os.makedirs(base, exist_ok=True)
+        if create:
+            os.makedirs(base, exist_ok=True)
         if not is_within(self.workspace, os.path.realpath(base)):
             raise EditError("PATH_NOT_ALLOWED", "work directory resolves outside the workspace", {"reason": "workspace_escape"})
         return base
