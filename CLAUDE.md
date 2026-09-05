@@ -99,7 +99,10 @@ exception to ADR-001.
 - PR #2 (merged) — `provides`: publishes Capability ids for `AI-video-production-OS` discovery
   (ADR-006).
 - PR #3 (merged) — `contract_version`: independent shape-version axis (ADR-007).
-- This file (added alongside/after PR #3) — durable maintainer state, previously missing.
+- PR #4 (merged) — this file: durable maintainer state, previously missing.
+- PR #5 (merged) — `dependencies`: publishes the `ffmpeg-skill` version range already enforced at
+  runtime (ADR-008); moved the OS registry's `dependency_version_ranges` conformance check for
+  this Skill from `NOT_IMPLEMENTED` to a real `PASS`.
 
 ## Picking the next task
 
