@@ -13,11 +13,12 @@ from .errors import EditError
 from .project import EditOperation, EditProject
 from .timebase import Time, fraction_text
 
+ENCODING_FLAGS = ("crf", "preset")   # the typed encoding profile (operations.validate_encoding): every re-encoding tool takes them
 ALLOWED_FLAGS: Dict[str, tuple] = {
-    "cut": ("start", "end", "segments", "accurate"),
-    "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color"),
-    "fit": ("duration", "method", "max_speed", "aspect", "fit", "width", "pad_color", "fps"),
-    "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade"),
+    "cut": ("start", "end", "segments", "accurate") + ENCODING_FLAGS,
+    "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color") + ENCODING_FLAGS,
+    "fit": ("duration", "method", "max_speed", "aspect", "fit", "width", "pad_color", "fps") + ENCODING_FLAGS,
+    "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
     "probe": (),
 }
 
@@ -74,6 +75,15 @@ class Step:
 
 
 def compile_operation(op: EditOperation) -> Step:
+    step = _compile(op)
+    if op.encoding:   # the typed profile becomes the tool's own typed flags; values were validated against closed vocabularies
+        for k in ENCODING_FLAGS:
+            if k in op.encoding:
+                step.args[k] = op.encoding[k]
+    return step
+
+
+def _compile(op: EditOperation) -> Step:
     p = op.params
     video_inputs = op.inputs[:-1] if op.type == "OVERLAY" else op.inputs
     if op.type == "TRIM":

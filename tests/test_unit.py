@@ -364,9 +364,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class MediaAndValidationTests(unittest.TestCase):
-    """operations.MEDIA (media compatibility) and the executor's profile derivation / pre-execution refusals, without
-    any engine: the executor is fed probe documents directly."""
+class ExecutorHarness(unittest.TestCase):
+    """An Executor fed probe documents directly (no engine), for media / normalization / validation tests."""
 
     def setUp(self):
         self.ws = make_workspace()
@@ -393,6 +392,13 @@ class MediaAndValidationTests(unittest.TestCase):
         ex.clips = build_timelines(project, ex.durations)
         return ex
 
+    def sources_(self):
+        return [{"id": "A", "path": "in/a.mp4"}, {"id": "B", "path": "in/b.mp4"}, {"id": "logo", "path": "in/logo.png", "kind": "image"}]
+
+
+class MediaAndValidationTests(ExecutorHarness):
+    """operations.MEDIA (media compatibility) and the executor's profile derivation / pre-execution refusals."""
+
     def test_media_table_matches_operations_and_contract(self):
         self.assertEqual(set(operations.MEDIA), set(operations.OPERATIONS))
         for t, m in operations.MEDIA.items():
@@ -418,8 +424,8 @@ class MediaAndValidationTests(unittest.TestCase):
         self.assertEqual(ex.profile("A")["provenance"], "OBSERVED")
         self.assertEqual((ex.profile("t")["width"], ex.profile("t")["audio"], ex.profile("t")["provenance"]), (640, True, "EXPECTED"))
         self.assertEqual((ex.profile("c")["width"], ex.profile("c")["height"], ex.profile("c")["fps"]), (640, 360, 30.0))
-        self.assertIsNone(ex.profile("f")["width"], "FIT without a width promises only the aspect")
-        self.assertEqual((ex.profile("r")["width"], ex.profile("r")["height"]), (320, None))
+        self.assertEqual((ex.profile("f")["width"], ex.profile("f")["height"]), (640, 640), "FIT 1:1 without a width keeps the source width (fit.py rule)")
+        self.assertEqual((ex.profile("r")["width"], ex.profile("r")["height"]), (320, 320), "RESIZE keeps the (now square) aspect: 320 x even(320 * 640 / 640)")
         # CONCAT audio: any input with audio -> audio; none -> none; unknown stays unknown
         ex2 = self.executor([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}],
                             probes={"A": self.probe(audio=False), "B": self.probe(audio=False), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
@@ -464,10 +470,10 @@ class MediaAndValidationTests(unittest.TestCase):
                 ex._validate_media(op, bad, "x")
             self.assertEqual((cm.exception.code, cm.exception.details["reason"]), ("VALIDATION_ERROR", reason))
         ex = self.executor([{"id": "f", "type": "FILL", "input": "A", "params": {"aspect": "1:1"}}])
-        ex._validate_media(ex.project.operations["f"], self.probe(360, 360), "x")
+        ex._validate_media(ex.project.operations["f"], self.probe(640, 640), "x")   # fit.py: width kept, height = even(640 / 1)
         with self.assertRaises(EditError) as cm:
-            ex._validate_media(ex.project.operations["f"], self.probe(640, 360), "x")
-        self.assertEqual(cm.exception.details["reason"], "aspect")
+            ex._validate_media(ex.project.operations["f"], self.probe(360, 360), "x")
+        self.assertEqual(cm.exception.details["reason"], "frame_size")
         ex = self.executor([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}])
         with self.assertRaises(EditError) as cm:
             ex._validate_media(ex.project.operations["t"], self.probe(1280, 720), "x")
@@ -589,3 +595,115 @@ class DoctorAvailabilityTests(unittest.TestCase):
         rows = {r["type"]: r for r in operation_availability(skill, {"ffmpeg": "6", "ffprobe": "6", "ok": True, "missing": ["encoder:aac"], "available": None})}
         self.assertEqual(rows["CUT"]["missing"], ["encoder:aac"])
         self.assertEqual(rows["CUT"]["status"], "MISSING")
+
+
+class FrameSemanticsAndEncodingTests(ExecutorHarness):
+    """RESIZE / FIT / FILL targets are normalized before execution with ffmpeg-skill fit.py's own rule and verified exactly;
+    the encoding profile is typed, closed, part of identity, and refused where it could not apply."""
+
+    def test_even_and_targets_follow_fit_py(self):
+        self.assertEqual([operations.even(x) for x in (168.75, 140.625, 405, 721.78, 360, 361, 2275.5)], [170, 142, 406, 722, 360, 362, 2276])
+        cases = [  # (op params, source frame) -> target, mirrors fit.py: out_w = width or (sw if ratio <= src_ratio else sh * ratio); out_h = even(out_w / ratio)
+            ({"type": "RESIZE", "params": {"width": 300}}, (1280, 720), (300, 170)),
+            ({"type": "RESIZE", "params": {"width": 250}}, (640, 360), (250, 142)),
+            ({"type": "RESIZE", "params": {"width": 320}}, (640, 360), (320, 180)),
+            ({"type": "FIT", "params": {"aspect": "9:16"}}, (1280, 720), (1280, 2276)),
+            ({"type": "FILL", "params": {"aspect": "1:1"}}, (640, 360), (640, 640)),
+            ({"type": "FIT", "params": {"aspect": "21:9"}}, (640, 360), (840, 360)),
+            ({"type": "FIT", "params": {"aspect": "1:1", "width": 360}}, (640, 360), (360, 360)),
+            ({"type": "FILL", "params": {"aspect": "4:3", "width": 334}}, (640, 360), (334, 250)),
+        ]
+        for op, (sw, sh), want in cases:
+            ex = self.executor([dict(op, id="x", input="A")], probes={"A": self.probe(sw, sh), "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+            self.assertEqual(ex.target_frame("x"), want, (op, sw, sh))
+            self.assertEqual(ex.normalized("x")["target_frame"], list(want))
+        # rotation metadata: the source is measured as displayed (640x360 stored, rotation 90 -> 360x640)
+        rotated = self.probe(640, 360)
+        rotated["video"]["rotation"] = 90
+        ex = self.executor([{"id": "x", "type": "RESIZE", "input": "A", "params": {"width": 180}}], probes={"A": rotated, "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+        self.assertEqual((ex.profile("A")["width"], ex.profile("A")["height"]), (360, 640))
+        self.assertEqual(ex.target_frame("x"), (180, 320))
+        # CONCAT: params, else the first input's frame floored to even
+        ex = self.executor([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}], probes={"A": self.probe(641, 361), "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+        self.assertEqual(ex.target_frame("c"), (640, 360))
+        # the semantics block names the three types and no operation stretches
+        sem = contract.skill_contract()["frame_semantics"]
+        self.assertEqual(set(sem) - {"rules"}, {"RESIZE", "FIT", "FILL"})
+        self.assertTrue(any("stretch" in r for r in sem["rules"]))
+
+    def test_hdr_vfr_and_codec(self):
+        hdr = self.probe()
+        hdr["video"]["hdr"] = True
+        vfr = self.probe()
+        vfr["video"]["variable_frame_rate_suspected"] = True
+        ex = self.executor([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}], probes={"A": hdr, "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+        with self.assertRaises(EditError) as cm:
+            ex._check_media()
+        self.assertEqual((cm.exception.code, cm.exception.details["reason"]), ("INVALID_INPUT", "hdr_mismatch"))
+        ex = self.executor([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}], probes={"A": hdr, "B": vfr, "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+        ex._check_media()
+        self.assertTrue(any("HDR" in w for w in ex.project.warnings) and any("variable-frame-rate" in w for w in ex.project.warnings), ex.project.warnings)
+        self.assertEqual(ex.normalized("t")["video_codec"], "hevc")
+        out = self.probe()
+        out["video"]["codec"] = "h264"
+        with self.assertRaises(EditError) as cm:
+            ex._validate_media(ex.project.operations["t"], out, "x")
+        self.assertEqual(cm.exception.details["reason"], "codec")
+        out["video"]["codec"] = "hevc"
+        ex._validate_media(ex.project.operations["t"], out, "x")
+        # a keyframe TRIM may stream-copy: no codec claim
+        ex = self.executor([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "keyframe"}}], probes={"A": hdr, "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+        self.assertIsNone(ex.normalized("t")["encoding"])
+        ex._validate_media(ex.project.operations["t"], self.probe(), "x")
+
+    def test_encoding_profile_is_typed_closed_and_part_of_identity(self):
+        from video_editing_skill.compiler import compile_operation
+        for good in ({"crf": 18}, {"preset": "veryfast"}, {"crf": 14, "preset": "veryslow"}, {"crf": 28}):
+            self.assertEqual(operations.validate_encoding(good, "x"), good)
+        for bad in ({}, {"crf": 13}, {"crf": 29}, {"crf": "18"}, {"crf": 18.5}, {"preset": "placebo"}, {"preset": "medium --tune film"}, {"codec": "libx264"},
+                    {"bitrate": "5M"}, {"filter": "x"}, {"crf": True}, "fast", ["fast"]):
+            with self.assertRaises(EditError, msg=str(bad)) as cm:
+                operations.validate_encoding(bad, "x")
+            self.assertEqual(cm.exception.code, "INVALID_REQUEST")
+        base = [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}]
+        plain = parse_request(request(self.sources_(), base, [{"id": "o", "operation": "t", "path": "out/o.mp4"}]), self.policy)
+        prof = parse_request(request(self.sources_(), base, [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"crf": 20, "preset": "fast"}}]), self.policy)
+        self.assertNotEqual(plain.operations["t"].operation_id, prof.operations["t"].operation_id, "a profile is part of the identity")
+        again = parse_request(request(self.sources_(), base, [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"preset": "fast", "crf": 20}}]), self.policy)
+        self.assertEqual(prof.operations["t"].operation_id, again.operations["t"].operation_id, "key order does not matter")
+        self.assertEqual(prof.outputs["o"].encoding, {"crf": 20, "preset": "fast"})
+        self.assertEqual(prof.operations["t"].to_dict()["encoding"], {"crf": 20, "preset": "fast"})
+        step = compile_operation(prof.operations["t"])
+        argv = step.argv_for(["/in/a.mp4"], "/ws/o.mp4")
+        self.assertEqual(argv[argv.index("--crf") + 1], "20")
+        self.assertEqual(argv[argv.index("--preset") + 1], "fast")
+        self.assertNotIn("--crf", compile_operation(plain.operations["t"]).argv_for(["/in/a.mp4"], "/ws/o.mp4"), "no profile: the engine's defaults, no flags")
+        # two outputs of one operation must agree; keyframe precision cannot take a profile
+        with self.assertRaises(EditError) as cm:
+            parse_request(request(self.sources_(), base, [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"crf": 20}},
+                                                          {"id": "p", "operation": "t", "path": "out/p.mp4", "encoding": {"crf": 22}}]), self.policy)
+        self.assertEqual((cm.exception.code, cm.exception.details["reason"]), ("DEPENDENCY_ERROR", "conflicting_encodings"))
+        parse_request(request(self.sources_(), base, [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"crf": 20}},
+                                                      {"id": "p", "operation": "t", "path": "out/p.mp4", "encoding": {"crf": 20}}]), self.policy)
+        with self.assertRaises(EditError) as cm:
+            parse_request(request(self.sources_(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "keyframe"}}],
+                                  [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"crf": 20}}]), self.policy)
+        self.assertEqual(cm.exception.details["reason"], "encoding_needs_reencode")
+        # the contract's encoding block is the source of truth for the vocabulary
+        c = contract.skill_contract()
+        self.assertEqual(c["encoding"], operations.ENCODING)
+        self.assertIn("video codec choice", c["encoding"]["not_configurable"])
+        self.assertEqual(c["request_shape"], json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))["request_shape"])
+
+    def test_pinned_blocks_are_unchanged_since_0_1_0(self):
+        """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the 0.1.0 snapshot the agent carries."""
+        c = contract.skill_contract()
+        golden = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))
+        for k in ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "capability_names", "schemas",
+                  "engine", "response_shape", "request_shape", "formats"):
+            self.assertEqual(c[k], golden[k], k)
+        self.assertEqual(c["version"], "0.1.0")
+        for t in c["tools"]:
+            g = next(x for x in golden["tools"] if x["tool_id"] == t["tool_id"])
+            for f in ("parameters", "required_capabilities", "inputs", "result_keys", "executed_by", "deterministic", "produces_output", "writes_media", "kind"):
+                self.assertEqual(t[f], g[f], (t["tool_id"], f))

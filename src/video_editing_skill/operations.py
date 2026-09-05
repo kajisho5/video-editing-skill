@@ -27,6 +27,78 @@ FORBIDDEN_KEYS = ("command", "commands", "cmd", "argv", "args", "shell", "exec",
                   "api_key", "api_token", "token", "secret", "password", "credentials",
                   "workspace", "allowed_input", "allowed_inputs", "allowed_input_roots", "ffmpeg_skill_dir", "engine_dir", "path_policy")
 
+# ---- encoding profile (contract.encoding): what an output may ask for. Everything else is fixed by ffmpeg-skill 0.9.x
+# (video_args / aac_args in its _common.py) and is reported, never configured, here.
+X264_PRESETS = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow")   # engine list minus placebo
+CRF_MIN, CRF_MAX = 14, 28
+ENCODING_DEFAULTS = {"crf": 18, "preset": "medium"}   # ffmpeg-skill's own defaults; reported as normalized values when nothing is asked
+ENCODING = {
+    "request_field": "project.outputs[].encoding (optional object)",
+    "parameters": {"crf": f"integer {CRF_MIN}..{CRF_MAX}: x264 constant-quality factor (lower = larger, better; engine default {ENCODING_DEFAULTS['crf']}; +2 on HEVC for HDR sources)",
+                   "preset": "|".join(X264_PRESETS) + f" (encoder speed / efficiency trade-off; engine default {ENCODING_DEFAULTS['preset']})"},
+    "applies_to": "the operation that produces the output: its re-encode uses the profile; an intermediate feeding two outputs must be asked for one profile",
+    "identity": "part of operation_id and idempotency_key when present, so a different profile is a different artifact",
+    "fixed_by_engine": {"video_codec": "h264 (libx264, High, yuv420p, bt709 tags) for SDR sources; hevc (libx265, 10-bit, hvc1) for HDR sources",
+                        "audio_codec": "aac 192 kb/s, source sample rate and layout (CONCAT: stereo)", "container": "from the output extension (.mp4 | .mov | .mkv)",
+                        "resolution": "by RESIZE / FIT / FILL / CONCAT (frame_semantics), never by the profile", "frame_rate": "by params.fps of CONCAT / FIT / FILL / RESIZE; VFR sources are conformed to CFR"},
+    "not_configurable": ["video codec choice", "bitrate / CBR / ABR modes", "pixel format / bit depth", "colour space tags", "audio codec, bitrate, sample rate, channel layout",
+                         "keyframe interval / GOP", "two-pass encoding", "hardware encoders"],
+    "refused": ["unknown keys (INVALID_REQUEST)", "crf or preset outside the vocabulary (INVALID_REQUEST)",
+                "a profile on an output produced by TRIM / CUT with precision keyframe: stream copy ignores it (INVALID_REQUEST)",
+                "two outputs of one operation with different profiles (DEPENDENCY_ERROR)"],
+}
+
+# ---- frame semantics (contract.frame_semantics): RESIZE, FIT and FILL never overlap. Targets follow ffmpeg-skill fit.py
+# exactly (even(n) = round(n), +1 when odd), so the frame is normalized before execution and verified afterwards.
+FRAME_SEMANTICS = {
+    "RESIZE": {"changes": "frame size", "keeps": "the source aspect ratio; nothing is padded, cropped or stretched",
+               "target": "width = params.width (even); height = even(width * source_height / source_width)",
+               "when": "the picture must become smaller / larger and keep its shape"},
+    "FIT": {"changes": "frame aspect ratio", "keeps": "every source pixel (scaled to fit inside, letterboxed / pillarboxed with pad_color)",
+            "target": "width = params.width, else source_width when aspect <= source_aspect, else even(source_height * aspect); height = even(width / aspect)",
+            "when": "a delivery aspect differs from the source and nothing may be lost"},
+    "FILL": {"changes": "frame aspect ratio", "keeps": "the centre of the picture (scaled to cover, centre-cropped); edges are lost",
+             "target": "same rule as FIT", "when": "a delivery aspect differs from the source and a full frame matters more than the edges"},
+    "rules": ["a source whose rotation metadata is ±90 / 270 is measured with width and height swapped (as the engine does)",
+              "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)", "CONCAT: params.width x params.height, else the first input's frame floored to even",
+              "no operation stretches (distorts) the picture; anamorphic output is not provided",
+              "the normalized target frame is reported in plan.steps[].normalized and execution.operations[].normalized and verified on the output exactly"],
+}
+
+# ---- media policy (contract.media_policy): who handles what
+MEDIA_POLICY = {
+    "refused_before_execution": [
+        "source with no video stream (audio-only files, corrupt containers): INVALID_INPUT no_video_stream",
+        "video source without a duration (a still image or a broken container declared as video): INVALID_INPUT no_duration",
+        "image source that does not decode to a frame: INVALID_INPUT image_undecodable",
+        "OVERLAY on a video input without an audio stream: INVALID_INPUT audio_required (ffmpeg-skill 0.9.x overlay never terminates on it)",
+        "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
+        "unsupported input extension / output container: UNSUPPORTED_FORMAT", "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
+        "engine tool / encoder / filter missing: TOOL_ERROR (not retryable)",
+    ],
+    "normalized_by_skill": [
+        "times in any accepted form -> exact rational seconds", "target frame of RESIZE / FIT / FILL / CONCAT (frame_semantics)",
+        "target duration of SPEED (input duration / factor)", "encoding profile -> typed engine flags (crf, preset)", "audio expectation per operation (kept / added / none)",
+    ],
+    "delegated_to_engine": [
+        "scaling, padding, cropping filters and their exact pixel maths", "constant-frame-rate conform of variable-frame-rate sources (a warning is reported)",
+        "resampling, silence insertion and stereo layout in CONCAT", "HDR sources encoded HEVC 10-bit (the output codec is hevc; a warning is reported)",
+        "audio codec / bitrate / sample rate (AAC 192 kb/s)", "keyframe snapping for precision keyframe TRIM / CUT",
+    ],
+    "by_stream": {
+        "video_only": "TRIM / CUT / SPEED / FIT / FILL / RESIZE / CONCAT: allowed; the output has no audio stream (validated). OVERLAY: refused (audio_required)",
+        "video_and_audio": "all operations; the audio stream is kept (validated)",
+        "audio_only": "refused as a source (no_video_stream); audio-only editing is not provided",
+        "image": "OVERLAY.params.image only (png / jpg, alpha respected); an image in a video slot is DEPENDENCY_ERROR kind_mismatch",
+        "mixed_audio_presence_in_concat": "allowed; the engine inserts silence for the inputs without audio and the output has audio (validated)",
+        "different_resolution_in_concat": "allowed; conformed by params.mode to the normalized frame",
+        "different_frame_rate_in_concat": "allowed; conformed to params.fps or the first input's rate",
+        "variable_frame_rate": "allowed; conformed to constant fps by the engine (warning)",
+        "hdr": "allowed alone (output hevc, warning); not mixed with SDR in CONCAT",
+        "rotation_metadata": "honoured: the frame is measured as displayed",
+    },
+}
+
 MAX_SPEED = Fraction(4)
 MIN_SPEED = Fraction(1, 4)
 MAX_DIMENSION = 8192
@@ -254,6 +326,27 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
                 raise EditError("INVALID_REQUEST", f"{what}.fade: must be between 0 and 10 seconds")
             p["fade"] = fd
     return p
+
+
+def validate_encoding(raw: Any, what: str) -> Dict[str, Any]:
+    """Canonical encoding profile ({crf?, preset?}); unknown keys and out-of-vocabulary values are refused."""
+    if not isinstance(raw, dict):
+        raise EditError("INVALID_REQUEST", f"{what}: must be an object")
+    _keys(raw, what, ("crf", "preset"))
+    out: Dict[str, Any] = {}
+    if "crf" in raw:
+        out["crf"] = _int(raw["crf"], what + ".crf", CRF_MIN, CRF_MAX)
+    if "preset" in raw:
+        out["preset"] = _enum(raw["preset"], what + ".preset", X264_PRESETS)
+    if not out:
+        raise EditError("INVALID_REQUEST", f"{what}: an empty profile changes nothing; drop it")
+    return out
+
+
+def even(n: Any) -> int:
+    """ffmpeg-skill's even(): round to the nearest integer, then up to even. Frame targets follow it exactly."""
+    v = int(round(float(n)))
+    return v if v % 2 == 0 else v + 1
 
 
 def params_to_json(p: Dict[str, Any]) -> Dict[str, Any]:

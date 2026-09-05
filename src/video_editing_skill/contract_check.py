@@ -12,7 +12,7 @@ from .compiler import ALLOWED_FLAGS, compile_operation
 from .contract import PINNED_BLOCKS, TOOL_REQUIREMENTS, skill_contract
 from .errors import ERROR_CODES, EXIT_CODES
 from .ffmpeg_skill import REQUIRED_TOOLS
-from .operations import MEDIA, OPERATIONS, UNSUPPORTED, capability_list, media_compatibility
+from .operations import CRF_MAX, CRF_MIN, ENCODING, FRAME_SEMANTICS, MEDIA, MEDIA_POLICY, OPERATIONS, UNSUPPORTED, X264_PRESETS, capability_list, media_compatibility, validate_encoding
 from .project import EditOperation
 
 # fields of a ToolSpec an agent-side registry keys on; a change in any of them is a contract change
@@ -110,6 +110,30 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
     ver = c.get("versioning", {})
     if tuple(ver.get("pinned_blocks", [])) != PINNED_BLOCKS or ver.get("version") != VERSION:
         problems.append("contract.versioning does not name the pinned blocks / version")
+    # encoding profile: the contract's parameter list is exactly what validate_encoding accepts, every flag is allowlisted for every re-encoding tool
+    enc = c.get("encoding") or {}
+    if enc != ENCODING or set(enc.get("parameters", {})) != {"crf", "preset"}:
+        problems.append("contract.encoding differs from operations.ENCODING")
+    try:
+        validate_encoding({"crf": CRF_MIN, "preset": X264_PRESETS[0]}, "x")
+        validate_encoding({"crf": CRF_MAX, "preset": X264_PRESETS[-1]}, "x")
+    except Exception as exc:  # noqa: BLE001
+        problems.append(f"encoding vocabulary is not accepted by validate_encoding: {exc}")
+    for bad in ({"crf": CRF_MIN - 1}, {"crf": CRF_MAX + 1}, {"preset": "placebo"}, {"bitrate": "5M"}, {"codec": "libx265"}):
+        try:
+            validate_encoding(bad, "x")
+            problems.append(f"validate_encoding accepted {bad}")
+        except Exception:  # noqa: BLE001
+            pass
+    for script in ("cut", "join", "fit", "overlay"):
+        if not {"crf", "preset"} <= set(ALLOWED_FLAGS[script]):
+            problems.append(f"encoding flags are not allowlisted for ffmpeg-skill/{script}")
+    if c.get("frame_semantics") != FRAME_SEMANTICS or set(FRAME_SEMANTICS) != {"RESIZE", "FIT", "FILL", "rules"}:
+        problems.append("contract.frame_semantics differs from operations.FRAME_SEMANTICS")
+    if c.get("media_policy") != MEDIA_POLICY or set(MEDIA_POLICY) != {"refused_before_execution", "normalized_by_skill", "delegated_to_engine", "by_stream"}:
+        problems.append("contract.media_policy differs from operations.MEDIA_POLICY")
+    if "0.2.0" not in (ver.get("next") or {}):
+        problems.append("contract.versioning.next does not describe 0.2.0")
     problems += verify_docs(root)
     return problems
 

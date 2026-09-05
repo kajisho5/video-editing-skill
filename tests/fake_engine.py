@@ -17,7 +17,11 @@ Modes (written to <root>/MODE):
   no_xfade       doctor reports filter:xfade / filter:acrossfade missing (CONCAT unavailable, the rest fine)
   stale_reuse    probe reports no video stream for a *finished* work-dir intermediate (a reuse candidate), never for a partial
 Probe facts: a video whose name contains "noaudio" has no audio stream; an image whose bytes start with "corrupt" does
-not decode (no frame size); a video whose name contains "silent" is fine but has no audio (alias of noaudio).
+not decode (no frame size); a video whose name contains "silent" is fine but has no audio (alias of noaudio); "hdr" in the
+name -> hdr: true (the fake encodes such sources as hevc, like the engine); "rot90" -> rotation: 90 (stored 640x360, shown
+360x640); "vfr" -> variable_frame_rate_suspected: true; "wide" -> 1280x720 @ 25 fps. Frame targets follow fit.py / join.py
+exactly (even(): round then up to even). --crf / --preset are recorded in the output header (visible through probe as
+"encoding" for the tests).
 """
 import json
 import os
@@ -50,9 +54,19 @@ SCRIPT = textwrap.dedent('''
         except (OSError, ValueError):
             pass
         return {}
+    def even(n):
+        v = int(round(n))
+        return v if v % 2 == 0 else v + 1
     def probe_doc(path):
         h = header(path)
-        video = {"codec": "h264", "width": h.get("width", 640), "height": h.get("height", 360), "fps": h.get("fps", 30.0)}
+        base = os.path.basename(path)
+        wide = "wide" in base and not h
+        hdr = h.get("hdr", "hdr" in base)
+        video = {"codec": h.get("codec", "hevc" if hdr else "h264"), "width": h.get("width", 1280 if wide else 640), "height": h.get("height", 720 if wide else 360),
+                 "fps": h.get("fps", 25.0 if wide else 30.0), "rotation": 90 if ("rot90" in base and not h) else 0, "hdr": hdr,
+                 "variable_frame_rate_suspected": ("vfr" in base and not h)}
+        if h.get("encoding"):
+            video["encoding"] = h["encoding"]
         if mode == "bad_probe" and ".partial." in path:
             video = None
         if mode == "stale_reuse" and os.sep + "work" + os.sep in path and ".partial." not in path:
@@ -109,24 +123,29 @@ SCRIPT = textwrap.dedent('''
         inputs = [a for a in args[:args.index("-o")] if not a.startswith("--")]
         noaudio = all(("noaudio" in os.path.basename(p) or "silent" in os.path.basename(p) or (probe_doc(p).get("audio") is None)) for p in inputs if not p.endswith(".png")) if name != "join" else all(probe_doc(p).get("audio") is None for p in inputs)
         first = probe_doc(inputs[0])["video"]
-        width, height, fps = first["width"], first["height"], first["fps"]
+        sw, sh = first["width"], first["height"]
+        if first.get("rotation") in (90, -90, 270, -270):
+            sw, sh = sh, sw
+        width, height, fps = sw, sh, first["fps"]
         if flag("--fps"):
             fps = float(flag("--fps"))
         if name == "join":
-            width, height = int(flag("--width", width)), int(flag("--height", height))
+            width, height = int(flag("--width", sw)), int(flag("--height", sh))
+            width, height = width - (width % 2), height - (height % 2)
         if name == "fit" and (flag("--aspect") or flag("--width")):
-            width = int(flag("--width", width))
+            src_ratio = sw / sh
             if flag("--aspect"):
                 aw, ah = (int(x) for x in flag("--aspect").split(":"))
-                if flag("--width") is None and flag("--fit", "pad") == "crop":   # centre crop keeps the height when the source is wider
-                    height = first["height"]; width = int(round(height * aw / ah)); width += width % 2
-                else:
-                    height = int(round(width * ah / aw)); height += height % 2
+                ratio = aw / ah
             else:
-                height = int(round(width * first["height"] / first["width"])); height += height % 2
+                ratio = src_ratio
+            width = even(int(flag("--width"))) if flag("--width") else even(sw if ratio <= src_ratio else sh * ratio)
+            height = even(width / ratio)
+        encoding = {"crf": int(flag("--crf", 18)), "preset": flag("--preset", "medium")}
         with open(out, "wb") as fh:
             fh.write(b"FAKE" + json.dumps({"duration": expected_duration(), "tool": name, "args": args, "noaudio": noaudio,
-                                           "width": width, "height": height, "fps": fps}).encode())
+                                           "width": width, "height": height, "fps": fps, "hdr": first.get("hdr", False),
+                                           "codec": "hevc" if first.get("hdr") else "h264", "encoding": encoding}).encode())
     if mode == "noisy":
         sys.stdout.write("some junk line\\n")
     emit({"status": "completed", "output": out, "dry_run": False, "commands": ["ffmpeg -i x " + out]})

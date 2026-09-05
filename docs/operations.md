@@ -20,6 +20,29 @@ name an execution escape hatch (`command`, `argv`, `shell`, `filter`, `env`, `ap
 Values that reach a filter graph (colours, transition names, positions, aspects) are closed vocabularies or
 integers; times are exact rationals. See `contract.operations` for the documented forms.
 
+### RESIZE, FIT, FILL (contract.frame_semantics, ADR-003)
+
+| Type | Changes | Keeps | Target frame |
+|---|---|---|---|
+| `RESIZE` | size | the source aspect; nothing padded, cropped or stretched | `width = params.width`; `height = even(width × sh / sw)` |
+| `FIT` | aspect | every source pixel (scaled to fit inside, padded with `pad_color`) | `width = params.width`, else `sw` if `aspect ≤ source_aspect` else `even(sh × aspect)`; `height = even(width / aspect)` |
+| `FILL` | aspect | the centre (scaled to cover, centre-cropped); edges are lost | same rule as FIT |
+
+`even(n) = round(n)`, +1 when odd (ffmpeg-skill fit.py). A source with rotation metadata (±90 / 270 display matrix)
+is measured as displayed. No operation stretches the picture. The target is reported in `plan.steps[].normalized`
+and `execution.operations[].normalized` and verified on the output exactly. Examples: 1280×720 → `RESIZE 300` =
+300×170; 640×360 → `FILL 1:1` = 640×640; 1280×720 → `FIT 9:16` = 1280×2276; 640×360 → `FIT 21:9` = 840×360.
+
+### Encoding profile (contract.encoding, ADR-004)
+
+`outputs[].encoding` (optional): `{"crf": 14..28, "preset": ultrafast | superfast | veryfast | faster | fast | medium |
+slow | slower | veryslow}`. It applies to the operation that produces the output, is part of its identity, is
+refused on keyframe-precision TRIM / CUT (`encoding_needs_reencode`) and when two outputs of one operation disagree
+(`conflicting_encodings`). Everything else is fixed by ffmpeg-skill and reported in `normalized.encoding` /
+`normalized.video_codec`: h264 (libx264, yuv420p, bt709 tags) for SDR sources, hevc (libx265 10-bit) for HDR
+sources, AAC 192 kb/s, container by extension. Not configurable: codec choice, bitrate modes, pixel format, colour
+tags, audio codec / bitrate / sample rate, GOP, two-pass, hardware encoders.
+
 ## Operation graph
 
 ```
@@ -59,8 +82,29 @@ video without an audio stream; the skill refuses it (`INVALID_INPUT`, reason `au
 until the timeout. A `CONCAT` with at least one audio-bearing input produces audio and therefore satisfies a
 downstream `OVERLAY`.
 
-Profiles of not-yet-produced intermediates are derived (`EXPECTED`) only where the engine promises the fact
-(explicit width / height / fps, audio presence); once an intermediate exists its probe (`OBSERVED`) is used.
+Profiles of not-yet-produced intermediates are derived (`EXPECTED`) with the same rules the engine applies (frame
+semantics, audio presence, fps, HDR); once an intermediate exists its probe (`OBSERVED`) is used.
+
+### Media policy (contract.media_policy, ADR-005)
+
+| Situation | Handling |
+|---|---|
+| no video stream (audio-only file, corrupt container) | refused: `INVALID_INPUT no_video_stream` |
+| video source without a duration (still image / broken container as video) | refused: `INVALID_INPUT no_duration` |
+| image that does not decode | refused: `INVALID_INPUT image_undecodable` |
+| OVERLAY on a video input without audio | refused: `INVALID_INPUT audio_required` (ffmpeg-skill 0.9.x never terminates) |
+| CONCAT of HDR and SDR inputs | refused: `INVALID_INPUT hdr_mismatch` |
+| unsupported extension / container | refused: `UNSUPPORTED_FORMAT` |
+| ranges beyond the input, transition longer than half an input | refused: `INVALID_TIME_RANGE` |
+| engine tool / encoder / filter missing | refused: `TOOL_ERROR` (not retryable) |
+| times, target frames, SPEED duration, audio expectation, encoding flags | normalized by the Skill, reported, verified |
+| scaling / padding / cropping maths, CFR conform of VFR sources (warning), silence insertion and stereo layout in CONCAT, HDR → HEVC 10-bit (warning), AAC | delegated to ffmpeg-skill, verified on the output |
+
+By stream: video-only sources go through every operation but OVERLAY and produce video-only outputs (verified);
+video + audio keeps its audio (verified); audio-only sources are refused; images serve OVERLAY only; mixed audio
+presence, different resolutions and different frame rates in CONCAT are conformed by the engine (frame / fps from
+params or the first input, silence for silent inputs); VFR sources are conformed to CFR; HDR sources are encoded
+HEVC and never mixed with SDR; rotation metadata is honoured.
 
 ## Validation
 
@@ -70,11 +114,11 @@ tools and capabilities (ffmpeg-skill doctor; a gap is `TOOL_ERROR`, not retryabl
 
 After each operation (`executor._validate`): the file exists, is non-empty and readable; the probe reports a video
 stream, a duration and a frame size; the duration is within tolerance of the timeline (0.35 s, 1.5 s for
-`keyframe` precision); the frame is the requested size (`FIT` / `FILL` with width, `CONCAT` with width + height),
-at the requested aspect (`FIT` / `FILL` without width, ± 2 px), the requested width (`RESIZE`), or equal to the
-input (`TRIM`, `CUT`, `SPEED`, `OVERLAY`); the frame rate is the requested one (± 0.02) when `fps` was given; an
+`keyframe` precision); the frame equals the normalized target exactly (RESIZE / FIT / FILL / CONCAT by the rules
+above, the input's frame for TRIM / CUT / SPEED / OVERLAY); the video codec is the engine's for the source (h264,
+hevc for HDR) when the operation re-encodes; the frame rate is the requested one (± 0.02) when `fps` was given; an
 audio stream is present when the input(s) had one. Any failure is `VALIDATION_ERROR` with `details.reason`
-(`frame_size`, `aspect`, `fps`, `audio_lost`, or the duration details); the partial file is deleted.
+(`frame_size`, `aspect`, `codec`, `fps`, `audio_lost`, or the duration details); the partial file is deleted.
 
 On reuse: a work-directory intermediate whose record matches the idempotency key, size and sha256 is re-validated
 with the same probe checks; a candidate that no longer validates is discarded and the operation runs again.

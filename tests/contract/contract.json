@@ -1093,6 +1093,121 @@
       "capabilities",
       "schemas"
     ],
-    "rule": "a change inside a pinned block is breaking: bump the version (0.x: minor) and expect agents to re-pin; new keys outside them (top level or inside tools[]) are additive and allowed within the same version; the golden copy tests/contract/contract.json is regenerated deliberately in the same change, and `contract --check` classifies every difference as breaking or additive"
+    "rule": "a change inside a pinned block is breaking: bump the version (0.x: minor) and expect agents to re-pin; new keys outside them (top level or inside tools[]) are additive and allowed within the same version; the golden copy tests/contract/contract.json is regenerated deliberately in the same change, and `contract --check` classifies every difference as breaking or additive",
+    "also_pinned_by_agents": [
+      "request_shape",
+      "response_shape",
+      "engine",
+      "formats",
+      "capability_names",
+      "tools[].parameters"
+    ],
+    "next": {
+      "0.2.0": [
+        "RESIZE: `height` as the alternative to `width` (exactly one of the two)",
+        "request_shape: `outputs[].encoding` folded into the documented shape (accepted since 0.1.0 as an optional key)",
+        "CROP (pixel rectangle) once ffmpeg-skill provides a typed crop tool",
+        "IMAGE_INSERT (still -> timed clip) once ffmpeg-skill provides a typed tool",
+        "FREEZE / REVERSE / POSITION: not planned (see docs/decisions.md ADR-002)"
+      ]
+    }
+  },
+  "encoding": {
+    "request_field": "project.outputs[].encoding (optional object)",
+    "parameters": {
+      "crf": "integer 14..28: x264 constant-quality factor (lower = larger, better; engine default 18; +2 on HEVC for HDR sources)",
+      "preset": "ultrafast|superfast|veryfast|faster|fast|medium|slow|slower|veryslow (encoder speed / efficiency trade-off; engine default medium)"
+    },
+    "applies_to": "the operation that produces the output: its re-encode uses the profile; an intermediate feeding two outputs must be asked for one profile",
+    "identity": "part of operation_id and idempotency_key when present, so a different profile is a different artifact",
+    "fixed_by_engine": {
+      "video_codec": "h264 (libx264, High, yuv420p, bt709 tags) for SDR sources; hevc (libx265, 10-bit, hvc1) for HDR sources",
+      "audio_codec": "aac 192 kb/s, source sample rate and layout (CONCAT: stereo)",
+      "container": "from the output extension (.mp4 | .mov | .mkv)",
+      "resolution": "by RESIZE / FIT / FILL / CONCAT (frame_semantics), never by the profile",
+      "frame_rate": "by params.fps of CONCAT / FIT / FILL / RESIZE; VFR sources are conformed to CFR"
+    },
+    "not_configurable": [
+      "video codec choice",
+      "bitrate / CBR / ABR modes",
+      "pixel format / bit depth",
+      "colour space tags",
+      "audio codec, bitrate, sample rate, channel layout",
+      "keyframe interval / GOP",
+      "two-pass encoding",
+      "hardware encoders"
+    ],
+    "refused": [
+      "unknown keys (INVALID_REQUEST)",
+      "crf or preset outside the vocabulary (INVALID_REQUEST)",
+      "a profile on an output produced by TRIM / CUT with precision keyframe: stream copy ignores it (INVALID_REQUEST)",
+      "two outputs of one operation with different profiles (DEPENDENCY_ERROR)"
+    ]
+  },
+  "frame_semantics": {
+    "RESIZE": {
+      "changes": "frame size",
+      "keeps": "the source aspect ratio; nothing is padded, cropped or stretched",
+      "target": "width = params.width (even); height = even(width * source_height / source_width)",
+      "when": "the picture must become smaller / larger and keep its shape"
+    },
+    "FIT": {
+      "changes": "frame aspect ratio",
+      "keeps": "every source pixel (scaled to fit inside, letterboxed / pillarboxed with pad_color)",
+      "target": "width = params.width, else source_width when aspect <= source_aspect, else even(source_height * aspect); height = even(width / aspect)",
+      "when": "a delivery aspect differs from the source and nothing may be lost"
+    },
+    "FILL": {
+      "changes": "frame aspect ratio",
+      "keeps": "the centre of the picture (scaled to cover, centre-cropped); edges are lost",
+      "target": "same rule as FIT",
+      "when": "a delivery aspect differs from the source and a full frame matters more than the edges"
+    },
+    "rules": [
+      "a source whose rotation metadata is ±90 / 270 is measured with width and height swapped (as the engine does)",
+      "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)",
+      "CONCAT: params.width x params.height, else the first input's frame floored to even",
+      "no operation stretches (distorts) the picture; anamorphic output is not provided",
+      "the normalized target frame is reported in plan.steps[].normalized and execution.operations[].normalized and verified on the output exactly"
+    ]
+  },
+  "media_policy": {
+    "refused_before_execution": [
+      "source with no video stream (audio-only files, corrupt containers): INVALID_INPUT no_video_stream",
+      "video source without a duration (a still image or a broken container declared as video): INVALID_INPUT no_duration",
+      "image source that does not decode to a frame: INVALID_INPUT image_undecodable",
+      "OVERLAY on a video input without an audio stream: INVALID_INPUT audio_required (ffmpeg-skill 0.9.x overlay never terminates on it)",
+      "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
+      "unsupported input extension / output container: UNSUPPORTED_FORMAT",
+      "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
+      "engine tool / encoder / filter missing: TOOL_ERROR (not retryable)"
+    ],
+    "normalized_by_skill": [
+      "times in any accepted form -> exact rational seconds",
+      "target frame of RESIZE / FIT / FILL / CONCAT (frame_semantics)",
+      "target duration of SPEED (input duration / factor)",
+      "encoding profile -> typed engine flags (crf, preset)",
+      "audio expectation per operation (kept / added / none)"
+    ],
+    "delegated_to_engine": [
+      "scaling, padding, cropping filters and their exact pixel maths",
+      "constant-frame-rate conform of variable-frame-rate sources (a warning is reported)",
+      "resampling, silence insertion and stereo layout in CONCAT",
+      "HDR sources encoded HEVC 10-bit (the output codec is hevc; a warning is reported)",
+      "audio codec / bitrate / sample rate (AAC 192 kb/s)",
+      "keyframe snapping for precision keyframe TRIM / CUT"
+    ],
+    "by_stream": {
+      "video_only": "TRIM / CUT / SPEED / FIT / FILL / RESIZE / CONCAT: allowed; the output has no audio stream (validated). OVERLAY: refused (audio_required)",
+      "video_and_audio": "all operations; the audio stream is kept (validated)",
+      "audio_only": "refused as a source (no_video_stream); audio-only editing is not provided",
+      "image": "OVERLAY.params.image only (png / jpg, alpha respected); an image in a video slot is DEPENDENCY_ERROR kind_mismatch",
+      "mixed_audio_presence_in_concat": "allowed; the engine inserts silence for the inputs without audio and the output has audio (validated)",
+      "different_resolution_in_concat": "allowed; conformed by params.mode to the normalized frame",
+      "different_frame_rate_in_concat": "allowed; conformed to params.fps or the first input's rate",
+      "variable_frame_rate": "allowed; conformed to constant fps by the engine (warning)",
+      "hdr": "allowed alone (output hevc, warning); not mixed with SDR in CONCAT",
+      "rotation_metadata": "honoured: the frame is measured as displayed"
+    }
   }
 }

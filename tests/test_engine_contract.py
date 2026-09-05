@@ -203,10 +203,8 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class PreExecutionAndResponseTests(unittest.TestCase):
-    """With the fake engine: media compatibility and engine gaps are refused before any tool runs, a stale reuse
-    candidate is re-validated and re-run, a failure marks the operations after it as skipped, and every document the
-    CLI prints passes the response self-check (contract shape)."""
+class FakeEngineHarness(unittest.TestCase):
+    """A fake ffmpeg-skill checkout plus a workspace with the standard fixtures; every CLI document is self-checked."""
 
     @classmethod
     def setUpClass(cls):
@@ -246,6 +244,12 @@ class PreExecutionAndResponseTests(unittest.TestCase):
         """Tools the fake engine ran (every call writes its argv into the output file; probes leave no file)."""
         work = os.path.join(self.ws, ".video-editing", "work")
         return sorted(f for _, _, fs in os.walk(work) for f in fs) if os.path.isdir(work) else []
+
+
+class PreExecutionAndResponseTests(FakeEngineHarness):
+    """With the fake engine: media compatibility and engine gaps are refused before any tool runs, a stale reuse
+    candidate is re-validated and re-run, a failure marks the operations after it as skipped, and every document the
+    CLI prints passes the response self-check (contract shape)."""
 
     def test_overlay_without_audio_refused_before_any_tool_runs(self):
         doc = request(self.sources(), [{"id": "o", "type": "OVERLAY", "input": "NA", "params": {"image": "logo"}}], [{"id": "x", "operation": "o", "path": "out/o.mp4"}])
@@ -367,3 +371,95 @@ class PreExecutionAndResponseTests(unittest.TestCase):
         self.assertEqual(outs["mid"]["timeline"]["duration"]["seconds"], "4.600000")   # 1 + 2 + 2 - 2 * 0.2
         self.assertEqual(outs["x"]["timeline"]["duration"]["seconds"], "9.200000")     # slowed to half speed
         self.assertEqual(outs["x"]["timeline"]["tracks"][1]["kind"], "overlay")
+
+
+class NormalizationEncodingAndPathsTests(FakeEngineHarness):
+    """Fake engine: the normalized frame / encoding reach the engine and the records; HDR and rotation are honoured; unicode
+    and space-laden paths work end to end; a stale partial of an earlier crashed run is swept."""
+
+    def setUp(self):
+        super().setUp()
+        for name in ("hdr.mp4", "rot90.mp4", "wide.mp4", "vfr.mp4"):
+            write_fake_media(os.path.join(self.ws, "in", name))
+
+    def sources(self, bad=False):
+        return super().sources(bad) + [{"id": "HDR", "path": "in/hdr.mp4"}, {"id": "ROT", "path": "in/rot90.mp4"}, {"id": "WIDE", "path": "in/wide.mp4"}, {"id": "VFR", "path": "in/vfr.mp4"}]
+
+    def test_encoding_profile_reaches_the_engine_and_the_records(self):
+        doc = request(self.sources(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}],
+                      [{"id": "x", "operation": "t", "path": "out/t.mp4", "encoding": {"crf": 22, "preset": "veryfast"}}])
+        rc, plan = self.run_(doc, "plan", expect=0)
+        step = plan["plan"]["steps"][0]
+        self.assertEqual((step["arguments"]["crf"], step["arguments"]["preset"], step["encoding"]), (22, "veryfast", {"crf": 22, "preset": "veryfast"}))
+        self.assertEqual(step["normalized"]["encoding"], {"crf": 22, "preset": "veryfast"})
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual((rec["encoding"], rec["parameters"]["crf"], rec["normalized"]["encoding"]["preset"]), ({"crf": 22, "preset": "veryfast"}, 22, "veryfast"))
+        self.assertEqual(rec["probe"]["video"]["encoding"], {"crf": 22, "preset": "veryfast"}, "the fake engine recorded what it was asked")
+        self.assertEqual(out["execution"]["outputs"][0]["observation"]["data"]["video"]["encoding"]["crf"], 22)
+        self.assertEqual(out["project"]["outputs"][0]["encoding"], {"crf": 22, "preset": "veryfast"})
+        # a different profile is a different artifact; the same profile is reused
+        rc, again = self.run_(dict(doc, options={"overwrite": True}), expect=0)
+        self.assertEqual(again["status"], "reused")
+        other = dict(doc, options={"overwrite": True})
+        other["project"]["outputs"][0]["encoding"] = {"crf": 20, "preset": "veryfast"}
+        rc, third = self.run_(other, expect=0)
+        self.assertEqual(third["status"], "completed")
+        self.assertNotEqual(third["execution"]["operations"][0]["operation_id"], rec["operation_id"])
+        # no profile: no flags, engine defaults reported as normalized
+        plain = request(self.sources(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}], [{"id": "x", "operation": "t", "path": "out/p.mp4"}])
+        rc, out = self.run_(plain, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertNotIn("crf", rec["parameters"])
+        self.assertEqual(rec["normalized"]["encoding"], {"crf": 18, "preset": "medium"})
+        self.assertIsNone(rec["encoding"])
+
+    def test_normalized_frames_hdr_and_rotation(self):
+        doc = request(self.sources(), [{"id": "r", "type": "RESIZE", "input": "ROT", "params": {"width": 180}},
+                                       {"id": "f", "type": "FIT", "input": "WIDE", "params": {"aspect": "9:16"}},
+                                       {"id": "h", "type": "CUT", "input": "HDR", "params": {"keep": [{"start": 0, "end": 1}]}},
+                                       {"id": "v", "type": "SPEED", "input": "VFR", "params": {"factor": 2}}],
+                      [{"id": "o1", "operation": "r", "path": "out/r.mp4"}, {"id": "o2", "operation": "f", "path": "out/f.mp4"},
+                       {"id": "o3", "operation": "h", "path": "out/h.mp4"}, {"id": "o4", "operation": "v", "path": "out/v.mp4"}])
+        rc, out = self.run_(doc, expect=0)
+        recs = {r["operation"]: r for r in out["execution"]["operations"]}
+        self.assertEqual((recs["r"]["normalized"]["source_frame"], recs["r"]["normalized"]["target_frame"]), ([360, 640], [180, 320]))
+        self.assertEqual(recs["f"]["normalized"]["target_frame"], [1280, 2276])
+        self.assertEqual((recs["h"]["normalized"]["hdr"], recs["h"]["normalized"]["video_codec"], recs["h"]["probe"]["video"]["codec"]), (True, "hevc", "hevc"))
+        self.assertEqual(recs["v"]["normalized"]["target_duration"]["seconds"], "1.000000")
+        self.assertTrue(any("HDR" in w for w in out["warnings"]) and any("variable-frame-rate" in w for w in out["warnings"]), out["warnings"])
+        srcs = {s["id"]: s for s in out["execution"]["sources"]}
+        self.assertEqual(srcs["ROT"]["observation"]["data"]["video"]["rotation"], 90)
+        self.setUp()   # a fresh workspace: nothing may run for the refused request
+        mixed = request(self.sources(), [{"id": "c", "type": "CONCAT", "inputs": ["HDR", "A"], "params": {}}], [{"id": "o", "operation": "c", "path": "out/c.mp4"}])
+        rc, out = self.run_(mixed, expect=EXIT_CODES["INVALID_INPUT"])
+        self.assertEqual(out["error"]["details"]["reason"], "hdr_mismatch")
+        self.assertEqual(self.calls(), [], "refused before any tool ran")
+
+    def test_unicode_and_space_paths_end_to_end(self):
+        sub = os.path.join(self.ws, "素材 テスト", "sub dir")
+        os.makedirs(sub)
+        write_fake_media(os.path.join(sub, "クリップ (1) [final].mp4"))
+        write_fake_media(os.path.join(sub, "ロゴ é.png"))
+        doc = request([{"id": "A", "path": "素材 テスト/sub dir/クリップ (1) [final].mp4"}, {"id": "logo", "path": "素材 テスト/sub dir/ロゴ é.png", "kind": "image"}],
+                      [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}, {"id": "o", "type": "OVERLAY", "input": "t", "params": {"image": "logo"}}],
+                      [{"id": "x", "operation": "o", "path": "出力 dir/最終 版 (v2).mp4"}])
+        rc, out = self.run_(doc, expect=0)
+        path = out["execution"]["outputs"][0]["path"]
+        self.assertTrue(path.endswith("最終 版 (v2).mp4") and os.path.isfile(path))
+        self.assertTrue(out["execution"]["operations"][1]["commands"][0].endswith(".mp4"))
+        rc, out = self.run_(dict(doc, options={"overwrite": True}), expect=0)
+        self.assertEqual(out["status"], "reused")
+
+    def test_stale_partial_from_a_crashed_run_is_swept(self):
+        doc = request(self.sources(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}], [{"id": "x", "operation": "t", "path": "out/t.mp4"}])
+        rc, plan = self.run_(doc, "plan", expect=0)
+        op_id = plan["plan"]["steps"][0]["operation_id"]
+        work = os.path.join(self.ws, ".video-editing", "work")
+        os.makedirs(work, exist_ok=True)
+        stale = os.path.join(work, f"{op_id}.partial.99999.mp4")
+        with open(stale, "wb") as fh:
+            fh.write(b"stale")
+        rc, out = self.run_(doc, expect=0)
+        self.assertFalse(os.path.exists(stale), "a partial of the same operation from another pid is removed before running")
+        self.assertEqual(out["status"], "completed")

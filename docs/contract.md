@@ -16,6 +16,10 @@ schema, skill_id, version, operations, unsupported, errors, execution, capabilit
 
 plus, per ToolSpec in `tools[]`: `tool_id, skill_id, version, operation_type, capability, required_capabilities,
 inputs, input_arity, produces_output, deterministic, result_keys, executed_by, kind`, and the list of tool ids itself.
+video-production-agent's adapter additionally compares `request_shape`, `response_shape`, `engine`, `formats`,
+`capability_names` and `tools[].parameters` / `writes_media` verbatim (`versioning.also_pinned_by_agents`), so those
+are treated as pinned too: an optional request field such as `outputs[].encoding` is documented in its own block
+(`contract.encoding.request_field`) and folded into `request_shape` only with the next version.
 
 A change inside any of them is a **breaking contract change**:
 
@@ -52,6 +56,14 @@ Removing a key, or changing the meaning of an existing one, is breaking even out
   `drift.compatibility` is `none`, `additive` or `breaking`. Any drift fails the check: the golden copy is
   regenerated on purpose (`video-editing contract --json > tests/contract/contract.json`), reviewed in the same
   change, and the classification tells the reviewer whether agents must re-pin.
+
+## 0.2.0 (planned; docs/decisions.md ADR-002 / ADR-003 / ADR-004)
+
+`versioning.next["0.2.0"]` lists the breaking changes queued for the next version: `RESIZE.height` (exactly one of
+width / height), `outputs[].encoding` in `request_shape`, `CROP` and `IMAGE_INSERT` once ffmpeg-skill ships typed
+tools for them. `FREEZE`, `REVERSE` and `POSITION` are not planned. Until then 0.1.x grows only additively:
+`media_compatibility`, `media_policy`, `frame_semantics`, `encoding`, `graph`, `validation`, `doctor_shape`,
+`versioning`, `tools[].media`, and the richer execution report.
 
 ## What an agent may rely on
 

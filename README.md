@@ -26,13 +26,16 @@ Provided (capabilities are declared only where an implementation exists):
 | `video.transition` | `CONCAT` with `params.transition` (xfade family) | `ffmpeg-skill/join` |
 | `video.reorder` | order of `CONCAT.inputs` / `CUT.keep` | — |
 | `video.speed` | `SPEED` constant factor 1/4 … 4, pitch-preserved audio | `ffmpeg-skill/fit` |
-| `video.fit` | `FIT` letterbox / pillarbox into an aspect ratio | `ffmpeg-skill/fit` |
-| `video.fill` | `FILL` centre-crop into an aspect ratio | `ffmpeg-skill/fit` |
-| `video.resize` | `RESIZE` scale to a width | `ffmpeg-skill/fit` |
+| `video.fit` | `FIT` change the aspect, keep every pixel (letterbox / pillarbox with `pad_color`) | `ffmpeg-skill/fit` |
+| `video.fill` | `FILL` change the aspect, keep the centre (scale to cover, centre-crop) | `ffmpeg-skill/fit` |
+| `video.resize` | `RESIZE` change the size, keep the aspect (`width`, height follows; nothing padded / cropped / stretched) | `ffmpeg-skill/fit` |
 | `video.overlay` | `OVERLAY` still image at a position for a time range | `ffmpeg-skill/overlay` |
 
 Plus: timeline assembly (segments with source and timeline ranges, a second track for overlays), deterministic
-operation identity, dry run, reuse of identical earlier results, output validation, provenance.
+operation identity, dry run, reuse of identical earlier results, output validation, provenance, an optional typed
+encoding profile per output (`crf`, `preset`; everything else is fixed by the engine and reported), exact frame
+normalization for RESIZE / FIT / FILL / CONCAT before execution, and a media policy that says what is refused,
+normalized or delegated. Design records: [docs/decisions.md](docs/decisions.md).
 
 ## Non-goals
 
@@ -121,7 +124,9 @@ without invalidating the agent's snapshot.
 - `operations[]`: `id` (label), `type` (allowlist), `input` (single-input types) or `inputs` (`CONCAT`), `params`
   (see `contract.operations`). `OVERLAY.params.image` names an image source.
 - `outputs[].path`: **relative to the workspace**, `.mp4 .mov .mkv`; never an input, never an existing file unless
-  `options.overwrite`.
+  `options.overwrite`. `outputs[].encoding` (optional): `{"crf": 14..28, "preset": "ultrafast" … "veryslow"}` for the
+  operation that produces the output (see `contract.encoding`; codec, bitrate modes, audio, pixel format are fixed
+  by ffmpeg-skill and reported, not configured).
 - `options`: `timeout_seconds` (per tool call, 1..86400, default 3600), `overwrite`, `reuse`.
 - The workspace, the allowed input roots and the ffmpeg-skill location are **CLI flags / environment**, not
   request fields.
@@ -225,15 +230,32 @@ One request document on stdin (`-`) or a file, **exactly one** JSON document on 
 | `CANCELLED` | 130 | yes | SIGINT / SIGTERM or `timeout_seconds` |
 | `INTERNAL_ERROR` | 1 | no | a bug; still one JSON document, never a traceback on stdout |
 
+## RESIZE, FIT, FILL and the encoding profile
+
+The three frame operations never overlap (`contract.frame_semantics`, ADR-003): `RESIZE` changes the size and keeps
+the aspect (`width`, `height = even(width × sh / sw)`); `FIT` changes the aspect and keeps every pixel (padded);
+`FILL` changes the aspect and keeps the centre (cropped). FIT / FILL without `width` keep the source width when the
+target aspect is not wider than the source, else `even(sh × aspect)`; `even()` is ffmpeg-skill's rule (round, then up
+to even). The target frame is computed from the probed source *before* execution, reported as
+`normalized.target_frame` in plan steps and operation records, and the output must match it exactly. Rotation
+metadata (a display matrix) is honoured; nothing is ever stretched.
+
+`outputs[].encoding` is the whole encoding surface: `crf` (14..28) and `preset` (x264 vocabulary minus placebo),
+typed and closed, part of the operation's identity, refused where a stream copy would ignore it. Codec (h264, or hevc
+for HDR sources), audio (AAC 192 kb/s), pixel format and container are the engine's and are reported in
+`normalized.encoding` / `normalized.video_codec` (ADR-004).
+
 ## Operation graph and media compatibility
 
 Requests are graphs: a source or an operation's result may feed several operations, `CONCAT` takes several
 inputs, several outputs may be delivered from one request. Cycles, unknown references, duplicates, orphans and
 slot mismatches are refused before anything runs; so is media an operation cannot take (every source is probed
 first: a video needs a video stream and a duration, an image must decode; `OVERLAY` needs a video input with an
-audio stream because ffmpeg-skill 0.9.x's overlay never terminates without one) and an engine tool / encoder /
-filter that ffmpeg-skill's doctor reports missing. After each operation the output is validated against what the
-request and the inputs imply (frame size / aspect / width, frame rate, audio presence, duration). Full tables:
+audio stream because ffmpeg-skill 0.9.x's overlay never terminates without one; HDR and SDR are never joined) and an
+engine tool / encoder / filter that ffmpeg-skill's doctor reports missing. VFR sources (conformed to CFR) and HDR
+sources (encoded HEVC) are reported as warnings. After each operation the output is validated against the
+normalized expectation (frame, codec, frame rate, audio presence, duration). `contract.media_policy` states per
+situation whether it is refused, normalized by the Skill or delegated to the engine (ADR-005). Full tables:
 [docs/operations.md](docs/operations.md).
 
 ## Security
@@ -253,8 +275,10 @@ The chain request → operation → execution → engine → output is traceable
 `execution.engine` (which ffmpeg-skill, where, which tools), `execution.sources[]` (every source with its sha256 and
 its OBSERVED probe), `execution.operations[]` and `execution.outputs[]`. Every operation record carries `skill`,
 `skill_version`, `tool`, `tool_versions` (ffmpeg-skill, ffmpeg, ffprobe), `operation_id`, `type`, `capability`,
-`inputs[].sha256` (or upstream `operation_id`), `output.sha256`, `parameters` (the exact flags), `commands` (the
-ffmpeg command lines ffmpeg-skill ran — recorded for audit, never an API to replay them), `started_at`,
+`inputs[].sha256` (or upstream `operation_id`), `depends_on`, `output.sha256`, `params` (canonical request
+parameters), `normalized` (target frame / fps / duration, audio expectation, codec, encoding), `encoding`,
+`parameters` (the exact engine flags), `commands` (the ffmpeg command lines ffmpeg-skill ran — recorded for audit,
+never an API to replay them), `started_at`,
 `finished_at`, `status` (`completed`, `reused`, `failed`, `skipped`). Every output carries its `sha256`, `size`,
 `container`, `reused`, its `timeline` (which source range became which timeline range, at what speed) and an
 `observation` of kind `media.probe` marked **`OBSERVED`** with source `ffmpeg-skill/probe@<version>`. Request
@@ -266,7 +290,8 @@ values are reported under `project`, never as observations.
   the sha256 of its bytes and an operation's identity is its `operation_id`. Labels, list order, path strings,
   timestamps and time notation (`"1:30"` vs `{"frames": 2700, "fps": 30}`) do not change it; a changed byte or
   parameter changes it and everything downstream.
-- `idempotency_key = sha256(operation_id, tool, tool versions, skill version, container)`.
+- `idempotency_key = sha256(operation_id, tool, tool versions, skill version, container[, encoding])`; an encoding
+  profile is part of `operation_id` too, only when one was asked for.
 - Intermediates live in `<workspace>/.video-editing/work/<operation_id>.<ext>` with a record; a later run whose
   key, size and hash match re-validates them (probe, duration, frame, audio) and reuses them (`status: "reused"`,
   `execution.reused: true`, `outputs[].reused`); a candidate that no longer validates is run again.
@@ -329,7 +354,12 @@ VIDEO_EDITING_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill python -m unittest -v test_
   long, corrupt input, still image as video, timeout → `CANCELLED`, doctor; and one real-media E2E per operation
   (`CUT`, `CONCAT`, `CONCAT` with a silent input, `SPEED`, `RESIZE`, `FIT`, `FILL`, `OVERLAY`) asserting file
   existence, size, sha256, duration, streams, frame and timeline, the overlay-without-audio and corrupt-image
-  refusals, a cut → speed → resize → overlay chain with two outputs and full reuse, and doctor availability.
+  refusals, a cut → speed → resize → overlay chain with two outputs and full reuse, and doctor availability; and the
+  media matrix (A video-only through every single-input operation, B video + audio, C mixed audio in both orders,
+  D different resolutions, E different frame rates, F a 0.5 s clip, G a 30 s clip with an encoding profile and
+  profile-driven reuse / re-run, H unicode paths, I space-containing paths, J a two-chain graph joined by CONCAT,
+  K exact reuse and invalidation, L audio-only / image-as-video, M invalid graphs, N traversal and escapes, O a
+  truncated file) plus exact frame targets, a real rotated source and an HDR source (hevc, never mixed).
   Fixtures are generated with ffmpeg lavfi at test time; the suite asserts sources are byte-identical afterwards.
 
 CI (`.github/workflows/tests.yml`, on pull requests, pushes to main and manually): lint (ruff, mypy, compileall,
@@ -362,8 +392,9 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 
 - Operations beyond ffmpeg-skill 0.9.x: `CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION` are not implemented.
 - `OVERLAY` needs a video input with an audio stream (ffmpeg-skill 0.9.x limitation, refused up front).
-- `FIT` / `FILL` without `width` and `RESIZE` leave the exact frame to ffmpeg-skill (the width is kept, the height
-  follows); only the aspect / width is promised and validated.
+- The encoding surface is `crf` + `preset`; codec, bitrate modes, audio and pixel format are the engine's.
+- Real rotation metadata (a display matrix) is honoured; a legacy `rotate` tag is ignored by ffmpeg ≥ 5 and therefore
+  by this Skill's probe-based normalization (the frame is then the stored one).
 - One video track plus image overlays; no picture-in-picture of video, no audio-only sources, no per-track audio.
 - Encoding parameters are ffmpeg-skill's defaults (x264 CRF 18 medium, AAC 192k; HDR sources become HEVC 10-bit).
   A `keyframe` precision `TRIM` / `CUT` may stream-copy and land on a keyframe (tolerance 1.5 s in validation).
@@ -376,7 +407,7 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 
 ## Future extensions
 
-Pixel `CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT` once ffmpeg-skill (or an equivalent typed engine) provides
-them (a new operation type is a breaking contract change: 0.2.0); explicit encoding profiles per output; audio
-tracks and video-on-video layers; an `OVERLAY` that tolerates silent inputs once ffmpeg-skill's overlay terminates
-on them.
+Contract 0.2.0 (ADR-002, `contract.versioning.next`): `CROP` (pixel rectangle) and `IMAGE_INSERT` (still → timed
+clip) once ffmpeg-skill provides typed tools; `RESIZE.height`; `outputs[].encoding` folded into `request_shape`.
+Not planned: `FREEZE` (compose from IMAGE_INSERT), `REVERSE`, `POSITION` (would extend OVERLAY with a video layer).
+Also: an `OVERLAY` that tolerates silent inputs once ffmpeg-skill's overlay terminates on them.

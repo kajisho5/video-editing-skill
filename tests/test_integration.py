@@ -392,3 +392,295 @@ class OperationE2ETests(unittest.TestCase):
         self.assertEqual(sorted(rep["supported_operations"]), ["CONCAT", "CUT", "FILL", "FIT", "OVERLAY", "RESIZE", "SPEED", "TRIM"])
         self.assertTrue(rep["engine"]["capabilities_reported"])
         self.assertEqual(rep["engine"]["version"], FFMPEG_SKILL.version)
+
+
+@unittest.skipUnless(READY, REASON)
+class MediaMatrixE2ETests(unittest.TestCase):
+    """Real-media matrix (contract.media_policy, frame_semantics, encoding): A video-only, B video+audio, C mixed audio,
+    D different resolutions, E different frame rates, F short clip, G longer clip, H unicode path, I space-containing
+    path, J multi-operation graph, K reuse, L invalid media, M invalid graph, N path traversal, O broken input; plus
+    exact frame normalization, rotation metadata, HDR sources and the encoding profile. Every document is self-checked;
+    every delivered file is checked for existence, size, hash, duration, streams, frame and provenance."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-matrix-")
+        media = os.path.join(cls.root, "media")
+        cls.media = build_all(media)
+        ff = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+
+        def run(*args):
+            subprocess.run([*ff, *args], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        cls.media["na"] = os.path.join(media, "noaudio.mp4")
+        run("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "4", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", cls.media["na"])
+        cls.media["long"] = os.path.join(media, "long.mp4")
+        run("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000", "-t", "30",
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.media["long"])
+        cls.media["audio_only"] = os.path.join(media, "audio_only.mp4")
+        run("-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "3", "-c:a", "aac", cls.media["audio_only"])
+        cls.media["rot90"] = os.path.join(media, "rot90.mp4")
+        run("-display_rotation", "90", "-i", cls.media["a"], "-c", "copy", cls.media["rot90"])   # a real display matrix (a `rotate` tag is ignored by ffmpeg >= 5)
+        cls.media["hdr"] = os.path.join(media, "hdr.mp4")
+        run("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "3",
+            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc",
+            "-c:a", "aac", cls.media["hdr"])
+        cls.media["broken"] = os.path.join(media, "broken.mp4")
+        with open(cls.media["a"], "rb") as src, open(cls.media["broken"], "wb") as dst:
+            dst.write(src.read()[: os.path.getsize(cls.media["a"]) * 3 // 5])
+        uni = os.path.join(media, "素材 テスト", "sub dir")
+        os.makedirs(uni)
+        cls.media["unicode"] = os.path.join(uni, "クリップ (1) [final].mp4")
+        shutil.copyfile(cls.media["a"], cls.media["unicode"])
+        cls.media["unicode_logo"] = os.path.join(uni, "ロゴ é.png")
+        shutil.copyfile(cls.media["logo"], cls.media["unicode_logo"])
+        cls.media["spaces"] = os.path.join(media, "in dir", "clip with spaces.mp4")
+        os.makedirs(os.path.dirname(cls.media["spaces"]))
+        shutil.copyfile(cls.media["b"], cls.media["spaces"])
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.before = {k: sha256_file(v) for k, v in cls.media.items()}
+
+    @classmethod
+    def tearDownClass(cls):
+        for k, v in cls.media.items():
+            assert sha256_file(v) == cls.before[k], f"fixture {k} was modified"
+
+    def setUp(self):
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+
+    def src(self, key, sid, kind="video"):
+        return {"id": sid, "path": self.media[key], "kind": kind} if kind != "video" else {"id": sid, "path": self.media[key]}
+
+    def run_cli(self, cmd, doc, expect=0, roots=None):
+        from video_editing_skill.response import check_response
+        roots = roots or [os.path.join(self.root, "media")]
+        argv = [cmd, "-", "--json", "--workspace", self.ws]
+        for r in roots:
+            argv += ["--allowed-input", r]
+        rc, out, err = cli(argv, stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        self.assertEqual(check_response(out, cmd), [], out)
+        self.assertEqual(rc, expect, json.dumps(out.get("error"), indent=1) + err)
+        return out
+
+    def facts(self, out, oid, expected_duration, frame=None, audio=None, tol=0.35):
+        o = next(x for x in out["execution"]["outputs"] if x["id"] == oid)
+        path = o["path"]
+        self.assertTrue(o["delivered"] and os.path.isfile(path) and os.path.getsize(path) > 0)
+        self.assertEqual((o["size"], o["sha256"]), (os.path.getsize(path), sha256_file(path)))
+        self.assertAlmostEqual(float(o["timeline"]["duration"]["seconds"]), expected_duration, delta=0.001)
+        self.assertAlmostEqual(duration(path), expected_duration, delta=tol)
+        streams = probe(path)["streams"]
+        if frame is not None:
+            self.assertEqual(size(path), frame)
+        if audio is not None:
+            self.assertEqual(any(s["codec_type"] == "audio" for s in streams), audio)
+        rec = next(r for r in out["execution"]["operations"] if r["operation"] == o["operation"])
+        self.assertIn(rec["status"], ("completed", "reused"))
+        self.assertEqual(rec["output"]["sha256"], sha256_file(rec["output"]["path"]))
+        self.assertIsNotNone(rec["normalized"])
+        if frame is not None:
+            self.assertEqual(rec["normalized"]["target_frame"], list(frame))
+        return path, streams, rec
+
+    # A / B / C ---------------------------------------------------------------
+    def test_A_video_only_through_every_single_input_operation(self):
+        ops = [{"id": "c", "type": "CUT", "input": "NA", "params": {"keep": [{"start": 0, "end": 1}, {"start": 3, "end": 4}]}},
+               {"id": "s", "type": "SPEED", "input": "c", "params": {"factor": 2}},
+               {"id": "f", "type": "FILL", "input": "s", "params": {"aspect": "1:1"}},
+               {"id": "r", "type": "RESIZE", "input": "f", "params": {"width": 320}}]
+        doc = request([self.src("na", "NA")], ops, [{"id": "o", "operation": "r", "path": "out/o.mp4"}, {"id": "mid", "operation": "c", "path": "out/c.mp4"}])
+        out = self.run_cli("run", doc)
+        self.facts(out, "mid", 2.0, (640, 360), audio=False)
+        self.facts(out, "o", 1.0, (320, 320), audio=False)
+        self.assertTrue(all(r["normalized"]["audio"] is False for r in out["execution"]["operations"]))
+
+    def test_B_video_and_audio_keep_the_audio(self):
+        doc = request([self.src("a", "A")], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 1, "end": 3}}], [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        out = self.run_cli("run", doc)
+        path, streams, rec = self.facts(out, "o", 2.0, (640, 360), audio=True)
+        self.assertEqual(rec["normalized"]["audio"], True)
+        self.assertEqual(rec["normalized"]["video_codec"], "h264")
+
+    def test_C_mixed_audio_presence_in_concat_both_orders(self):
+        for order, frame in ((["A", "NA"], (640, 360)), (["NA", "B"], (640, 360))):
+            self.setUp()
+            doc = request([self.src("a", "A"), self.src("na", "NA"), self.src("b", "B")], [{"id": "c", "type": "CONCAT", "inputs": order, "params": {}}],
+                          [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
+            out = self.run_cli("run", doc)
+            expected = {"A": 6.0, "NA": 4.0, "B": 5.0}
+            self.facts(out, "o", sum(expected[x] for x in order), frame, audio=True, tol=0.6)
+
+    # D / E ---------------------------------------------------------------------
+    def test_D_different_resolutions_conform_to_the_first_input(self):
+        for order, frame in ((["A", "B"], (640, 360)), (["B", "A"], (1280, 720))):
+            self.setUp()
+            doc = request([self.src("a", "A"), self.src("b", "B")], [{"id": "c", "type": "CONCAT", "inputs": order, "params": {"transition": {"type": "fade", "duration": 0.5}}}],
+                          [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
+            out = self.run_cli("run", doc)
+            self.facts(out, "o", 10.5, frame, audio=True, tol=0.6)
+
+    def test_E_different_frame_rates(self):
+        doc = request([self.src("a", "A"), self.src("b", "B")], [{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}], [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
+        out = self.run_cli("run", doc)
+        path, streams, rec = self.facts(out, "o", 11.0, (640, 360), audio=True, tol=0.6)
+        video = next(s for s in streams if s["codec_type"] == "video")
+        self.assertEqual(video["r_frame_rate"], "30/1", "the first input's rate")
+        self.setUp()
+        doc["project"]["operations"][0]["params"] = {"fps": 25}
+        out = self.run_cli("run", doc)
+        path, streams, rec = self.facts(out, "o", 11.0, (640, 360), audio=True, tol=0.6)
+        self.assertEqual(next(s for s in streams if s["codec_type"] == "video")["r_frame_rate"], "25/1")
+        self.assertEqual(rec["normalized"]["target_fps"], 25.0)
+
+    # F / G ---------------------------------------------------------------------
+    def test_F_short_clip_then_overlay(self):
+        doc = request([self.src("a", "A"), self.src("logo", "logo", "image")],
+                      [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 1, "end": 1.5}}, {"id": "o", "type": "OVERLAY", "input": "t", "params": {"image": "logo"}}],
+                      [{"id": "x", "operation": "o", "path": "out/x.mp4"}])
+        out = self.run_cli("run", doc)
+        self.facts(out, "x", 0.5, (640, 360), audio=True, tol=0.2)
+
+    def test_G_longer_clip_with_encoding_profile(self):
+        doc = request([self.src("long", "L")], [{"id": "c", "type": "CUT", "input": "L", "params": {"keep": [{"start": 2, "end": 28}]}}],
+                      [{"id": "o", "operation": "c", "path": "out/o.mp4", "encoding": {"crf": 24, "preset": "veryfast"}}])
+        out = self.run_cli("run", doc)
+        path, streams, rec = self.facts(out, "o", 26.0, (640, 360), audio=True)
+        self.assertTrue(any("-crf 24" in c and "-preset veryfast" in c for c in rec["commands"]), rec["commands"])
+        self.assertEqual((rec["encoding"], rec["normalized"]["encoding"]), ({"crf": 24, "preset": "veryfast"}, {"crf": 24, "preset": "veryfast"}))
+        self.assertEqual(next(s for s in streams if s["codec_type"] == "video")["codec_name"], "h264")
+        again = self.run_cli("run", dict(doc, options={"overwrite": True}))
+        self.assertEqual(again["status"], "reused")
+        other = dict(doc, options={"overwrite": True})
+        other["project"]["outputs"][0]["encoding"] = {"crf": 28, "preset": "veryfast"}
+        third = self.run_cli("run", other)
+        self.assertEqual(third["status"], "completed")
+        self.assertNotEqual(third["execution"]["operations"][0]["operation_id"], rec["operation_id"])
+        self.assertTrue(any("-crf 28" in c for c in third["execution"]["operations"][0]["commands"]))
+        self.assertLess(third["execution"]["outputs"][0]["size"], out["execution"]["outputs"][0]["size"], "crf 28 is smaller than crf 24 at the same preset")
+
+    # H / I ---------------------------------------------------------------------
+    def test_H_unicode_paths(self):
+        doc = request([self.src("unicode", "A"), self.src("unicode_logo", "logo", "image")],
+                      [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}, {"id": "o", "type": "OVERLAY", "input": "t", "params": {"image": "logo"}}],
+                      [{"id": "x", "operation": "o", "path": "出力/最終 版 (v2).mp4"}])
+        out = self.run_cli("run", doc)
+        path, streams, rec = self.facts(out, "x", 1.0, (640, 360), audio=True)
+        self.assertTrue(path.endswith(os.path.join("出力", "最終 版 (v2).mp4")))
+        self.assertTrue(any("クリップ" in c for c in out["execution"]["operations"][0]["commands"]))
+
+    def test_I_space_containing_paths(self):
+        doc = request([self.src("spaces", "B")], [{"id": "r", "type": "RESIZE", "input": "B", "params": {"width": 300}}], [{"id": "x", "operation": "r", "path": "out dir/final version.mp4"}])
+        out = self.run_cli("run", doc)
+        self.facts(out, "x", 5.0, (300, 170), audio=True)
+
+    # J / K ---------------------------------------------------------------------
+    def test_J_multi_operation_graph_with_concat_of_two_chains(self):
+        doc = request([self.src("a", "A"), self.src("b", "B"), self.src("logo", "logo", "image")],
+                      [{"id": "ta", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 2}},
+                       {"id": "tb", "type": "TRIM", "input": "B", "params": {"start": 0, "end": 2}},
+                       {"id": "fb", "type": "FIT", "input": "tb", "params": {"aspect": "16:9", "width": 640}},
+                       {"id": "c", "type": "CONCAT", "inputs": ["ta", "fb"], "params": {"transition": {"type": "fade", "duration": 0.5}}},
+                       {"id": "s", "type": "SPEED", "input": "c", "params": {"factor": "1/2"}},
+                       {"id": "o", "type": "OVERLAY", "input": "s", "params": {"image": "logo", "position": "bottom-right", "start": 0, "end": 2}}],
+                      [{"id": "x", "operation": "o", "path": "out/x.mp4"}, {"id": "m", "operation": "c", "path": "out/c.mp4"}])
+        plan = self.run_cli("plan", doc)
+        self.assertEqual([s["operation"] for s in plan["plan"]["steps"]], ["ta", "tb", "fb", "c", "s", "o"])
+        self.assertEqual(next(s for s in plan["plan"]["steps"] if s["operation"] == "fb")["normalized"]["target_frame"], [640, 360])
+        out = self.run_cli("run", doc)
+        self.facts(out, "m", 3.5, (640, 360), audio=True, tol=0.5)
+        self.facts(out, "x", 7.0, (640, 360), audio=True, tol=0.6)
+        recs = {r["operation"]: r for r in out["execution"]["operations"]}
+        self.assertEqual(recs["c"]["depends_on"], ["ta", "fb"])
+        self.assertEqual({i["ref"]: i["operation_id"] for i in recs["c"]["inputs"]}, {"ta": recs["ta"]["operation_id"], "fb": recs["fb"]["operation_id"]})
+
+    def test_K_reuse_is_exact_and_invalidates_on_change(self):
+        doc = request([self.src("a", "A")], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 2}}, {"id": "r", "type": "RESIZE", "input": "t", "params": {"width": 320}}],
+                      [{"id": "x", "operation": "r", "path": "out/x.mp4"}], {"overwrite": True})
+        first = self.run_cli("run", doc)
+        second = self.run_cli("run", doc)
+        self.assertEqual((second["status"], second["execution"]["reused"]), ("reused", True))
+        self.assertEqual([o["sha256"] for o in second["execution"]["outputs"]], [o["sha256"] for o in first["execution"]["outputs"]])
+        self.assertEqual([r["operation_id"] for r in second["execution"]["operations"]], [r["operation_id"] for r in first["execution"]["operations"]])
+        doc["project"]["operations"][0]["params"]["end"] = 3
+        third = self.run_cli("run", doc)
+        self.assertEqual([r["status"] for r in third["execution"]["operations"]], ["completed", "completed"], "a changed upstream parameter invalidates the chain")
+        self.facts(third, "x", 3.0, (320, 180), audio=True)
+
+    # L / M / N / O -------------------------------------------------------------
+    def test_L_invalid_media(self):
+        doc = request([self.src("audio_only", "A")], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}], [{"id": "x", "operation": "t", "path": "out/x.mp4"}])
+        out = self.run_cli("run", doc, expect=3)
+        self.assertEqual((out["error"]["code"], out["error"]["details"]["reason"]), ("INVALID_INPUT", "no_video_stream"))
+        doc = request([self.src("logo", "L")], [{"id": "t", "type": "TRIM", "input": "L", "params": {"start": 0, "end": 1}}], [{"id": "x", "operation": "t", "path": "out/x.mp4"}])
+        out = self.run_cli("run", doc, expect=6)
+        self.assertEqual(out["error"]["code"], "UNSUPPORTED_FORMAT")
+
+    def test_M_invalid_graph_runs_nothing(self):
+        srcs = [self.src("a", "A")]
+        cases = [
+            ([{"id": "x", "type": "TRIM", "input": "y", "params": {"start": 0, "end": 1}}, {"id": "y", "type": "SPEED", "input": "x", "params": {"factor": 2}}], "cycle"),
+            ([{"id": "x", "type": "TRIM", "input": "ghost", "params": {"start": 0, "end": 1}}], "unknown_reference"),
+            ([{"id": "x", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}, {"id": "y", "type": "SPEED", "input": "A", "params": {"factor": 2}}], "unused_operation"),
+        ]
+        for ops, reason in cases:
+            doc = request(srcs, ops, [{"id": "o", "operation": "x", "path": "out/o.mp4"}])
+            out = self.run_cli("run", doc, expect=9)
+            self.assertEqual((out["error"]["code"], out["error"]["details"]["reason"]), ("DEPENDENCY_ERROR", reason))
+        self.assertFalse(os.path.exists(os.path.join(self.ws, ".video-editing")), "nothing ran, nothing was written")
+
+    def test_N_path_traversal_and_escapes(self):
+        secret = os.path.join(self.root, "secret.mp4")
+        shutil.copyfile(self.media["a"], secret)
+        base = [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}]
+        for src_path, reason in ((os.path.join(self.root, "media", "..", "secret.mp4"), "traversal"), (secret, "outside_allowed_roots")):
+            out = self.run_cli("run", request([{"id": "A", "path": src_path}], base, [{"id": "o", "operation": "t", "path": "out/o.mp4"}]), expect=4)
+            self.assertEqual((out["error"]["code"], out["error"]["details"]["reason"]), ("PATH_NOT_ALLOWED", reason))
+        for out_path, reason in (("../escape.mp4", "traversal"), (os.path.join(self.root, "abs.mp4"), "absolute_output"), (self.media["a"], "absolute_output")):
+            out = self.run_cli("run", request([self.src("a", "A")], base, [{"id": "o", "operation": "t", "path": out_path}]), expect=4)
+            self.assertEqual((out["error"]["code"], out["error"]["details"]["reason"]), ("PATH_NOT_ALLOWED", reason))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "escape.mp4")))
+
+    def test_O_broken_input_is_a_structured_failure(self):
+        doc = request([self.src("broken", "X")], [{"id": "t", "type": "TRIM", "input": "X", "params": {"start": 0, "end": 5}}], [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        rc, out, err = cli(["run", "-", "--json", "--workspace", self.ws, "--allowed-input", os.path.join(self.root, "media")], stdin=json.dumps(doc).encode(), env=self.env)
+        from video_editing_skill.response import check_response
+        self.assertIsInstance(out, dict, err)
+        self.assertEqual(check_response(out, "run"), [], out)
+        self.assertFalse(out["ok"])
+        self.assertIn(out["error"]["code"], ("INVALID_INPUT", "INVALID_TIME_RANGE", "TOOL_ERROR", "VALIDATION_ERROR"))
+        self.assertNotEqual(rc, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
+        work = os.path.join(self.ws, ".video-editing", "work")
+        self.assertEqual([f for _, _, fs in os.walk(work) for f in fs if ".partial" in f] if os.path.isdir(work) else [], [])
+
+    # frame semantics / rotation / HDR --------------------------------------------
+    def test_frame_targets_are_exact(self):
+        cases = [({"type": "RESIZE", "input": "A", "params": {"width": 250}}, "a", (250, 142)),
+                 ({"type": "RESIZE", "input": "B", "params": {"width": 300}}, "b", (300, 170)),
+                 ({"type": "FIT", "input": "A", "params": {"aspect": "21:9"}}, "a", (840, 360)),
+                 ({"type": "FILL", "input": "A", "params": {"aspect": "4:3", "width": 334}}, "a", (334, 250)),
+                 ({"type": "FIT", "input": "B", "params": {"aspect": "9:16"}}, "b", (1280, 2276)),
+                 ({"type": "FILL", "input": "A", "params": {"aspect": "1:1"}}, "a", (640, 640))]
+        for op, key, frame in cases:
+            self.setUp()
+            doc = request([{"id": op["input"], "path": self.media[key]}], [dict(op, id="x")], [{"id": "o", "operation": "x", "path": "out/o.mp4"}])
+            out = self.run_cli("run", doc)
+            self.facts(out, "o", 6.0 if key == "a" else 5.0, frame, audio=True)
+
+    def test_rotation_metadata_is_measured_as_displayed(self):
+        doc = request([self.src("rot90", "R")], [{"id": "r", "type": "RESIZE", "input": "R", "params": {"width": 180}}], [{"id": "o", "operation": "r", "path": "out/o.mp4"}])
+        out = self.run_cli("run", doc)
+        path, streams, rec = self.facts(out, "o", 6.0, (180, 320), audio=True)
+        self.assertEqual(rec["normalized"]["source_frame"], [360, 640])
+
+    def test_hdr_source_is_encoded_hevc_and_never_mixed(self):
+        doc = request([self.src("hdr", "H")], [{"id": "t", "type": "TRIM", "input": "H", "params": {"start": 0, "end": 2}}], [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        out = self.run_cli("run", doc)
+        path, streams, rec = self.facts(out, "o", 2.0, (640, 360), audio=True)
+        self.assertEqual(next(s for s in streams if s["codec_type"] == "video")["codec_name"], "hevc")
+        self.assertEqual((rec["normalized"]["hdr"], rec["normalized"]["video_codec"]), (True, "hevc"))
+        self.assertTrue(any("HDR" in w for w in out["warnings"]))
+        self.setUp()
+        mixed = request([self.src("hdr", "H"), self.src("a", "A")], [{"id": "c", "type": "CONCAT", "inputs": ["H", "A"], "params": {}}], [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
+        out = self.run_cli("run", mixed, expect=3)
+        self.assertEqual(out["error"]["details"]["reason"], "hdr_mismatch")

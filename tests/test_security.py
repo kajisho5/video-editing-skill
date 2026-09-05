@@ -282,3 +282,72 @@ class InjectionTests(unittest.TestCase):
         self.refused(self.doc({"keep": [{"start": 0, "end": 1, "x": 1}]}, t="CUT"))
         self.refused(self.doc({"image": "logo"}, t="FREEZE"), "UNSUPPORTED_OPERATION")
         self.refused(self.doc({"image": "logo"}, t="overlay"), "UNSUPPORTED_OPERATION")
+
+
+class ArgvAuditTests(unittest.TestCase):
+    """Every argv token this skill hands to ffmpeg-skill is a flag from the allowlist, a closed-vocabulary word, a number /
+    time / range / ratio, or a resolved path. There is no token a request string can shape freely: argument injection
+    through typed parameters is impossible by construction, and this test pins it for every operation type."""
+
+    FLAG = re.compile(r"^--[a-z][a-z-]*(=-?[0-9.,/:-]+)?$")
+    VALUE = re.compile(r"^-?[0-9]+(\.[0-9]+)?(/[0-9]+)?$|^[0-9.]+-[0-9.]+(,[0-9.]+-[0-9.]+)*$|^[0-9]+:[0-9]+$|^-?[0-9]+,-?[0-9]+$|^[a-z][a-z-]*$|^0x[0-9A-Fa-f]{6}$")
+
+    def test_every_token_is_typed(self):
+        from video_editing_skill.compiler import ALLOWED_FLAGS, compile_operation
+        from video_editing_skill.operations import validate_encoding, validate_params
+        from video_editing_skill.project import EditOperation
+        from video_editing_skill.timebase import Time
+        samples = {
+            "TRIM": {"start": "0:01.5", "end": {"frames": 90, "fps": "30000/1001"}, "precision": "frame"},
+            "CUT": {"keep": [{"start": 4, "end": 5.25}, {"start": "1:00", "end": "1:02.5"}], "precision": "keyframe"},
+            "CONCAT": {"transition": {"type": "wipeleft", "duration": 0.75}, "width": 1920, "height": 1080, "fps": "30000/1001", "mode": "crop", "pad_color": "0xA0B0C0"},
+            "SPEED": {"factor": "3/2"},
+            "FIT": {"aspect": "9:16", "width": 1080, "pad_color": "white", "fps": 25},
+            "FILL": {"aspect": "4:5", "width": 1080},
+            "RESIZE": {"width": 1280, "fps": "24000/1001"},
+            "OVERLAY": {"image": "logo", "position": {"x": -10, "y": 10}, "margin": 0, "scale": 200, "opacity": 0.5, "start": 1, "end": 2, "fade": 0.5},
+        }
+        paths = {"a": "/媒体 media/clip 1.mp4", "b": "/媒体 media/clip 2.mp4", "logo": "/媒体 media/logo (1).png", "out": "/ws/out dir/o.mp4"}
+        for t, params in samples.items():
+            op = EditOperation("x", t, ["a", "b", "logo"] if t == "CONCAT" else (["a", "logo"] if t == "OVERLAY" else ["a"]), validate_params(t, params, t))
+            op.encoding = validate_encoding({"crf": 20, "preset": "veryfast"}, "e") if t != "CUT" else None
+            step = compile_operation(op)
+            argv = step.argv_for([paths["a"], paths["b"]] if t == "CONCAT" else [paths["a"]], paths["out"], paths["logo"] if t == "OVERLAY" else None, Time.parse(10))
+            allowed = {"--" + f.replace("_", "-") for f in ALLOWED_FLAGS[step.script]} | {"-o"}
+            for tok in argv:
+                if tok in paths.values():
+                    continue
+                if tok.startswith("-"):
+                    self.assertTrue(self.FLAG.match(tok) or tok == "-o", (t, tok))
+                    self.assertIn(tok.split("=", 1)[0], allowed, (t, tok))
+                else:
+                    self.assertTrue(self.VALUE.match(tok), (t, tok))
+            self.assertNotIn("--filter", " ".join(argv))
+            self.assertNotIn("--filter-complex", " ".join(argv))
+
+    def test_child_environment_is_an_allowlist(self):
+        from video_editing_skill.ffmpeg_skill import clean_env
+        poisoned = {"LD_PRELOAD": "/evil.so", "DYLD_INSERT_LIBRARIES": "/evil.dylib", "PYTHONPATH": "/evil", "PYTHONSTARTUP": "/evil.py", "FFMPEG_BINARY": "/evil",
+                    "VIDEO_EDITING_FFMPEG_SKILL_DIR": "/evil", "AV_LOG_FORCE_COLOR": "1", "HTTP_PROXY": "http://x", "AWS_SECRET_ACCESS_KEY": "s", "PATH": os.environ.get("PATH", "/usr/bin")}
+        saved = dict(os.environ)
+        try:
+            os.environ.update(poisoned)
+            env = clean_env()
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        for k in poisoned:
+            if k != "PATH":
+                self.assertNotIn(k, env, k)
+        self.assertEqual(env["PYTHONUTF8"], "1")
+        self.assertIn("PATH", env)
+
+    def test_encoding_profile_cannot_smuggle_flags(self):
+        ws = make_workspace()
+        write_fake_media(os.path.join(ws, "in", "a.mp4"))
+        for enc in ({"preset": "medium -tune film"}, {"preset": "medium;id"}, {"crf": "18 --preset ultrafast"}, {"crf": 18, "x264opts": "x"}, {"filter": "x"}, {"codec": "libx265"}):
+            doc = request([{"id": "A", "path": "in/a.mp4"}], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}],
+                          [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": enc}])
+            rc, out, err = cli(["validate", "-", "--json", "--workspace", ws], stdin=json.dumps(doc).encode(), env={"VIDEO_EDITING_FFMPEG_SKILL_DIR": "/nonexistent"})
+            self.assertIsInstance(out, dict, err)
+            self.assertEqual(out["error"]["code"], "INVALID_REQUEST", enc)

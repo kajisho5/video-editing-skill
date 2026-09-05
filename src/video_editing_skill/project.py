@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Set
 from . import REQUEST_SCHEMA
 from .canonical import sha256_file, stable_hash
 from .errors import EditError
-from .operations import FORBIDDEN_KEYS, OPERATIONS, params_to_json, validate_params
+from .operations import FORBIDDEN_KEYS, OPERATIONS, params_to_json, validate_encoding, validate_params
 from .paths import IMAGE_EXTENSIONS, OUTPUT_EXTENSIONS, VIDEO_EXTENSIONS, PathPolicy
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -53,6 +53,7 @@ class EditOperation:
     operation_id: str = ""
     depends_on: List[str] = field(default_factory=list)   # operation refs only
     source_refs: List[str] = field(default_factory=list)  # every source reachable upstream
+    encoding: Optional[Dict[str, Any]] = None             # profile asked for by the output(s) this operation produces
 
     @property
     def tool(self) -> str:
@@ -63,9 +64,12 @@ class EditOperation:
         return OPERATIONS[self.type]["capability"]
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"id": self.ref, "operation_id": self.operation_id, "type": self.type, "capability": self.capability, "tool": self.tool,
-                "inputs": list(self.inputs), "params": params_to_json(self.params), "depends_on": list(self.depends_on),
-                "sources": list(self.source_refs)}
+        d = {"id": self.ref, "operation_id": self.operation_id, "type": self.type, "capability": self.capability, "tool": self.tool,
+             "inputs": list(self.inputs), "params": params_to_json(self.params), "depends_on": list(self.depends_on),
+             "sources": list(self.source_refs)}
+        if self.encoding:
+            d["encoding"] = dict(self.encoding)
+        return d
 
 
 @dataclass
@@ -74,9 +78,13 @@ class EditOutput:
     operation: str
     raw_path: str
     path: str
+    encoding: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"id": self.ref, "operation": self.operation, "path": self.path}
+        d: Dict[str, Any] = {"id": self.ref, "operation": self.operation, "path": self.path}
+        if self.encoding:
+            d["encoding"] = dict(self.encoding)
+        return d
 
 
 @dataclass
@@ -268,13 +276,22 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
     for i, raw in enumerate(_list(proj["outputs"], "project.outputs", MAX_OUTPUTS)):
         what = f"project.outputs[{i}]"
         o = _obj(raw, what)
-        _keys(o, what, ("id", "operation", "path"), ("id", "operation", "path"))
+        _keys(o, what, ("id", "operation", "path", "encoding"), ("id", "operation", "path"))
         ref = _ref(o["id"], what + ".id")
         if ref in outputs:
             raise EditError("INVALID_REQUEST", f"{what}: duplicate output id {ref!r}")
         op_ref = _ref(o["operation"], what + ".operation")
         if op_ref not in ops:
             raise EditError("DEPENDENCY_ERROR", f"{what}: unknown operation {op_ref!r}", {"reason": "unknown_reference"})
+        encoding = validate_encoding(o["encoding"], what + ".encoding") if o.get("encoding") is not None else None
+        if encoding is not None:
+            producer = ops[op_ref]
+            if producer.type in ("TRIM", "CUT") and producer.params.get("precision") == "keyframe":
+                raise EditError("INVALID_REQUEST", f"{what}.encoding: {producer.type} with precision keyframe may stream-copy and ignore a profile; use precision frame",
+                                {"reason": "encoding_needs_reencode"})
+            if producer.encoding is not None and producer.encoding != encoding:
+                raise EditError("DEPENDENCY_ERROR", f"{what}: operation {op_ref!r} is asked for two different encoding profiles", {"reason": "conflicting_encodings"})
+            producer.encoding = encoding
         raw_path = o["path"]
         if not isinstance(raw_path, str):
             raise EditError("INVALID_REQUEST", f"{what}.path: must be a string")
@@ -284,7 +301,7 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
         if os.path.normcase(path) in seen_paths:
             raise EditError("DEPENDENCY_ERROR", f"{what}: two outputs share the path", {"reason": "conflicting_outputs"})
         seen_paths.add(os.path.normcase(path))
-        outputs[ref] = EditOutput(ref, op_ref, raw_path, path)
+        outputs[ref] = EditOutput(ref, op_ref, raw_path, path, encoding)
     if not outputs:
         raise EditError("INVALID_REQUEST", "project.outputs: at least one output is required")
 
@@ -301,11 +318,15 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
     if orphans:
         raise EditError("DEPENDENCY_ERROR", f"operations {orphans} do not lead to any output", {"reason": "unused_operation"})
 
-    # ---- deterministic ids (inputs first, so identity chains through the graph)
+    # ---- deterministic ids (inputs first, so identity chains through the graph); an encoding profile is part of the
+    # identity only when one was asked for, so every id of a request without profiles is unchanged
     for ref in order:
         op = ops[ref]
         ident = [sources[r].identity if r in sources else ops[r].operation_id for r in op.inputs]
-        op.operation_id = "op_" + stable_hash({"type": op.type, "params": params_to_json(op.params), "inputs": ident})[:16]
+        key: Dict[str, Any] = {"type": op.type, "params": params_to_json(op.params), "inputs": ident}
+        if op.encoding:
+            key["encoding"] = dict(op.encoding)
+        op.operation_id = "op_" + stable_hash(key)[:16]
 
     return EditProject(project_id, sources, ops, order, outputs, options, policy, warnings)
 

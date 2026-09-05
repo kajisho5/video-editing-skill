@@ -10,7 +10,8 @@ from typing import Any, Dict, List
 from . import CONTRACT_SCHEMA, DOCTOR_SCHEMA, PACKAGE_NAME, PLAN_SCHEMA, REQUEST_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
 from .errors import DEFAULT_RETRYABLE, ERROR_CODES, EXIT_CODES
 from .ffmpeg_skill import REQUIRED_TOOLS, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
-from .operations import FORBIDDEN_KEYS, MEDIA, OPERATIONS, POSITIONS, TRANSITIONS, capability_list, media_compatibility, unsupported_list
+from .operations import (ENCODING, FORBIDDEN_KEYS, FRAME_SEMANTICS, MEDIA, MEDIA_POLICY, OPERATIONS, POSITIONS, TRANSITIONS, capability_list,
+                         media_compatibility, unsupported_list)
 from .paths import IMAGE_EXTENSIONS, OUTPUT_EXTENSIONS, VIDEO_EXTENSIONS
 
 # Contract versioning (documented in docs/contract.md). Agents pin a snapshot of this document and compare these blocks
@@ -138,5 +139,14 @@ def skill_contract() -> Dict[str, Any]:
         "versioning": {"version": VERSION, "pinned_blocks": list(PINNED_BLOCKS),
                        "rule": "a change inside a pinned block is breaking: bump the version (0.x: minor) and expect agents to re-pin; new keys outside them "
                                "(top level or inside tools[]) are additive and allowed within the same version; the golden copy tests/contract/contract.json "
-                               "is regenerated deliberately in the same change, and `contract --check` classifies every difference as breaking or additive"},
+                               "is regenerated deliberately in the same change, and `contract --check` classifies every difference as breaking or additive",
+                       "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
+                       "next": {"0.2.0": ["RESIZE: `height` as the alternative to `width` (exactly one of the two)",
+                                         "request_shape: `outputs[].encoding` folded into the documented shape (accepted since 0.1.0 as an optional key)",
+                                         "CROP (pixel rectangle) once ffmpeg-skill provides a typed crop tool", "IMAGE_INSERT (still -> timed clip) once ffmpeg-skill provides a typed tool",
+                                         "FREEZE / REVERSE / POSITION: not planned (see docs/decisions.md ADR-002)"]}},
+        # ---- 0.1.x additive blocks: encoding profile, frame semantics, media policy (docs/decisions.md ADR-003 .. ADR-005)
+        "encoding": ENCODING,
+        "frame_semantics": FRAME_SEMANTICS,
+        "media_policy": MEDIA_POLICY,
     }

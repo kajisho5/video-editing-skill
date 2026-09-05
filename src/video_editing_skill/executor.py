@@ -17,7 +17,7 @@ from .canonical import sha256_file, stable_hash
 from .compiler import Step, compile_project, output_extension
 from .errors import EditError
 from .ffmpeg_skill import FfmpegSkill, cancelled, missing_capabilities, probe, run_tool, tool_error
-from .operations import MEDIA
+from .operations import ENCODING_DEFAULTS, MEDIA, even, params_to_json
 from .project import EditProject
 from .timebase import Time
 from .timeline import Clip, build_timelines
@@ -132,43 +132,110 @@ class Executor:
         if rec is not None:
             return self._profile_of_doc(rec["probe"], "OBSERVED")
         op = self.project.operations[ref]
-        p = op.params
         first = self.profile(op.inputs[0])
-        prof: Dict[str, Any] = {"audio": first["audio"], "width": first["width"], "height": first["height"], "fps": first["fps"], "provenance": "EXPECTED"}
+        prof: Dict[str, Any] = {"audio": first["audio"], "width": first["width"], "height": first["height"], "fps": first["fps"],
+                                "hdr": first["hdr"], "vfr": False, "provenance": "EXPECTED"}
         if op.type == "CONCAT":
             ins = [self.profile(r) for r in op.inputs]
             audios = [i["audio"] for i in ins]
             prof["audio"] = True if any(a is True for a in audios) else (False if all(a is False for a in audios) else None)
-            if "width" in p and "height" in p:
-                prof["width"], prof["height"] = p["width"], p["height"]
-            if "fps" in p:
-                prof["fps"] = float(p["fps"])
-        elif op.type in ("FIT", "FILL"):
-            aw, ah = (int(x) for x in p["aspect"].split(":"))
-            if "width" in p:
-                prof["width"], prof["height"] = p["width"], _even_height(p["width"], aw, ah)
-            else:   # the engine picks the frame from the source; only the aspect is promised (checked on the output)
-                prof["width"] = prof["height"] = None
-            if "fps" in p:
-                prof["fps"] = float(p["fps"])
-        elif op.type == "RESIZE":
-            prof["width"], prof["height"] = p["width"], None   # height follows the source aspect inside the engine
-            if "fps" in p:
-                prof["fps"] = float(p["fps"])
+        frame = self.target_frame(ref)
+        if frame is not None:
+            prof["width"], prof["height"] = frame
+        fps = self.target_fps(ref)
+        if fps is not None:
+            prof["fps"] = fps
         return prof
+
+    # ------------------------------------------------------------ normalization (frame_semantics)
+    def target_frame(self, ref: str) -> Optional[tuple]:
+        """The frame an operation must deliver, computed before execution from its parameters and the (measured or expected)
+        input frame with ffmpeg-skill's own rule; None when it is the input's frame (TRIM / CUT / SPEED / OVERLAY) and that is
+        not known yet."""
+        op = self.project.operations[ref]
+        p = op.params
+        first = self.profile(op.inputs[0])
+        sw, sh = first["width"], first["height"]
+        if op.type == "CONCAT":
+            if "width" in p and "height" in p:
+                return (p["width"], p["height"])
+            if sw and sh:
+                return (sw - (sw % 2), sh - (sh % 2))
+            return None
+        if op.type == "RESIZE":
+            if sw and sh:
+                return (even(p["width"]), even(p["width"] * sh / sw))
+            return (even(p["width"]), None)
+        if op.type in ("FIT", "FILL"):
+            aw, ah = (int(x) for x in p["aspect"].split(":"))
+            ratio = aw / ah
+            if "width" in p:
+                w = even(p["width"])
+            elif sw and sh:
+                w = even(sw if ratio <= sw / sh else sh * ratio)
+            else:
+                return None
+            return (w, even(w / ratio))
+        return (sw, sh) if sw and sh else None
+
+    def target_fps(self, ref: str) -> Optional[float]:
+        op = self.project.operations[ref]
+        if "fps" in op.params:
+            return float(op.params["fps"])
+        return None
+
+    def normalized(self, ref: str) -> Dict[str, Any]:
+        """Normalized parameters: what the request means once the sources are measured (frame_semantics, SPEED duration, audio
+        expectation, encoding). Reported in plan steps and execution records; verified on the output."""
+        op = self.project.operations[ref]
+        first = self.profile(op.inputs[0])
+        frame = self.target_frame(ref)
+        clip = self.clips.get(ref)
+        d: Dict[str, Any] = {"params": params_to_json(op.params),
+                             "source_frame": [first["width"], first["height"]] if first["width"] and first["height"] else None,
+                             "target_frame": [frame[0], frame[1]] if frame and frame[0] and frame[1] else None,
+                             "target_fps": self.target_fps(ref),
+                             "target_duration": clip.duration.to_dict() if clip is not None and clip.duration is not None else None,
+                             "audio": self.profile_expected_audio(op),
+                             "hdr": first["hdr"],
+                             "video_codec": "hevc" if first["hdr"] else ("h264" if first["hdr"] is False else None),
+                             "encoding": {**ENCODING_DEFAULTS, **(op.encoding or {})} if self._reencodes(op) else None}
+        return d
+
+    @staticmethod
+    def _reencodes(op) -> bool:
+        return not (op.type in ("TRIM", "CUT") and op.params.get("precision") == "keyframe")
 
     @staticmethod
     def _profile_of_doc(doc: Optional[Dict[str, Any]], provenance: str) -> Dict[str, Any]:
+        """A probe document as a profile. A source whose rotation metadata is ±90 / 270 is measured with width and height
+        swapped, exactly as ffmpeg-skill's fit.py / join.py do before they compute a target frame."""
         size = _size_of(doc)
+        v = (doc or {}).get("video") or {}
+        if size and v.get("rotation") in (90, -90, 270, -270):
+            size = (size[1], size[0])
         return {"audio": _has_audio(doc), "width": size[0] if size else None, "height": size[1] if size else None, "fps": _fps_of(doc),
+                "hdr": bool(v.get("hdr")) if doc else None, "vfr": bool(v.get("variable_frame_rate_suspected")) if doc else None,
                 "provenance": provenance if doc else None}
 
     def _check_media(self) -> None:
-        """Refuse, before any tool runs, every input the operation cannot take (operations.MEDIA)."""
+        """Refuse, before any tool runs, every input the operation cannot take (operations.MEDIA, contract.media_policy); warn
+        about what the engine will convert on its own (VFR conform, HDR -> HEVC)."""
+        for ref in sorted(self.project.sources):
+            prof = self.profile(ref)
+            if prof.get("vfr"):
+                self.project.warnings.append(f"source {ref!r} looks variable-frame-rate; ffmpeg-skill conforms it to constant fps")
+            if prof.get("hdr"):
+                self.project.warnings.append(f"source {ref!r} is HDR; ffmpeg-skill encodes it as HEVC 10-bit (output codec hevc)")
         for ref in self.project.order:
             op = self.project.operations[ref]
             req = MEDIA[op.type]["requires"]
             video_inputs = op.inputs[:-1] if op.type == "OVERLAY" else op.inputs
+            if op.type == "CONCAT":
+                hdrs = {r: self.profile(r).get("hdr") for r in video_inputs}
+                if any(h is True for h in hdrs.values()) and any(h is False for h in hdrs.values()):
+                    raise EditError("INVALID_INPUT", f"operation {ref!r} (CONCAT): HDR and SDR inputs cannot be joined (the engine encodes from the first input's colour system)",
+                                    {"operation": ref, "inputs": hdrs, "reason": "hdr_mismatch"})
             for r in video_inputs:
                 prof = self.profile(r)
                 if req["audio"] and prof["audio"] is False:
@@ -215,8 +282,11 @@ class Executor:
     def _compute_keys(self) -> None:
         for ref in self.project.order:
             op = self.project.operations[ref]
-            self.keys[ref] = stable_hash({"operation_id": op.operation_id, "tool": op.tool, "tool_versions": self.tool_versions,
-                                          "skill_version": VERSION, "container": output_extension(self.project, ref)})
+            key: Dict[str, Any] = {"operation_id": op.operation_id, "tool": op.tool, "tool_versions": self.tool_versions,
+                                   "skill_version": VERSION, "container": output_extension(self.project, ref)}
+            if op.encoding:
+                key["encoding"] = dict(op.encoding)
+            self.keys[ref] = stable_hash(key)
 
     # ------------------------------------------------------------ plan
     def plan(self, preview: bool = True) -> Dict[str, Any]:
@@ -225,6 +295,9 @@ class Executor:
             st = self.steps[ref]
             d: Dict[str, Any] = st.to_dict()
             d["idempotency_key"] = self.keys.get(ref)
+            d["normalized"] = self.normalized(ref) if self.source_probes else None
+            enc = self.project.operations[ref].encoding
+            d["encoding"] = dict(enc) if enc else None
             d["timeline"] = self.clips[ref].to_dict() if ref in self.clips else None
             d["intermediate"] = os.path.join(self.work, self.project.operations[ref].operation_id + output_extension(self.project, ref))
             d["reusable"] = self._reusable(ref) is not None
@@ -363,6 +436,7 @@ class Executor:
         _remove(partial)
         _remove(final)
         _remove(os.path.join(self.work, op.operation_id + ".json"))
+        self._sweep_partials(op.operation_id)
         argv = self._argv(ref)
         self.log(f"run {ref}: {st.tool}")
         run = run_tool(self.skill, st.script, argv, timeout=self.project.options.timeout_seconds)
@@ -387,6 +461,17 @@ class Executor:
         os.replace(tmp, os.path.join(self.work, op.operation_id + ".json"))
         self.produced[ref] = final
         self.results.append(self._record(op, st, "completed", t0, final, digest, doc, run.commands, run.seconds))
+
+    def _sweep_partials(self, operation_id: str) -> None:
+        """Partial files of this operation left by a crashed earlier process (any pid). One run per workspace at a time is
+        the rule; a partial of the same operation is never a live one of another run."""
+        try:
+            names = os.listdir(self.work)
+        except OSError:
+            return
+        for name in names:
+            if name.startswith(operation_id + ".partial.") or name == operation_id + ".json.partial":
+                _remove(os.path.join(self.work, name))
 
     def _validate(self, ref: str, path: str) -> Dict[str, Any]:
         """Output validation: exists, non-empty, readable, probe says video + duration, duration as expected."""
@@ -424,20 +509,24 @@ class Executor:
         v = doc["video"]
         got = (int(v["width"]), int(v["height"]))
         first = self.profile(op.inputs[0])
-        exp = self._expected_size(op)
-        if exp and got != exp:
-            raise EditError("VALIDATION_ERROR", f"{what}: frame {got[0]}x{got[1]} is not the requested {exp[0]}x{exp[1]}",
-                            {"observed": list(got), "expected": list(exp), "reason": "frame_size"})
-        if op.type in ("FIT", "FILL") and not exp:
+        target = self.target_frame(op.ref)
+        if target and target[0] and target[1]:
+            if got != tuple(target):
+                raise EditError("VALIDATION_ERROR", f"{what}: frame {got[0]}x{got[1]} is not the normalized target {target[0]}x{target[1]}",
+                                {"observed": list(got), "expected": list(target), "reason": "frame_size"})
+        elif op.type in ("FIT", "FILL"):
             aw, ah = (int(x) for x in p["aspect"].split(":"))
             if abs(got[1] - got[0] * ah / aw) > ASPECT_TOLERANCE_PX:
                 raise EditError("VALIDATION_ERROR", f"{what}: frame {got[0]}x{got[1]} is not at the requested aspect {p['aspect']}",
                                 {"observed": list(got), "expected": p["aspect"], "reason": "aspect"})
-        if op.type == "RESIZE" and got[0] != p["width"]:
+        elif op.type == "RESIZE" and got[0] != even(p["width"]):
             raise EditError("VALIDATION_ERROR", f"{what}: width {got[0]} is not the requested {p['width']}", {"observed": list(got), "reason": "frame_size"})
-        if op.type in ("TRIM", "CUT", "SPEED", "OVERLAY") and first["width"] and first["height"] and got != (first["width"], first["height"]):
-            raise EditError("VALIDATION_ERROR", f"{what}: frame {got[0]}x{got[1]} differs from the input {first['width']}x{first['height']}",
-                            {"observed": list(got), "expected": [first["width"], first["height"]], "reason": "frame_size"})
+        codec = str(v.get("codec") or "")
+        if first.get("hdr") is not None and self._reencodes(op):
+            want = "hevc" if first["hdr"] else "h264"
+            if codec and codec != want:
+                raise EditError("VALIDATION_ERROR", f"{what}: video codec {codec} is not the engine's {want} for this source",
+                                {"observed": codec, "expected": want, "reason": "codec"})
         fps = _fps_of(doc)
         if "fps" in p and fps is not None and abs(fps - float(p["fps"])) > FPS_TOLERANCE:
             raise EditError("VALIDATION_ERROR", f"{what}: frame rate {fps:g} is not the requested {float(p['fps']):g}",
@@ -451,15 +540,6 @@ class Executor:
             audios = [self.profile(r).get("audio") for r in op.inputs]
             return True if any(a is True for a in audios) else (False if all(a is False for a in audios) else None)
         return self.profile(op.inputs[0]).get("audio")
-
-    def _expected_size(self, op) -> Optional[tuple]:
-        p = op.params
-        if op.type in ("FIT", "FILL") and "width" in p:
-            aw, ah = (int(x) for x in p["aspect"].split(":"))
-            return (p["width"], _even_height(p["width"], aw, ah))
-        if op.type == "CONCAT" and "width" in p and "height" in p:
-            return (p["width"], p["height"])
-        return None
 
     def _deliver(self) -> None:
         for ref in sorted(self.project.outputs):
@@ -504,7 +584,10 @@ class Executor:
                                "sha256": (rec.get("output") or {}).get("sha256") if rec else None})
         rec = {"operation": op.ref, "operation_id": op.operation_id, "type": op.type, "capability": op.capability, "status": status,
                "skill": SKILL_ID, "skill_version": VERSION, "tool": st.tool, "tool_versions": self.tool_versions,
-               "idempotency_key": self.keys.get(op.ref), "parameters": st.to_dict()["arguments"], "inputs": inputs,
+               "idempotency_key": self.keys.get(op.ref), "parameters": st.to_dict()["arguments"],
+               "params": params_to_json(op.params), "encoding": dict(op.encoding) if op.encoding else None,
+               "normalized": self.normalized(op.ref) if self.source_probes else None,
+               "depends_on": list(op.depends_on), "inputs": inputs,
                "output": {"path": path, "sha256": digest} if path else None,
                "probe": doc, "commands": commands, "started_at": started, "finished_at": now_iso(), "seconds": seconds,
                "provenance": "OBSERVED" if doc else None}
@@ -513,11 +596,6 @@ class Executor:
         if note is not None:
             rec["note"] = note
         return rec
-
-
-def _even_height(width: int, aw: int, ah: int) -> int:
-    h = int(round(width * ah / aw))
-    return h + (h % 2)
 
 
 class _Failed(Exception):
