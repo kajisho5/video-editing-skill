@@ -165,6 +165,19 @@
         "mode": "pad | crop (how inputs of another aspect reach the frame)",
         "pad_color": "named colour or 0xRRGGBB"
       },
+      "media": {
+        "inputs": "two or more videos (any sizes / frame rates; conformed by params.mode to params.width/height/fps or the first input)",
+        "requires": {
+          "video": true,
+          "audio": false,
+          "image": false
+        },
+        "output": {
+          "frame_size": "params.width x params.height, else the first input",
+          "fps": "params.fps, else the first input",
+          "audio": "stereo AAC when any input has audio (silence is inserted for inputs without); none when no input has audio"
+        }
+      },
       "produces_output": true,
       "writes_media": true,
       "deterministic": true,
@@ -199,6 +212,19 @@
       "parameters": {
         "keep": "[{start, end}, ...] in output order",
         "precision": "frame | keyframe"
+      },
+      "media": {
+        "inputs": "one video",
+        "requires": {
+          "video": true,
+          "audio": false,
+          "image": false
+        },
+        "output": {
+          "frame_size": "as input",
+          "audio": "as input",
+          "fps": "as input"
+        }
       },
       "produces_output": true,
       "writes_media": true,
@@ -236,6 +262,19 @@
         "width": "even int (optional)",
         "fps": "optional"
       },
+      "media": {
+        "inputs": "one video",
+        "requires": {
+          "video": true,
+          "audio": false,
+          "image": false
+        },
+        "output": {
+          "frame_size": "params.aspect (params.width when given; centre-cropped)",
+          "audio": "as input",
+          "fps": "params.fps or as input"
+        }
+      },
       "produces_output": true,
       "writes_media": true,
       "deterministic": true,
@@ -272,6 +311,19 @@
         "width": "even int (optional)",
         "pad_color": "named colour or 0xRRGGBB",
         "fps": "optional"
+      },
+      "media": {
+        "inputs": "one video",
+        "requires": {
+          "video": true,
+          "audio": false,
+          "image": false
+        },
+        "output": {
+          "frame_size": "params.aspect (params.width when given; padded, nothing cropped)",
+          "audio": "as input",
+          "fps": "params.fps or as input"
+        }
       },
       "produces_output": true,
       "writes_media": true,
@@ -314,6 +366,19 @@
         "end": "time (optional)",
         "fade": "seconds 0..10 (optional)"
       },
+      "media": {
+        "inputs": "one video plus one image source (png / jpg; alpha respected)",
+        "requires": {
+          "video": true,
+          "audio": true,
+          "image": true
+        },
+        "output": {
+          "frame_size": "as input",
+          "audio": "as input",
+          "fps": "as input"
+        }
+      },
       "produces_output": true,
       "writes_media": true,
       "deterministic": true,
@@ -349,6 +414,19 @@
         "width": "even int",
         "fps": "optional"
       },
+      "media": {
+        "inputs": "one video",
+        "requires": {
+          "video": true,
+          "audio": false,
+          "image": false
+        },
+        "output": {
+          "frame_size": "params.width, height by the input aspect (even)",
+          "audio": "as input",
+          "fps": "params.fps or as input"
+        }
+      },
       "produces_output": true,
       "writes_media": true,
       "deterministic": true,
@@ -382,6 +460,20 @@
       "input_arity": "one",
       "parameters": {
         "factor": "number or N/D in [1/4, 4], not 1"
+      },
+      "media": {
+        "inputs": "one video",
+        "requires": {
+          "video": true,
+          "audio": false,
+          "image": false
+        },
+        "output": {
+          "frame_size": "as input",
+          "audio": "as input, pitch preserved (atempo)",
+          "fps": "as input",
+          "duration": "input duration / factor"
+        }
       },
       "produces_output": true,
       "writes_media": true,
@@ -418,6 +510,19 @@
         "start": "time",
         "end": "time (> start)",
         "precision": "frame (default, re-encode) | keyframe (lossless when possible)"
+      },
+      "media": {
+        "inputs": "one video",
+        "requires": {
+          "video": true,
+          "audio": false,
+          "image": false
+        },
+        "output": {
+          "frame_size": "as input",
+          "audio": "as input",
+          "fps": "as input"
+        }
       },
       "produces_output": true,
       "writes_media": true,
@@ -733,5 +838,261 @@
         "path, sha256, timeline, observation"
       ]
     }
+  },
+  "media_compatibility": {
+    "CONCAT": {
+      "inputs": "two or more videos (any sizes / frame rates; conformed by params.mode to params.width/height/fps or the first input)",
+      "requires": {
+        "video": true,
+        "audio": false,
+        "image": false
+      },
+      "output": {
+        "frame_size": "params.width x params.height, else the first input",
+        "fps": "params.fps, else the first input",
+        "audio": "stereo AAC when any input has audio (silence is inserted for inputs without); none when no input has audio"
+      },
+      "refused_before_execution": [
+        "source without a video stream or duration",
+        "an input shorter than twice the transition"
+      ]
+    },
+    "CUT": {
+      "inputs": "one video",
+      "requires": {
+        "video": true,
+        "audio": false,
+        "image": false
+      },
+      "output": {
+        "frame_size": "as input",
+        "audio": "as input",
+        "fps": "as input"
+      },
+      "refused_before_execution": [
+        "source without a video stream or duration",
+        "range beyond the input duration"
+      ]
+    },
+    "FILL": {
+      "inputs": "one video",
+      "requires": {
+        "video": true,
+        "audio": false,
+        "image": false
+      },
+      "output": {
+        "frame_size": "params.aspect (params.width when given; centre-cropped)",
+        "audio": "as input",
+        "fps": "params.fps or as input"
+      },
+      "refused_before_execution": [
+        "source without a video stream or duration"
+      ]
+    },
+    "FIT": {
+      "inputs": "one video",
+      "requires": {
+        "video": true,
+        "audio": false,
+        "image": false
+      },
+      "output": {
+        "frame_size": "params.aspect (params.width when given; padded, nothing cropped)",
+        "audio": "as input",
+        "fps": "params.fps or as input"
+      },
+      "refused_before_execution": [
+        "source without a video stream or duration"
+      ]
+    },
+    "OVERLAY": {
+      "inputs": "one video plus one image source (png / jpg; alpha respected)",
+      "requires": {
+        "video": true,
+        "audio": true,
+        "image": true
+      },
+      "output": {
+        "frame_size": "as input",
+        "audio": "as input",
+        "fps": "as input"
+      },
+      "refused_before_execution": [
+        "source without a video stream or duration",
+        "image that does not decode",
+        "video input without an audio stream: ffmpeg-skill 0.9.x overlay (-loop 1 image, -shortest) never terminates on it",
+        "start / end beyond the input duration"
+      ]
+    },
+    "RESIZE": {
+      "inputs": "one video",
+      "requires": {
+        "video": true,
+        "audio": false,
+        "image": false
+      },
+      "output": {
+        "frame_size": "params.width, height by the input aspect (even)",
+        "audio": "as input",
+        "fps": "params.fps or as input"
+      },
+      "refused_before_execution": [
+        "source without a video stream or duration"
+      ]
+    },
+    "SPEED": {
+      "inputs": "one video",
+      "requires": {
+        "video": true,
+        "audio": false,
+        "image": false
+      },
+      "output": {
+        "frame_size": "as input",
+        "audio": "as input, pitch preserved (atempo)",
+        "fps": "as input",
+        "duration": "input duration / factor"
+      },
+      "refused_before_execution": [
+        "source without a video stream or duration",
+        "factor outside [1/4, 4]"
+      ]
+    },
+    "TRIM": {
+      "inputs": "one video",
+      "requires": {
+        "video": true,
+        "audio": false,
+        "image": false
+      },
+      "output": {
+        "frame_size": "as input",
+        "audio": "as input",
+        "fps": "as input"
+      },
+      "refused_before_execution": [
+        "source without a video stream or duration",
+        "range beyond the input duration"
+      ]
+    }
+  },
+  "graph": {
+    "model": "sources -> operations (DAG) -> outputs; every operation feeds an output; order is topological, ties by id",
+    "refused": [
+      "cycle (DEPENDENCY_ERROR)",
+      "unknown input / operation reference (DEPENDENCY_ERROR)",
+      "duplicate source / operation / output id (INVALID_REQUEST)",
+      "operation that leads to no output (DEPENDENCY_ERROR)",
+      "two outputs on one path (DEPENDENCY_ERROR)",
+      "video slot fed by an image or image slot fed by a video / operation (DEPENDENCY_ERROR)",
+      "unknown operation type (UNSUPPORTED_OPERATION)",
+      "unknown or forbidden key anywhere (INVALID_REQUEST)",
+      "media an operation cannot take (INVALID_INPUT, before execution)",
+      "engine tool / encoder / filter missing (TOOL_ERROR, before execution)"
+    ],
+    "limits": {
+      "sources": 200,
+      "operations": 500,
+      "outputs": 50,
+      "concat_inputs": 100,
+      "cut_ranges": 500
+    },
+    "forbidden_keys": [
+      "command",
+      "commands",
+      "cmd",
+      "argv",
+      "args",
+      "shell",
+      "exec",
+      "executable",
+      "executables",
+      "script",
+      "binary",
+      "filter",
+      "filters",
+      "filter_complex",
+      "filtergraph",
+      "ffmpeg",
+      "ffprobe",
+      "env",
+      "environment",
+      "cwd",
+      "pythonpath",
+      "api_key",
+      "api_token",
+      "token",
+      "secret",
+      "password",
+      "credentials",
+      "workspace",
+      "allowed_input",
+      "allowed_inputs",
+      "allowed_input_roots",
+      "ffmpeg_skill_dir",
+      "engine_dir",
+      "path_policy"
+    ]
+  },
+  "validation": {
+    "before_execution": [
+      "schema and typed parameters",
+      "path policy",
+      "graph",
+      "every source probed by ffmpeg-skill (video: stream + duration; image: decodes)",
+      "ranges against probed durations",
+      "media compatibility (operations.MEDIA)",
+      "engine tools and capabilities (ffmpeg-skill doctor)"
+    ],
+    "after_each_operation": [
+      "file exists, non-empty, readable",
+      "probe: video stream, duration, frame size",
+      "duration within tolerance of the timeline (frame 0.35 s, keyframe 1.5 s)",
+      "frame size / aspect / width as requested, or equal to the input for TRIM / CUT / SPEED / OVERLAY",
+      "frame rate as requested",
+      "audio stream kept when the input(s) had one"
+    ],
+    "on_reuse": "the candidate is re-validated with the same checks (hash, size, probe); a stale record is discarded and the operation runs again",
+    "response": "every document is checked against the response shape before it is printed (self-check); a violation is INTERNAL_ERROR"
+  },
+  "doctor_shape": {
+    "schema": "video-editing/doctor@1",
+    "ok": "bool",
+    "skill": {
+      "id": "video-editing",
+      "version": "0.1.0"
+    },
+    "contract": "schema ids",
+    "engine": "ffmpeg-skill location, version, ffmpeg / ffprobe, missing capabilities",
+    "operations": [
+      {
+        "type": "…",
+        "tool_id": "…",
+        "status": "AVAILABLE | MISSING",
+        "missing": [
+          "what is missing"
+        ]
+      }
+    ],
+    "supported_operations": "types whose status is AVAILABLE (never a guess)",
+    "unsupported": "declared gaps",
+    "checks": "…",
+    "problems": "…"
+  },
+  "versioning": {
+    "version": "0.1.0",
+    "pinned_blocks": [
+      "schema",
+      "skill_id",
+      "version",
+      "operations",
+      "unsupported",
+      "errors",
+      "execution",
+      "capabilities",
+      "schemas"
+    ],
+    "rule": "a change inside a pinned block is breaking: bump the version (0.x: minor) and expect agents to re-pin; new keys outside them (top level or inside tools[]) are additive and allowed within the same version; the golden copy tests/contract/contract.json is regenerated deliberately in the same change, and `contract --check` classifies every difference as breaking or additive"
   }
 }

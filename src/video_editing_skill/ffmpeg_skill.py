@@ -87,7 +87,7 @@ def engine_doctor(skill: FfmpegSkill, timeout: float = 60.0) -> Dict[str, Any]:
     its required capabilities are present. This skill never runs ffmpeg or ffprobe itself, not even for a
     version string; ffmpeg-skill is the only FFmpeg boundary."""
     script = os.path.join(skill.root, "scripts", "_contract.py")
-    result: Dict[str, Any] = {"ffmpeg": None, "ffprobe": None, "ok": False, "missing": [], "detail": None}
+    result: Dict[str, Any] = {"ffmpeg": None, "ffprobe": None, "ok": False, "missing": [], "available": None, "detail": None}
     if not os.path.isfile(script):
         result["detail"] = "ffmpeg-skill has no scripts/_contract.py doctor"
         return result
@@ -104,6 +104,8 @@ def engine_doctor(skill: FfmpegSkill, timeout: float = 60.0) -> Dict[str, Any]:
     result["ffmpeg"] = doc.get("ffmpeg") or None
     result["ffprobe"] = doc.get("ffprobe") or None
     result["missing"] = [m for m in doc.get("missing", []) if isinstance(m, str)]
+    if isinstance(doc.get("available"), list):   # ffmpeg-skill >= 0.9 lists the encoders / filters it found
+        result["available"] = sorted(a for a in doc["available"] if isinstance(a, str))
     result["ok"] = bool(doc.get("ok")) and bool(result["ffmpeg"]) and bool(result["ffprobe"])
     if not result["ok"]:
         result["detail"] = "ffmpeg-skill doctor: missing " + ", ".join(result["missing"] or ["ffmpeg / ffprobe"])
@@ -112,6 +114,21 @@ def engine_doctor(skill: FfmpegSkill, timeout: float = 60.0) -> Dict[str, Any]:
 
 def tool_versions(doctor: Dict[str, Any]) -> Dict[str, Optional[str]]:
     return {"ffmpeg": doctor.get("ffmpeg"), "ffprobe": doctor.get("ffprobe")}
+
+
+def missing_capabilities(doctor: Dict[str, Any], required: List[str]) -> List[str]:
+    """Which of `required` (ffmpeg, ffprobe, encoder:x, filter:y) ffmpeg-skill's doctor did not find. When the doctor lists
+    what is available, absence from that list counts; otherwise only its explicit `missing` entries do."""
+    available = doctor.get("available")
+    missing = set(doctor.get("missing") or [])
+    out = []
+    for cap in required:
+        if cap in ("ffmpeg", "ffprobe"):
+            if not doctor.get(cap):
+                out.append(cap)
+        elif cap in missing or (isinstance(available, list) and cap not in available):
+            out.append(cap)
+    return out
 
 
 def clean_env() -> Dict[str, str]:

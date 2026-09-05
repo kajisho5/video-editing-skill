@@ -208,3 +208,187 @@ class RealMediaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(READY, REASON)
+class OperationE2ETests(unittest.TestCase):
+    """Real ffmpeg-skill + real media, one operation at a time: every delivered file exists, is non-empty, hashes as
+    reported, has the expected duration, streams and frame, and the timeline says where it came from. Every document
+    passes the response self-check. Plus the media-compatibility refusals that protect the engine (an overlay on a
+    video without audio would never terminate in ffmpeg-skill 0.9.x; a corrupt image would too)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-e2e-")
+        cls.media = build_all(os.path.join(cls.root, "media"))
+        na = os.path.join(cls.root, "media", "noaudio.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "4",
+                        "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", na], check=True)
+        cls.media["na"] = na
+        bad = os.path.join(cls.root, "media", "bad.png")
+        with open(bad, "wb") as fh:
+            fh.write(b"corrupt png bytes")
+        cls.media["bad"] = bad
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+
+    def setUp(self):
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+
+    def sources(self, bad=False):
+        m = self.media
+        s = [{"id": "A", "path": m["a"]}, {"id": "B", "path": m["b"]}, {"id": "NA", "path": m["na"]}, {"id": "logo", "path": m["logo"], "kind": "image"}]
+        return s + ([{"id": "bad", "path": m["bad"], "kind": "image"}] if bad else [])
+
+    def run_cli(self, cmd, doc, expect=0):
+        from video_editing_skill.response import check_response
+        rc, out, err = cli([cmd, "-", "--json", "--workspace", self.ws, "--allowed-input", os.path.dirname(self.media["a"])],
+                           stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        self.assertEqual(check_response(out, cmd), [], out)
+        self.assertEqual(rc, expect, json.dumps(out.get("error"), indent=1) + err)
+        return out
+
+    def one(self, op, expect=0, sources=None):
+        doc = request(sources or self.sources(), [dict(op, id="x")], [{"id": "o", "operation": "x", "path": "out/o.mp4"}])
+        return self.run_cli("run", doc, expect)
+
+    def facts(self, out, expected_duration, tol=0.35):
+        """The delivered-file facts every operation must satisfy; returns (path, ffprobe streams)."""
+        o = out["execution"]["outputs"][0]
+        path = o["path"]
+        self.assertTrue(o["delivered"] and os.path.isfile(path))
+        self.assertGreater(os.path.getsize(path), 0)
+        self.assertEqual(o["size"], os.path.getsize(path))
+        self.assertEqual(o["sha256"], sha256_file(path), "the reported hash is the file's hash")
+        self.assertEqual(o["timeline"]["duration_known"], True)
+        self.assertAlmostEqual(float(o["timeline"]["duration"]["seconds"]), expected_duration, delta=0.001)
+        real = duration(path)
+        self.assertAlmostEqual(real, expected_duration, delta=tol, msg=f"duration {real} vs timeline {expected_duration}")
+        self.assertAlmostEqual(float(o["observation"]["data"]["duration"]), real, delta=0.05)
+        self.assertEqual((o["observation"]["kind"], o["observation"]["provenance"]), ("media.probe", "OBSERVED"))
+        self.assertTrue(o["observation"]["source"].startswith("ffmpeg-skill/probe@"))
+        rec = next(r for r in out["execution"]["operations"] if r["operation"] == o["operation"])
+        self.assertEqual(rec["status"], "completed")
+        self.assertTrue(rec["commands"] and all("ffmpeg" in c for c in rec["commands"]), rec["commands"])
+        self.assertEqual(rec["output"]["sha256"], sha256_file(rec["output"]["path"]))
+        self.assertEqual(rec["tool_versions"]["ffmpeg-skill"], FFMPEG_SKILL.version)
+        streams = probe(path)["streams"]
+        video = next(s for s in streams if s["codec_type"] == "video")
+        self.assertEqual(video["codec_name"], "h264")
+        return path, streams
+
+    def has_audio(self, streams):
+        return any(s["codec_type"] == "audio" for s in streams)
+
+    def test_cut(self):
+        out = self.one({"type": "CUT", "input": "A", "params": {"keep": [{"start": 4, "end": 5}, {"start": 1, "end": 2}]}})
+        path, streams = self.facts(out, 2.0)
+        self.assertEqual(size(path), (640, 360))
+        self.assertTrue(self.has_audio(streams))
+        segs = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
+        self.assertEqual([(s["source_range"]["start"]["rational"], s["timeline_range"]["start"]["rational"]) for s in segs], [("4/1", "0/1"), ("1/1", "1/1")])
+
+    def test_concat(self):
+        out = self.one({"type": "CONCAT", "inputs": ["A", "B"], "params": {"width": 640, "height": 360, "fps": 30, "transition": {"type": "fade", "duration": 1}}})
+        path, streams = self.facts(out, 10.0, tol=0.5)
+        self.assertEqual(size(path), (640, 360))
+        self.assertTrue(self.has_audio(streams))
+        segs = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
+        self.assertEqual([s["source"] for s in segs], ["A", "B"])
+        self.assertEqual(segs[1]["timeline_range"]["start"]["rational"], "5/1")   # 6 s clip minus the 1 s overlap
+
+    def test_concat_mixed_audio_gets_audio(self):
+        out = self.one({"type": "CONCAT", "inputs": ["NA", "A"], "params": {"transition": {"type": "none", "duration": 0.5}}}) if False else \
+            self.one({"type": "CONCAT", "inputs": ["NA", "A"], "params": {}})
+        path, streams = self.facts(out, 10.0, tol=0.6)
+        self.assertTrue(self.has_audio(streams), "ffmpeg-skill join inserts silence for the input without audio")
+
+    def test_speed(self):
+        out = self.one({"type": "SPEED", "input": "A", "params": {"factor": 2}})
+        path, streams = self.facts(out, 3.0)
+        self.assertEqual(size(path), (640, 360))
+        self.assertTrue(self.has_audio(streams))
+        seg = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"][0]
+        self.assertEqual((seg["speed"], seg["source_range"]["end"]["rational"], seg["timeline_range"]["end"]["rational"]), ("2/1", "6/1", "3/1"))
+
+    def test_resize(self):
+        out = self.one({"type": "RESIZE", "input": "A", "params": {"width": 320}})
+        path, streams = self.facts(out, 6.0)
+        self.assertEqual(size(path), (320, 180))
+        self.assertTrue(self.has_audio(streams))
+
+    def test_fit(self):
+        out = self.one({"type": "FIT", "input": "A", "params": {"aspect": "1:1", "width": 360, "pad_color": "white"}})
+        path, streams = self.facts(out, 6.0)
+        self.assertEqual(size(path), (360, 360))
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out = self.one({"type": "FIT", "input": "B", "params": {"aspect": "9:16"}})
+        path, streams = self.facts(out, 5.0)
+        w, h = size(path)
+        self.assertAlmostEqual(w / h, 9 / 16, delta=0.01, msg="without params.width the frame is ffmpeg-skill's choice; the aspect is what was promised")
+        self.assertTrue(self.has_audio(streams))
+
+    def test_fill(self):
+        out = self.one({"type": "FILL", "input": "A", "params": {"aspect": "1:1"}})
+        path, streams = self.facts(out, 6.0)
+        w, h = size(path)
+        self.assertEqual(w, h, "1:1 as promised; the frame size without params.width is ffmpeg-skill's choice (it keeps the source width)")
+        self.assertTrue(self.has_audio(streams))
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out = self.one({"type": "FILL", "input": "A", "params": {"aspect": "1:1", "width": 360}})
+        path, streams = self.facts(out, 6.0)
+        self.assertEqual(size(path), (360, 360))
+
+    def test_overlay(self):
+        out = self.one({"type": "OVERLAY", "input": "A", "params": {"image": "logo", "position": "bottom-left", "start": 1, "end": 3, "fade": 0.25, "opacity": 0.8}})
+        path, streams = self.facts(out, 6.0)
+        self.assertEqual(size(path), (640, 360))
+        self.assertTrue(self.has_audio(streams))
+        tracks = out["execution"]["outputs"][0]["timeline"]["tracks"]
+        self.assertEqual((tracks[1]["kind"], tracks[1]["segments"][0]["source"], tracks[1]["segments"][0]["timeline_range"]["end"]["rational"]), ("overlay", "logo", "3/1"))
+        srcs = {s["id"]: s for s in out["execution"]["sources"]}
+        self.assertEqual(srcs["logo"]["observation"]["data"]["video"]["width"], 120)
+
+    def test_overlay_without_audio_is_refused_before_the_engine(self):
+        t0 = time.monotonic()
+        out = self.one({"type": "OVERLAY", "input": "NA", "params": {"image": "logo"}}, expect=3)
+        self.assertEqual((out["error"]["code"], out["error"]["details"]["reason"]), ("INVALID_INPUT", "audio_required"))
+        self.assertLess(time.monotonic() - t0, 30, "refused up front, not after a hung ffmpeg")
+        self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
+        work = os.path.join(self.ws, ".video-editing", "work")
+        self.assertFalse(os.path.isdir(work) and any(os.scandir(work)), "no tool ran")
+
+    def test_corrupt_image_is_refused_before_the_engine(self):
+        out = self.one({"type": "OVERLAY", "input": "A", "params": {"image": "bad"}}, expect=3, sources=self.sources(bad=True))
+        self.assertEqual(out["error"]["details"]["reason"], "image_undecodable")
+
+    def test_graph_chain_and_multiple_outputs(self):
+        doc = request(self.sources(), [{"id": "cut", "type": "CUT", "input": "A", "params": {"keep": [{"start": 0, "end": 2}]}},
+                                       {"id": "fast", "type": "SPEED", "input": "cut", "params": {"factor": 2}},
+                                       {"id": "small", "type": "RESIZE", "input": "fast", "params": {"width": 320}},
+                                       {"id": "brand", "type": "OVERLAY", "input": "small", "params": {"image": "logo", "position": "top-right"}}],
+                      [{"id": "final", "operation": "brand", "path": "out/final.mp4"}, {"id": "mid", "operation": "small", "path": "out/mid.mp4"}])
+        plan = self.run_cli("plan", doc)
+        self.assertEqual([s["operation"] for s in plan["plan"]["steps"]], ["cut", "fast", "small", "brand"])
+        self.assertFalse(os.path.exists(os.path.join(self.ws, "out")))
+        out = self.run_cli("run", doc)
+        outs = {o["id"]: o for o in out["execution"]["outputs"]}
+        for oid in ("final", "mid"):
+            self.assertTrue(outs[oid]["delivered"])
+            self.assertEqual(outs[oid]["sha256"], sha256_file(outs[oid]["path"]))
+            self.assertAlmostEqual(duration(outs[oid]["path"]), 1.0, delta=0.35)
+            self.assertEqual(size(outs[oid]["path"]), (320, 180))
+        self.assertEqual(len(outs["final"]["timeline"]["tracks"]), 2)
+        self.assertEqual(outs["mid"]["timeline"]["tracks"][0]["segments"][0]["speed"], "2/1")
+        recs = {r["operation"]: r for r in out["execution"]["operations"]}
+        self.assertEqual(recs["fast"]["inputs"][0], {"ref": "cut", "kind": "operation", "operation_id": recs["cut"]["operation_id"], "sha256": recs["cut"]["output"]["sha256"]})
+        again = self.run_cli("run", dict(doc, options={"overwrite": True}))
+        self.assertEqual((again["status"], again["execution"]["reused"]), ("reused", True))
+        self.assertEqual({o["id"]: o["sha256"] for o in again["execution"]["outputs"]}, {k: v["sha256"] for k, v in outs.items()})
+
+    def test_doctor_reports_every_operation_available(self):
+        rc, rep, err = cli(["doctor", "--json", "--workspace", self.ws], env=self.env)
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(sorted(rep["supported_operations"]), ["CONCAT", "CUT", "FILL", "FIT", "OVERLAY", "RESIZE", "SPEED", "TRIM"])
+        self.assertTrue(rep["engine"]["capabilities_reported"])
+        self.assertEqual(rep["engine"]["version"], FFMPEG_SKILL.version)

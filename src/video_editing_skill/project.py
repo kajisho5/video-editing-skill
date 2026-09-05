@@ -18,14 +18,13 @@ from typing import Any, Dict, List, Optional, Set
 from . import REQUEST_SCHEMA
 from .canonical import sha256_file, stable_hash
 from .errors import EditError
-from .operations import OPERATIONS, params_to_json, validate_params
+from .operations import FORBIDDEN_KEYS, OPERATIONS, params_to_json, validate_params
 from .paths import IMAGE_EXTENSIONS, OUTPUT_EXTENSIONS, VIDEO_EXTENSIONS, PathPolicy
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 MAX_SOURCES = 200
 MAX_OPERATIONS = 500
 MAX_OUTPUTS = 50
-FORBIDDEN_KEYS = ("command", "cmd", "argv", "args", "shell", "exec", "executable", "script", "filter", "filter_complex", "ffmpeg", "binary", "env")
 
 
 @dataclass

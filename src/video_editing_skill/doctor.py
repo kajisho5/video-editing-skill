@@ -5,10 +5,34 @@ Prints no environment variables and no secrets. Exit 1 when the skill cannot run
 import platform
 from typing import Any, Dict, List, Optional
 
-from . import DOCTOR_SCHEMA, SKILL_ID, VERSION
-from .ffmpeg_skill import ENV_DIR, REQUIRED_TOOLS, engine_doctor, locate
-from .paths import PathPolicy
+from . import CONTRACT_SCHEMA, DOCTOR_SCHEMA, PLAN_SCHEMA, REQUEST_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
+from .contract import TOOL_REQUIREMENTS
 from .errors import EditError
+from .ffmpeg_skill import ENV_DIR, REQUIRED_TOOLS, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN, engine_doctor, locate, missing_capabilities
+from .operations import OPERATIONS, unsupported_list
+from .paths import PathPolicy
+
+
+def operation_availability(skill, eng: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Per operation type: AVAILABLE only when its ffmpeg-skill tool exists and every encoder / filter it needs is reported
+    present by ffmpeg-skill's doctor; otherwise MISSING with the gaps named. Nothing is reported available on a guess."""
+    rows = []
+    for t in sorted(OPERATIONS):
+        spec = OPERATIONS[t]
+        script = spec["tool"].split("/", 1)[1]
+        missing: List[str] = []
+        if skill is None:
+            missing.append("ffmpeg-skill")
+        else:
+            if not skill.version_supported():
+                missing.append(f"ffmpeg-skill version {skill.version} (supported >={'.'.join(map(str, SUPPORTED_MIN))},<{'.'.join(map(str, SUPPORTED_MAX_EXCLUSIVE))})")
+            if script not in skill.tools:
+                missing.append(f"tool:{spec['tool']}")
+            missing += missing_capabilities(eng or {}, TOOL_REQUIREMENTS[spec["tool"]]) if eng is not None else ["ffmpeg-skill doctor did not run"]
+        rows.append({"type": t, "tool_id": f"{SKILL_ID}/{t.lower()}", "capability": spec["capability"], "executed_by": spec["tool"],
+                     "required_capabilities": list(TOOL_REQUIREMENTS[spec["tool"]]),
+                     "status": "AVAILABLE" if not missing else "MISSING", "missing": missing})
+    return rows
 
 
 def doctor_report(ffmpeg_skill_dir: Optional[str] = None, workspace: Optional[str] = None, allowed_inputs: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -33,6 +57,7 @@ def doctor_report(ffmpeg_skill_dir: Optional[str] = None, workspace: Optional[st
         for t in REQUIRED_TOOLS:
             checks.append({"check": f"tool:ffmpeg-skill/{t}", "status": "AVAILABLE" if t in skill.tools else "MISSING"})
 
+    eng: Optional[Dict[str, Any]] = None
     if skill is not None:
         eng = engine_doctor(skill)
         for name in ("ffmpeg", "ffprobe"):
@@ -57,12 +82,27 @@ def doctor_report(ffmpeg_skill_dir: Optional[str] = None, workspace: Optional[st
     else:
         checks.append({"check": "path_policy", "status": "UNKNOWN", "detail": "pass --workspace to check a workspace"})
 
-    return {"schema": DOCTOR_SCHEMA, "ok": not problems, "skill": {"id": SKILL_ID, "version": VERSION}, "checks": checks, "problems": problems,
+    operations = operation_availability(skill, eng)
+    for row in operations:
+        if row["status"] != "AVAILABLE":
+            problems.append(f"operation {row['type']} unavailable: " + ", ".join(row["missing"]))
+    supported = [r["type"] for r in operations if r["status"] == "AVAILABLE"]
+    return {"schema": DOCTOR_SCHEMA, "ok": not problems, "skill": {"id": SKILL_ID, "version": VERSION},
+            "contract": {"schema": CONTRACT_SCHEMA, "version": VERSION, "request": REQUEST_SCHEMA, "response": RESPONSE_SCHEMA, "plan": PLAN_SCHEMA, "doctor": DOCTOR_SCHEMA},
+            "engine": {"id": "ffmpeg-skill", "found": skill is not None, "version": skill.version if skill else None, "root": skill.root if skill else None,
+                       "version_supported": skill.version_supported() if skill else None, "tools_required": list(REQUIRED_TOOLS),
+                       "tools_missing": skill.missing_tools() if skill else list(REQUIRED_TOOLS),
+                       "ffmpeg": (eng or {}).get("ffmpeg"), "ffprobe": (eng or {}).get("ffprobe"), "ready": bool((eng or {}).get("ok")),
+                       "capabilities_missing": list((eng or {}).get("missing") or []), "capabilities_reported": isinstance((eng or {}).get("available"), list)},
+            "operations": operations, "supported_operations": supported,
+            "unsupported": unsupported_list(),
+            "checks": checks, "problems": problems,
             "summary": "ready to edit" if not problems else "not ready: " + "; ".join(problems), "secrets_shown": False}
 
 
 def format_doctor(rep: Dict[str, Any]) -> str:
-    lines = [f"video-editing-skill {rep['skill']['version']}: {rep['summary']}"]
+    lines = [f"video-editing-skill {rep['skill']['version']}: {rep['summary']}",
+             "  operations: " + ", ".join(f"{r['type']}={r['status']}" for r in rep.get("operations", []))]
     for c in rep["checks"]:
         extra = " ".join(f"{k}={v}" for k, v in c.items() if k not in ("check", "status", "detail") and v not in (None, [], {}))
         line = f"  {c['check']:<28} {c['status']:<10} {extra}"

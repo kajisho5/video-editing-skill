@@ -10,8 +10,13 @@ from typing import Any, Dict, List
 from . import CONTRACT_SCHEMA, DOCTOR_SCHEMA, PACKAGE_NAME, PLAN_SCHEMA, REQUEST_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
 from .errors import DEFAULT_RETRYABLE, ERROR_CODES, EXIT_CODES
 from .ffmpeg_skill import REQUIRED_TOOLS, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
-from .operations import OPERATIONS, POSITIONS, TRANSITIONS, capability_list, unsupported_list
+from .operations import FORBIDDEN_KEYS, MEDIA, OPERATIONS, POSITIONS, TRANSITIONS, capability_list, media_compatibility, unsupported_list
 from .paths import IMAGE_EXTENSIONS, OUTPUT_EXTENSIONS, VIDEO_EXTENSIONS
+
+# Contract versioning (documented in docs/contract.md). Agents pin a snapshot of this document and compare these blocks
+# verbatim: a change in any of them is a breaking contract change and needs a new skill version *and* a review on the
+# agent side. Anything outside them may be added within the same version (additive).
+PINNED_BLOCKS = ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "schemas")
 
 TOOL_REQUIREMENTS = {
     "ffmpeg-skill/cut": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
@@ -46,6 +51,7 @@ def tool_specs() -> List[Dict[str, Any]]:
             "required_capabilities": list(TOOL_REQUIREMENTS[spec["tool"]]),
             "inputs": ["input"] if spec["arity"] == "one" else ["inputs"], "input_arity": spec["arity"],
             "parameters": PARAM_DOCS[t],
+            "media": {"inputs": MEDIA[t]["inputs"], "requires": dict(MEDIA[t]["requires"]), "output": dict(MEDIA[t]["output"])},
             "produces_output": True, "writes_media": True, "deterministic": True, "idempotency_hint": "content_equivalent",
             "result_keys": ["operation_id", "output", "probe", "commands", "provenance"],
             "executed_by": spec["tool"], "kind": "transform",
@@ -107,4 +113,30 @@ def skill_contract() -> Dict[str, Any]:
                    "shape": {"ok": False, "error": {"code": "...", "message": "...", "retryable": False, "details": {}}}},
         "response_shape": {"ok": True, "schema": RESPONSE_SCHEMA, "skill": {"id": SKILL_ID, "version": VERSION}, "status": "completed | reused",
                            "project": "...", "execution": {"operations": ["provenance records"], "outputs": ["path, sha256, timeline, observation"]}},
+        # ---- additive blocks (outside PINNED_BLOCKS; see docs/contract.md)
+        "media_compatibility": media_compatibility(),
+        "graph": {"model": "sources -> operations (DAG) -> outputs; every operation feeds an output; order is topological, ties by id",
+                  "refused": ["cycle (DEPENDENCY_ERROR)", "unknown input / operation reference (DEPENDENCY_ERROR)", "duplicate source / operation / output id (INVALID_REQUEST)",
+                              "operation that leads to no output (DEPENDENCY_ERROR)", "two outputs on one path (DEPENDENCY_ERROR)",
+                              "video slot fed by an image or image slot fed by a video / operation (DEPENDENCY_ERROR)",
+                              "unknown operation type (UNSUPPORTED_OPERATION)", "unknown or forbidden key anywhere (INVALID_REQUEST)",
+                              "media an operation cannot take (INVALID_INPUT, before execution)", "engine tool / encoder / filter missing (TOOL_ERROR, before execution)"],
+                  "limits": {"sources": 200, "operations": 500, "outputs": 50, "concat_inputs": 100, "cut_ranges": 500},
+                  "forbidden_keys": list(FORBIDDEN_KEYS)},
+        "validation": {"before_execution": ["schema and typed parameters", "path policy", "graph", "every source probed by ffmpeg-skill (video: stream + duration; image: decodes)",
+                                            "ranges against probed durations", "media compatibility (operations.MEDIA)", "engine tools and capabilities (ffmpeg-skill doctor)"],
+                       "after_each_operation": ["file exists, non-empty, readable", "probe: video stream, duration, frame size",
+                                                "duration within tolerance of the timeline (frame 0.35 s, keyframe 1.5 s)",
+                                                "frame size / aspect / width as requested, or equal to the input for TRIM / CUT / SPEED / OVERLAY",
+                                                "frame rate as requested", "audio stream kept when the input(s) had one"],
+                       "on_reuse": "the candidate is re-validated with the same checks (hash, size, probe); a stale record is discarded and the operation runs again",
+                       "response": "every document is checked against the response shape before it is printed (self-check); a violation is INTERNAL_ERROR"},
+        "doctor_shape": {"schema": DOCTOR_SCHEMA, "ok": "bool", "skill": {"id": SKILL_ID, "version": VERSION},
+                         "contract": "schema ids", "engine": "ffmpeg-skill location, version, ffmpeg / ffprobe, missing capabilities",
+                         "operations": [{"type": "…", "tool_id": "…", "status": "AVAILABLE | MISSING", "missing": ["what is missing"]}],
+                         "supported_operations": "types whose status is AVAILABLE (never a guess)", "unsupported": "declared gaps", "checks": "…", "problems": "…"},
+        "versioning": {"version": VERSION, "pinned_blocks": list(PINNED_BLOCKS),
+                       "rule": "a change inside a pinned block is breaking: bump the version (0.x: minor) and expect agents to re-pin; new keys outside them "
+                               "(top level or inside tools[]) are additive and allowed within the same version; the golden copy tests/contract/contract.json "
+                               "is regenerated deliberately in the same change, and `contract --check` classifies every difference as breaking or additive"},
     }

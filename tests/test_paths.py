@@ -138,3 +138,39 @@ class PolicyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(os.name == "nt", "Windows path semantics need a Windows file system")
+class WindowsRealTests(unittest.TestCase):
+    """On a real Windows file system: an 8.3 short name and a differently cased spelling of the workspace or an input
+    both resolve to the same canonical path (containment, no symlink-escape misfire), the drive-letter output rule holds
+    and the reserved names are refused. Run by CI's windows-latest job."""
+
+    def short_name(self, path: str) -> str:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(4096)
+        n = ctypes.windll.kernel32.GetShortPathNameW(path, buf, 4096)  # type: ignore[attr-defined]
+        self.assertGreater(n, 0)
+        return buf.value
+
+    def test_short_and_cased_spellings_are_the_same_workspace(self):
+        ws = make_workspace()
+        long_dir = os.path.join(ws, "Long Directory Name For Short Path")
+        os.makedirs(os.path.join(long_dir, "in"))
+        media = write_fake_media(os.path.join(long_dir, "in", "Clip With Spaces.mp4"))
+        short_ws = self.short_name(long_dir)
+        self.assertNotEqual(short_ws.lower(), long_dir.lower(), "the fixture must actually have a short name")
+        policy = PathPolicy(short_ws)
+        canonical = os.path.realpath(long_dir)
+        self.assertEqual(os.path.normcase(policy.workspace), os.path.normcase(canonical))
+        resolved = policy.resolve_input(self.short_name(media), "x", VIDEO_EXTENSIONS)
+        self.assertEqual(os.path.normcase(resolved), os.path.normcase(os.path.realpath(media)))
+        self.assertEqual(os.path.normcase(policy.resolve_input(media.upper(), "x", VIDEO_EXTENSIONS)), os.path.normcase(os.path.realpath(media)))
+        out = policy.resolve_output("OUT\\Final.MP4", "x", [resolved])
+        self.assertTrue(is_within(policy.workspace, out))
+        with self.assertRaises(EditError) as cm:
+            policy.resolve_output(os.path.splitdrive(policy.workspace)[0] + "\\elsewhere.mp4", "x", [resolved])
+        self.assertEqual(cm.exception.code, "PATH_NOT_ALLOWED")
+        with self.assertRaises(EditError) as cm:
+            policy.resolve_output("out\\CON.mp4", "x", [resolved])
+        self.assertEqual(cm.exception.details.get("reason"), "reserved_name")

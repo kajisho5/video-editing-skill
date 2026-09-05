@@ -11,14 +11,20 @@ prints one response document on stdout. Everything else (`skill`, `doctor`, `val
 
 Workflow for a caller:
 
-1. `doctor --json --workspace DIR` once: ffmpeg-skill, ffmpeg and ffprobe must be AVAILABLE.
+1. `doctor --json --workspace DIR` once: `ok` must be true; `operations[]` says per type whether it is AVAILABLE
+   (tool present, encoders / filters found by ffmpeg-skill's doctor) and `supported_operations` lists exactly those.
 2. Build the request from the contract's `request_shape`: sources (files under an allowed root), allowlisted
    operations with typed params, outputs (relative paths under the workspace).
 3. `plan - --json` to see the operation graph, the timeline mapping, the tool per step and the commands
    ffmpeg-skill would run. Nothing is written.
-4. `run - --json`. On success every output carries its sha256, its timeline and an OBSERVED probe; every
-   operation carries a provenance record. On failure `{"ok": false, "error": {code, message, retryable}}` and no
-   output file is left behind.
+4. `run - --json`. On success every output carries its sha256, size, timeline and an OBSERVED probe; every source
+   its probe; every operation a provenance record (`completed` / `reused`); the document is self-checked against the
+   contract shape before it is printed. On failure `{"ok": false, "error": {code, message, retryable, details}}`,
+   the failed record with its error, later operations `skipped`, and no output file is left behind.
+
+Media rules (`contract.media_compatibility`): every source is probed first; `OVERLAY` needs a video input with an
+audio stream; `CONCAT` conforms sizes / rates and adds audio when any input has it. Engine gaps (a missing
+ffmpeg-skill tool, encoder or filter) are refused before execution as `TOOL_ERROR`.
 
 Operation types (the allowlist): `TRIM`, `CUT`, `CONCAT` (with `params.transition`), `SPEED`, `FIT`, `FILL`,
 `RESIZE`, `OVERLAY`. Anything else (`CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION` included) is refused

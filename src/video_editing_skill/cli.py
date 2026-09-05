@@ -17,6 +17,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from . import PLAN_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
+from .canonical import stable_hash
 from .contract import skill_contract
 from .contract_check import run_check
 from .doctor import doctor_report, format_doctor
@@ -25,6 +26,7 @@ from .executor import Executor, _Failed
 from .ffmpeg_skill import engine_doctor, install_signal_handlers, locate, tool_versions
 from .paths import PathPolicy
 from .project import parse_request
+from .response import check_response
 
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 
@@ -41,6 +43,15 @@ def _utf8_streams() -> None:
 def _print_json(doc: Any) -> None:
     sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False, sort_keys=False) + "\n")
     sys.stdout.flush()
+
+
+def _emit(doc: Dict[str, Any], command: str) -> None:
+    """Print a response document only after it passed the response self-check; a document that does not conform is a bug
+    and is reported as INTERNAL_ERROR rather than printed as a success."""
+    problems = check_response(doc, command)
+    if problems:
+        raise EditError("INTERNAL_ERROR", "response self-check failed: " + "; ".join(problems[:5]), {"problems": problems, "command": command})
+    _print_json(doc)
 
 
 def _log(msg: str) -> None:
@@ -76,7 +87,7 @@ def _engine(args: argparse.Namespace):
     if not doctor["ok"]:
         raise EditError("TOOL_ERROR", doctor.get("detail") or "ffmpeg-skill is not ready (ffmpeg / ffprobe missing)",
                         {"ffmpeg_skill_error": "missing_tool", "missing": doctor.get("missing", [])}, retryable=False)
-    return skill, tool_versions(doctor)
+    return skill, tool_versions(doctor), doctor
 
 
 def _policy(args: argparse.Namespace) -> PathPolicy:
@@ -128,42 +139,47 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def cmd_validate(args: argparse.Namespace) -> int:
     policy = _policy(args)
-    project = parse_request(_read_request(args.request), policy)
-    _print_json(_envelope(project, {"status": "valid", "command": "validate"}))
+    raw = _read_request(args.request)
+    project = parse_request(raw, policy)
+    _emit(_envelope(project, {"status": "valid", "command": "validate", "request_sha256": stable_hash(raw)}), "validate")
     return 0
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
     policy = _policy(args)
-    project = parse_request(_read_request(args.request), policy)
-    skill, versions = _engine(args)
-    ex = Executor(project, skill, versions, _log if args.verbose else None)
+    raw = _read_request(args.request)
+    project = parse_request(raw, policy)
+    skill, versions, doctor = _engine(args)
+    ex = Executor(project, skill, versions, _log if args.verbose else None, engine_doctor=doctor)
+    ex.request_sha256 = stable_hash(raw)
     ex.probe_sources()
     plan = ex.plan(preview=not args.no_preview)
-    doc = _envelope(project, {"status": "planned", "command": "plan", "schema": PLAN_SCHEMA, "dry_run": True,
+    doc = _envelope(project, {"status": "planned", "command": "plan", "schema": PLAN_SCHEMA, "dry_run": True, "request_sha256": ex.request_sha256,
                               "engine": {"ffmpeg-skill": skill.version, **versions}, "plan": plan})
-    _print_json(doc)
+    _emit(doc, "plan")
     return 0
 
 
 def cmd_run(args: argparse.Namespace) -> int:
     policy = _policy(args)
-    project = parse_request(_read_request(args.request), policy)
-    skill, versions = _engine(args)
+    raw = _read_request(args.request)
+    project = parse_request(raw, policy)
+    skill, versions, doctor = _engine(args)
     install_signal_handlers()
-    ex = Executor(project, skill, versions, _log if args.verbose else None)
+    ex = Executor(project, skill, versions, _log if args.verbose else None, engine_doctor=doctor)
+    ex.request_sha256 = stable_hash(raw)
     ex.probe_sources()
     try:
         execution = ex.run()
     except _Failed as failed:
         doc = failed.error.envelope()
-        doc.update({"schema": RESPONSE_SCHEMA, "skill": {"id": SKILL_ID, "version": VERSION}, "status": failed.doc["status"],
+        doc.update({"schema": RESPONSE_SCHEMA, "skill": {"id": SKILL_ID, "version": VERSION}, "status": failed.doc["status"], "command": "run",
+                    "request_sha256": ex.request_sha256, "engine": {"ffmpeg-skill": skill.version, **versions},
                     "execution": failed.doc, "project": project.to_dict(), "warnings": list(project.warnings)})
-        _print_json(doc)
+        _emit(doc, "run")
         return failed.error.exit_code
-    reused = all(r["status"] == "reused" for r in execution["operations"])
-    _print_json(_envelope(project, {"status": "reused" if reused else "completed", "command": "run",
-                                    "engine": {"ffmpeg-skill": skill.version, **versions}, "execution": execution}))
+    _emit(_envelope(project, {"status": execution["status"], "command": "run", "request_sha256": ex.request_sha256,
+                              "engine": {"ffmpeg-skill": skill.version, **versions}, "execution": execution}), "run")
     return 0
 
 

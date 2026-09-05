@@ -19,6 +19,14 @@ PRECISIONS = ("frame", "keyframe")
 _COLOR = re.compile(r"^(black|white|gray|grey|red|green|blue|yellow|0x[0-9A-Fa-f]{6})$")
 _ASPECT = re.compile(r"^([1-9]\d{0,3}):([1-9]\d{0,3})$")
 
+# execution escape hatches and boundary settings: refused wherever they appear in a request (any level), with reason
+# forbidden_key, before the unknown-key check, so a caller learns *why* rather than just that the key is unknown
+FORBIDDEN_KEYS = ("command", "commands", "cmd", "argv", "args", "shell", "exec", "executable", "executables", "script", "binary",
+                  "filter", "filters", "filter_complex", "filtergraph", "ffmpeg", "ffprobe",
+                  "env", "environment", "cwd", "pythonpath",
+                  "api_key", "api_token", "token", "secret", "password", "credentials",
+                  "workspace", "allowed_input", "allowed_inputs", "allowed_input_roots", "ffmpeg_skill_dir", "engine_dir", "path_policy")
+
 MAX_SPEED = Fraction(4)
 MIN_SPEED = Fraction(1, 4)
 MAX_DIMENSION = 8192
@@ -41,6 +49,40 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
                "summary": "scale to a width keeping the aspect ratio"},
     "OVERLAY": {"arity": "one", "tool": "ffmpeg-skill/overlay", "capability": "video.overlay",
                 "summary": "composite a still image (logo, lower-third PNG) at a named position for a time range"},
+}
+
+# Media compatibility per operation: what every input must be, what the output keeps, and which mismatches are
+# refused *before* anything reaches the engine (executor._check_media) or verified afterwards (executor._validate).
+# "requires" is machine-checked against probes; the text fields are the contract's documentation of the rule.
+MEDIA: Dict[str, Dict[str, Any]] = {
+    "TRIM": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+             "output": {"frame_size": "as input", "audio": "as input", "fps": "as input"},
+             "refused_before_execution": ["source without a video stream or duration", "range beyond the input duration"]},
+    "CUT": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+            "output": {"frame_size": "as input", "audio": "as input", "fps": "as input"},
+            "refused_before_execution": ["source without a video stream or duration", "range beyond the input duration"]},
+    "CONCAT": {"inputs": "two or more videos (any sizes / frame rates; conformed by params.mode to params.width/height/fps or the first input)",
+               "requires": {"video": True, "audio": False, "image": False},
+               "output": {"frame_size": "params.width x params.height, else the first input", "fps": "params.fps, else the first input",
+                          "audio": "stereo AAC when any input has audio (silence is inserted for inputs without); none when no input has audio"},
+               "refused_before_execution": ["source without a video stream or duration", "an input shorter than twice the transition"]},
+    "SPEED": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+              "output": {"frame_size": "as input", "audio": "as input, pitch preserved (atempo)", "fps": "as input", "duration": "input duration / factor"},
+              "refused_before_execution": ["source without a video stream or duration", "factor outside [1/4, 4]"]},
+    "FIT": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+            "output": {"frame_size": "params.aspect (params.width when given; padded, nothing cropped)", "audio": "as input", "fps": "params.fps or as input"},
+            "refused_before_execution": ["source without a video stream or duration"]},
+    "FILL": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+             "output": {"frame_size": "params.aspect (params.width when given; centre-cropped)", "audio": "as input", "fps": "params.fps or as input"},
+             "refused_before_execution": ["source without a video stream or duration"]},
+    "RESIZE": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+               "output": {"frame_size": "params.width, height by the input aspect (even)", "audio": "as input", "fps": "params.fps or as input"},
+               "refused_before_execution": ["source without a video stream or duration"]},
+    "OVERLAY": {"inputs": "one video plus one image source (png / jpg; alpha respected)", "requires": {"video": True, "audio": True, "image": True},
+                "output": {"frame_size": "as input", "audio": "as input", "fps": "as input"},
+                "refused_before_execution": ["source without a video stream or duration", "image that does not decode",
+                                             "video input without an audio stream: ffmpeg-skill 0.9.x overlay (-loop 1 image, -shortest) never terminates on it",
+                                             "start / end beyond the input duration"]},
 }
 
 # capabilities that video editing normally has but ffmpeg-skill 0.9.x has no tool for: declared as gaps,
@@ -99,6 +141,10 @@ def _range(raw: Any, what: str) -> Dict[str, Time]:
 
 
 def _keys(params: Dict[str, Any], what: str, allowed: tuple, required: tuple = ()) -> None:
+    for k in params:
+        if isinstance(k, str) and k.lower() in FORBIDDEN_KEYS:
+            raise EditError("INVALID_REQUEST", f"{what}: key {k!r} is not accepted (this skill takes typed operations, never commands)",
+                            {"reason": "forbidden_key"})
     extra = sorted(set(params) - set(allowed))
     if extra:
         raise EditError("INVALID_REQUEST", f"{what}: unknown parameters {extra}", {"allowed": list(allowed)})
@@ -233,6 +279,12 @@ def capability_list() -> List[Dict[str, Any]]:
              "video.reorder": {"capability": "video.reorder", "operations": ["CONCAT (input order)", "CUT (keep order)"], "tool": "ffmpeg-skill/cut | ffmpeg-skill/join"}}
     seen.update(extra)
     return [seen[k] for k in sorted(seen)]
+
+
+def media_compatibility() -> Dict[str, Dict[str, Any]]:
+    """Per operation type: input requirements, output guarantees and the mismatches refused before execution."""
+    return {t: {"inputs": m["inputs"], "requires": dict(m["requires"]), "output": dict(m["output"]),
+                "refused_before_execution": list(m["refused_before_execution"])} for t, m in sorted(MEDIA.items())}
 
 
 def unsupported_list() -> List[Dict[str, str]]:

@@ -362,3 +362,230 @@ class ContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MediaAndValidationTests(unittest.TestCase):
+    """operations.MEDIA (media compatibility) and the executor's profile derivation / pre-execution refusals, without
+    any engine: the executor is fed probe documents directly."""
+
+    def setUp(self):
+        self.ws = make_workspace()
+        self.a = write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
+        self.b = write_fake_media(os.path.join(self.ws, "in", "b.mp4"), 2048)
+        self.logo = write_fake_media(os.path.join(self.ws, "in", "logo.png"))
+        self.policy = PathPolicy(self.ws)
+
+    @staticmethod
+    def probe(width=640, height=360, fps=30.0, audio=True, duration=6.0):
+        return {"duration": duration, "video": {"codec": "h264", "width": width, "height": height, "fps": fps},
+                "audio": {"codec": "aac", "channels": 2} if audio else None}
+
+    def executor(self, ops, outputs=None, probes=None):
+        from video_editing_skill.executor import Executor
+        from video_editing_skill.ffmpeg_skill import FfmpegSkill
+        doc = request([{"id": "A", "path": "in/a.mp4"}, {"id": "B", "path": "in/b.mp4"}, {"id": "logo", "path": "in/logo.png", "kind": "image"}],
+                      ops, outputs or [{"id": "o", "operation": ops[-1]["id"], "path": "out/o.mp4"}])
+        project = parse_request(doc, self.policy)
+        ex = Executor(project, FfmpegSkill(self.ws, "0.9.0", ["probe", "cut", "join", "fit", "overlay"]), {"ffmpeg": "6", "ffprobe": "6"},
+                      engine_doctor={"ffmpeg": "6", "ffprobe": "6", "ok": True, "missing": [], "available": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade"]})
+        ex.source_probes = probes or {"A": self.probe(), "B": self.probe(1280, 720, 25.0), "logo": {"duration": None, "video": {"codec": "png", "width": 120, "height": 40}, "audio": None}}
+        ex.durations = {r: Time.from_float(float(p["duration"])) for r, p in ex.source_probes.items() if p.get("duration")}
+        ex.clips = build_timelines(project, ex.durations)
+        return ex
+
+    def test_media_table_matches_operations_and_contract(self):
+        self.assertEqual(set(operations.MEDIA), set(operations.OPERATIONS))
+        for t, m in operations.MEDIA.items():
+            self.assertTrue(m["requires"]["video"], t)
+            self.assertEqual(m["requires"]["image"], t == "OVERLAY", t)
+            self.assertEqual(m["requires"]["audio"], t == "OVERLAY", "only OVERLAY needs audio (ffmpeg-skill 0.9.x overlay hangs without it)")
+        c = contract.skill_contract()
+        self.assertEqual(c["media_compatibility"], operations.media_compatibility())
+        for t in c["tools"]:
+            self.assertEqual(t["media"]["requires"], operations.MEDIA[t["operation_type"]]["requires"])
+        # additive blocks live outside the pinned ones (agents compare the pinned blocks verbatim)
+        for k in ("media_compatibility", "graph", "validation", "doctor_shape", "versioning"):
+            self.assertIn(k, c)
+            self.assertNotIn(k, contract.PINNED_BLOCKS)
+        self.assertEqual(tuple(c["versioning"]["pinned_blocks"]), contract.PINNED_BLOCKS)
+        self.assertEqual(sorted(c["graph"]["forbidden_keys"]), sorted(operations.FORBIDDEN_KEYS))
+
+    def test_profiles_are_observed_or_derived_never_guessed(self):
+        ex = self.executor([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 2}},
+                            {"id": "c", "type": "CONCAT", "inputs": ["t", "B"], "params": {"width": 640, "height": 360, "fps": 30}},
+                            {"id": "f", "type": "FIT", "input": "c", "params": {"aspect": "1:1"}},
+                            {"id": "r", "type": "RESIZE", "input": "f", "params": {"width": 320}}])
+        self.assertEqual(ex.profile("A")["provenance"], "OBSERVED")
+        self.assertEqual((ex.profile("t")["width"], ex.profile("t")["audio"], ex.profile("t")["provenance"]), (640, True, "EXPECTED"))
+        self.assertEqual((ex.profile("c")["width"], ex.profile("c")["height"], ex.profile("c")["fps"]), (640, 360, 30.0))
+        self.assertIsNone(ex.profile("f")["width"], "FIT without a width promises only the aspect")
+        self.assertEqual((ex.profile("r")["width"], ex.profile("r")["height"]), (320, None))
+        # CONCAT audio: any input with audio -> audio; none -> none; unknown stays unknown
+        ex2 = self.executor([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}],
+                            probes={"A": self.probe(audio=False), "B": self.probe(audio=False), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+        self.assertIs(ex2.profile("c")["audio"], False)
+        ex3 = self.executor([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}],
+                            probes={"A": self.probe(audio=False), "B": self.probe(audio=True), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+        self.assertIs(ex3.profile("c")["audio"], True)
+
+    def test_overlay_without_audio_is_refused_before_execution(self):
+        ex = self.executor([{"id": "o", "type": "OVERLAY", "input": "A", "params": {"image": "logo"}}],
+                           probes={"A": self.probe(audio=False), "B": self.probe(), "logo": {"duration": None, "video": {"width": 120, "height": 40}, "audio": None}})
+        with self.assertRaises(EditError) as cm:
+            ex._check_media()
+        self.assertEqual((cm.exception.code, cm.exception.details["reason"]), ("INVALID_INPUT", "audio_required"))
+        # through an upstream operation too (a TRIM keeps the input's audio profile)
+        ex = self.executor([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}, {"id": "o", "type": "OVERLAY", "input": "t", "params": {"image": "logo"}}],
+                           probes={"A": self.probe(audio=False), "B": self.probe(), "logo": {"duration": None, "video": {"width": 120, "height": 40}, "audio": None}})
+        with self.assertRaises(EditError):
+            ex._check_media()
+        # a CONCAT that adds audio (one input has it) satisfies OVERLAY
+        ex = self.executor([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}, {"id": "o", "type": "OVERLAY", "input": "c", "params": {"image": "logo"}}],
+                           probes={"A": self.probe(audio=False), "B": self.probe(), "logo": {"duration": None, "video": {"width": 120, "height": 40}, "audio": None}})
+        ex._check_media()
+
+    def test_engine_gaps_are_refused_before_execution(self):
+        ex = self.executor([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}])
+        ex.engine_doctor["available"] = ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"]
+        with self.assertRaises(EditError) as cm:
+            ex._check_engine()
+        self.assertEqual((cm.exception.code, cm.exception.retryable, cm.exception.details["missing"]), ("TOOL_ERROR", False, ["filter:xfade", "filter:acrossfade"]))
+        ex.skill.tools.remove("join")
+        with self.assertRaises(EditError) as cm:
+            ex._check_engine()
+        self.assertEqual(cm.exception.details["missing"], ["tool:ffmpeg-skill/join"])
+
+    def test_output_validation_rules(self):
+        ex = self.executor([{"id": "r", "type": "RESIZE", "input": "A", "params": {"width": 320, "fps": 25}}])
+        op = ex.project.operations["r"]
+        ex._validate_media(op, self.probe(320, 180, 25.0), "x")
+        for bad, reason in ((self.probe(300, 180, 25.0), "frame_size"), (self.probe(320, 180, 30.0), "fps"), (self.probe(320, 180, 25.0, audio=False), "audio_lost")):
+            with self.assertRaises(EditError) as cm:
+                ex._validate_media(op, bad, "x")
+            self.assertEqual((cm.exception.code, cm.exception.details["reason"]), ("VALIDATION_ERROR", reason))
+        ex = self.executor([{"id": "f", "type": "FILL", "input": "A", "params": {"aspect": "1:1"}}])
+        ex._validate_media(ex.project.operations["f"], self.probe(360, 360), "x")
+        with self.assertRaises(EditError) as cm:
+            ex._validate_media(ex.project.operations["f"], self.probe(640, 360), "x")
+        self.assertEqual(cm.exception.details["reason"], "aspect")
+        ex = self.executor([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}])
+        with self.assertRaises(EditError) as cm:
+            ex._validate_media(ex.project.operations["t"], self.probe(1280, 720), "x")
+        self.assertEqual(cm.exception.details["reason"], "frame_size")
+
+
+class ResponseCheckTests(unittest.TestCase):
+    """The response self-check refuses every malformed success document the contract forbids."""
+
+    def good_run(self):
+        rec = {"operation": "t", "operation_id": "op_" + "a" * 16, "type": "TRIM", "capability": "video.trim", "status": "completed", "skill": "video-editing",
+               "skill_version": contract.VERSION, "tool": "ffmpeg-skill/cut", "tool_versions": {"ffmpeg-skill": "0.9.0"}, "idempotency_key": "k" * 64,
+               "parameters": {}, "inputs": [], "output": {"path": "/w/x.mp4", "sha256": "b" * 64}, "probe": {"video": {"width": 1, "height": 1}},
+               "commands": ["ffmpeg -i x"], "started_at": "2026-01-01T00:00:00Z", "finished_at": "2026-01-01T00:00:01Z", "seconds": 1.0, "provenance": "OBSERVED"}
+        tl = {"duration_known": True, "duration": {"seconds": "1.000000", "rational": "1/1"},
+              "tracks": [{"id": "V1", "kind": "video", "segments": [{"source": "A", "source_range": {"start": {"seconds": "0.000000", "rational": "0/1"}, "end": {"seconds": "1.000000", "rational": "1/1"}},
+                                                                     "timeline_range": {"start": {"seconds": "0.000000", "rational": "0/1"}, "end": {"seconds": "1.000000", "rational": "1/1"}}, "speed": "1/1"}]}]}
+        out = {"id": "o", "operation": "t", "path": "/w/out/o.mp4", "delivered": True, "sha256": "c" * 64, "size": 10, "container": ".mp4", "reused": False,
+               "operation_id": "op_" + "a" * 16, "timeline": tl,
+               "observation": {"kind": "media.probe", "provenance": "OBSERVED", "source": "ffmpeg-skill/probe@0.9.0", "data": {"video": {"width": 1, "height": 1}}}}
+        return {"ok": True, "schema": "video-editing/response@1", "skill": {"id": "video-editing", "version": contract.VERSION}, "status": "completed", "command": "run",
+                "engine": {"ffmpeg-skill": "0.9.0"}, "project": {}, "warnings": [],
+                "execution": {"status": "completed", "started_at": "2026-01-01T00:00:00Z", "finished_at": "2026-01-01T00:00:01Z", "work_dir": "/w", "engine": {},
+                              "reused": False, "request_sha256": "d" * 64, "sources": [{"id": "A", "kind": "video", "observation": None}], "operations": [rec], "outputs": [out]}}
+
+    def test_good_documents_pass(self):
+        from video_editing_skill.response import check_response
+        self.assertEqual(check_response(self.good_run(), "run"), [])
+        self.assertEqual(check_response({"ok": False, "error": {"code": "TOOL_ERROR", "message": "x", "retryable": True, "details": {}}}), [])
+        self.assertEqual(check_response({"ok": True, "schema": "video-editing/response@1", "skill": {"id": "video-editing", "version": contract.VERSION},
+                                         "status": "valid", "command": "validate", "project": {}, "warnings": []}, "validate"), [])
+
+    def test_malformed_success_documents_are_refused(self):
+        import copy
+        from video_editing_skill.response import check_response
+        cases = {
+            "exit-0 without delivery": lambda d: d["execution"]["outputs"][0].update(delivered=False),
+            "missing sha256": lambda d: d["execution"]["outputs"][0].pop("sha256"),
+            "bad sha256": lambda d: d["execution"]["outputs"][0].update(sha256="zz"),
+            "empty output": lambda d: d["execution"]["outputs"][0].update(size=0),
+            "no timeline": lambda d: d["execution"]["outputs"][0].update(timeline=None),
+            "timeline without tracks": lambda d: d["execution"]["outputs"][0]["timeline"].update(tracks=[]),
+            "duration unknown but given": lambda d: d["execution"]["outputs"][0]["timeline"].update(duration_known=False),
+            "inferred observation": lambda d: d["execution"]["outputs"][0]["observation"].update(provenance="INFERRED"),
+            "foreign observation source": lambda d: d["execution"]["outputs"][0]["observation"].update(source="ai:model"),
+            "observation without video": lambda d: d["execution"]["outputs"][0]["observation"].update(data={}),
+            "no outputs": lambda d: d["execution"].update(outputs=[]),
+            "no operations": lambda d: d["execution"].update(operations=[]),
+            "failed record in a success": lambda d: d["execution"]["operations"][0].update(status="failed", error={"code": "TOOL_ERROR"}),
+            "record without commands": lambda d: d["execution"]["operations"][0].update(commands="ffmpeg"),
+            "record tool not ffmpeg-skill": lambda d: d["execution"]["operations"][0].update(tool="ffmpeg"),
+            "record without OBSERVED probe": lambda d: d["execution"]["operations"][0].update(provenance=None),
+            "status reused with completed records": lambda d: (d.update(status="reused"), d["execution"].update(status="reused", reused=True)),
+            "status disagrees with execution": lambda d: d.update(status="reused"),
+            "wrong schema": lambda d: d.update(schema="video-editing/response@2"),
+            "wrong skill": lambda d: d.update(skill={"id": "other", "version": "1"}),
+            "unknown status": lambda d: (d.update(status="done"), d["execution"].update(status="done")),
+            "plan schema on run": lambda d: d.update(schema="video-editing/plan@1"),
+            "sources not a list": lambda d: d["execution"].update(sources=None),
+            "bad request hash": lambda d: d["execution"].update(request_sha256="nope"),
+        }
+        for name, mutate in cases.items():
+            d = copy.deepcopy(self.good_run())
+            mutate(d)
+            self.assertNotEqual(check_response(d, "run"), [], name)
+        self.assertNotEqual(check_response({"ok": False, "error": {"code": "NOPE", "message": "x", "retryable": True, "details": {}}}), [])
+        self.assertNotEqual(check_response({"ok": False, "error": {"code": "TOOL_ERROR", "message": "", "retryable": "yes", "details": {}}}), [])
+        self.assertNotEqual(check_response({"ok": "true"}), [])
+        self.assertNotEqual(check_response([]), [])
+
+
+class DriftClassificationTests(unittest.TestCase):
+    def test_additive_versus_breaking(self):
+        live = contract.skill_contract()
+        saved = json.loads(json.dumps(live))
+        saved.pop("media_compatibility")                # the live contract gained a block: additive
+        saved["tools"][0].pop("media")
+        rep = contract_check.check_saved(saved, live)
+        self.assertEqual((rep["status"], rep["compatibility"], rep["problems"]), ("drift", "additive", []))
+        self.assertIn("top-level key added: media_compatibility", rep["additions"])
+        saved = json.loads(json.dumps(live))
+        saved["operations"]["TRIM"]["parameters"]["fade"] = "x"   # a pinned block differs: breaking
+        rep = contract_check.check_saved(saved, live)
+        self.assertEqual((rep["status"], rep["compatibility"]), ("drift", "breaking"))
+        self.assertIn("pinned block operations changed", rep["problems"])
+        saved = json.loads(json.dumps(live))
+        saved["extra_saved_only"] = 1                              # the live contract lost a block: breaking
+        rep = contract_check.check_saved(saved, live)
+        self.assertEqual(rep["compatibility"], "breaking")
+        run = contract_check.run_check(saved)
+        self.assertFalse(run["ok"])
+        self.assertTrue(any(p.startswith("[breaking]") for p in run["drift"]["problems"]))
+        self.assertEqual(contract_check.check_saved(json.loads(json.dumps(live)), live)["status"], "ok")
+
+
+class DoctorAvailabilityTests(unittest.TestCase):
+    """doctor never reports an operation AVAILABLE unless its tool and every capability it needs are present."""
+
+    def test_operation_availability(self):
+        from video_editing_skill.doctor import operation_availability
+        from video_editing_skill.ffmpeg_skill import FfmpegSkill
+        full = {"ffmpeg": "6", "ffprobe": "6", "ok": True, "missing": [], "available": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade"]}
+        skill = FfmpegSkill("/x", "0.9.0", ["probe", "cut", "join", "fit", "overlay"])
+        rows = {r["type"]: r for r in operation_availability(skill, full)}
+        self.assertEqual(sorted(rows), sorted(operations.OPERATIONS))
+        self.assertTrue(all(r["status"] == "AVAILABLE" and r["missing"] == [] for r in rows.values()), rows)
+        self.assertEqual(rows["CONCAT"]["tool_id"], "video-editing/concat")
+        no_xfade = dict(full, available=[a for a in full["available"] if "xfade" not in a], missing=["filter:xfade", "filter:acrossfade"])
+        rows = {r["type"]: r for r in operation_availability(skill, no_xfade)}
+        self.assertEqual((rows["CONCAT"]["status"], rows["CONCAT"]["missing"]), ("MISSING", ["filter:xfade", "filter:acrossfade"]))
+        self.assertEqual(rows["TRIM"]["status"], "AVAILABLE")
+        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.9.0", ["probe", "cut"]), full)}
+        self.assertEqual(rows["OVERLAY"]["missing"], ["tool:ffmpeg-skill/overlay"])
+        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "1.2.0", ["probe", "cut", "join", "fit", "overlay"]), full)}
+        self.assertTrue(all(r["status"] == "MISSING" for r in rows.values()))
+        rows = {r["type"]: r for r in operation_availability(None, None)}
+        self.assertTrue(all(r["missing"] == ["ffmpeg-skill"] for r in rows.values()))
+        # a doctor that lists nothing (older engine) only disqualifies on explicit `missing`
+        rows = {r["type"]: r for r in operation_availability(skill, {"ffmpeg": "6", "ffprobe": "6", "ok": True, "missing": ["encoder:aac"], "available": None})}
+        self.assertEqual(rows["CUT"]["missing"], ["encoder:aac"])
+        self.assertEqual(rows["CUT"]["status"], "MISSING")

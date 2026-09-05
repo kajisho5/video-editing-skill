@@ -75,10 +75,14 @@ class StaticTests(unittest.TestCase):
                 self.assertNotIn("subprocess.Popen", text, f"{name} launches processes")
 
     def test_request_cannot_name_executables(self):
-        with open(os.path.join(PKG, "project.py"), encoding="utf-8") as fh:
+        from video_editing_skill.operations import FORBIDDEN_KEYS
+        with open(os.path.join(PKG, "operations.py"), encoding="utf-8") as fh:
             text = fh.read()
-        for k in ("command", "argv", "shell", "executable", "filter"):
+        for k in ("command", "argv", "shell", "executable", "filter", "filter_complex", "env", "api_key", "workspace", "ffmpeg_skill_dir", "allowed_input"):
+            self.assertIn(k, FORBIDDEN_KEYS)
             self.assertIn(f'"{k}"', text)
+        with open(os.path.join(PKG, "project.py"), encoding="utf-8") as fh:
+            self.assertIn("FORBIDDEN_KEYS", fh.read(), "the request parser applies the forbidden-key list at every level")
 
 
 class BlackBoxTests(unittest.TestCase):
@@ -204,3 +208,77 @@ class BlackBoxTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InjectionTests(unittest.TestCase):
+    """argv / environment / boundary injection through request values and keys: everything is typed, so a value that
+    looks like a flag, a shell fragment or an environment reference is refused as an invalid parameter or path, never
+    forwarded; boundary settings (workspace, allowed roots, engine location) are CLI flags the request cannot carry."""
+
+    def setUp(self):
+        self.ws = make_workspace()
+        write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
+        write_fake_media(os.path.join(self.ws, "in", "logo.png"))
+        self.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": "/nonexistent"}
+
+    def doc(self, params, t="OVERLAY", extra_top=None):
+        d = request([{"id": "A", "path": "in/a.mp4"}, {"id": "logo", "path": "in/logo.png", "kind": "image"}],
+                    [{"id": "x", "type": t, "input": "A", "params": params}], [{"id": "o", "operation": "x", "path": "out/o.mp4"}])
+        if extra_top:
+            d.update(extra_top)
+        return d
+
+    def refused(self, doc, code="INVALID_REQUEST", reason=None):
+        rc, out, err = cli(["validate", "-", "--json", "--workspace", self.ws], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["error"]["code"], code, out["error"])
+        if reason:
+            self.assertEqual(out["error"]["details"].get("reason"), reason, out["error"])
+        self.assertNotEqual(rc, 0)
+
+    def test_argv_injection_in_values(self):
+        for pos in ("--crf 0", "-o /tmp/x", "top-right --preset ultrafast", "10,10;rm -rf /", "$(id)", "`id`", "10|10"):
+            self.refused(self.doc({"image": "logo", "position": pos}))
+        self.refused(self.doc({"image": "logo", "margin": "24 --fast"}))
+        self.refused(self.doc({"image": "logo", "scale": "--scale-percent 200"}))
+        self.refused(self.doc({"image": "logo", "start": "--dry-run"}))
+        self.refused(self.doc({"aspect": "16:9 --fit crop"}, t="FIT"))
+        self.refused(self.doc({"aspect": "16:9", "pad_color": "black,drawtext=text=x"}, t="FIT"))
+        self.refused(self.doc({"factor": "2 --smooth interpolate"}, t="SPEED"))
+
+    def test_environment_and_boundary_keys(self):
+        for key in ("env", "environment", "cwd", "pythonpath", "workspace", "allowed_input", "allowed_inputs", "ffmpeg_skill_dir", "api_key", "token"):
+            self.refused(self.doc({"image": "logo", key: "x"}), reason="forbidden_key")
+            self.refused(self.doc({"image": "logo"}, extra_top={key: "x"}), reason="forbidden_key")
+            d = self.doc({"image": "logo"})
+            d["project"][key] = "x"
+            self.refused(d, reason="forbidden_key")
+            d = self.doc({"image": "logo"})
+            d["options"] = {key: "x"}
+            self.refused(d, reason="forbidden_key")
+        # an environment reference in a path is a literal file name, never expanded
+        d = self.doc({"image": "logo"})
+        d["project"]["sources"][0]["path"] = "$HOME/in/a.mp4"
+        self.refused(d, "MISSING_INPUT")
+        d["project"]["sources"][0]["path"] = "%USERPROFILE%/in/a.mp4"
+        self.refused(d, "MISSING_INPUT")
+        d["project"]["sources"][0]["path"] = "~/in/a.mp4"
+        self.refused(d, "MISSING_INPUT")
+
+    def test_unknown_keys_and_wrong_types(self):
+        self.refused(self.doc({"image": "logo", "crf": 0}))
+        self.refused(self.doc({"image": "logo", "position": 5}))
+        self.refused(self.doc({"image": "logo", "opacity": "1"}))
+        self.refused(self.doc({"image": "logo", "margin": 2.5}))
+        self.refused(self.doc({"image": "logo", "margin": True}))
+        self.refused(self.doc({"width": "640"}, t="RESIZE"))
+        self.refused(self.doc({"width": 641}, t="RESIZE"))
+        self.refused(self.doc({"width": 640, "height": 360}, t="RESIZE"))
+        self.refused(self.doc({"factor": 0}, t="SPEED"))
+        self.refused(self.doc({"factor": 8}, t="SPEED"))
+        self.refused(self.doc({"start": 2, "end": 1}, t="TRIM"), "INVALID_TIME_RANGE")
+        self.refused(self.doc({"keep": []}, t="CUT"))
+        self.refused(self.doc({"keep": [{"start": 0, "end": 1, "x": 1}]}, t="CUT"))
+        self.refused(self.doc({"image": "logo"}, t="FREEZE"), "UNSUPPORTED_OPERATION")
+        self.refused(self.doc({"image": "logo"}, t="overlay"), "UNSUPPORTED_OPERATION")

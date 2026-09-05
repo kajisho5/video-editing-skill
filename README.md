@@ -54,28 +54,40 @@ request JSON (stdin)
 EditProject                      sources (sha256), operations (operation_id), outputs, topological order
    ↓  timeline.build_timelines   Clip per operation: duration + segments (source range ↔ timeline range)
    ↓  compiler.compile_project   Step per operation: ffmpeg-skill tool + typed flags (ALLOWED_FLAGS)
-   ↓  executor.Executor          probe sources → check ranges → run steps in order → validate → record
+   ↓  executor.Executor          probe every source → engine capabilities → ranges → media compatibility →
+   ↓                             run steps in order → validate each output → record (reuse re-validated)
    ↓  ffmpeg_skill.run_tool      [python, <ffmpeg-skill>/scripts/<tool>.py, argv, --json]  (process group, timeout)
-response JSON (stdout)           {"ok": true, project, execution: {operations[], outputs[]}}
+   ↓  response.check_response    self-check of the document against the contract shape (violation = INTERNAL_ERROR)
+response JSON (stdout)           {"ok": true, project, execution: {sources[], operations[], outputs[]}}
 ```
 
-Modules: `timebase` (exact rational time), `paths` (workspace boundary), `operations` (allowlist + params),
-`project` (model + graph), `timeline`, `compiler`, `ffmpeg_skill` (engine boundary), `executor`, `contract`,
-`doctor`, `cli`, `errors`, `canonical`.
+Modules: `timebase` (exact rational time), `paths` (workspace boundary), `operations` (allowlist, params, media
+table), `project` (model + graph), `timeline`, `compiler`, `ffmpeg_skill` (engine boundary), `executor`, `response`
+(self-check), `contract`, `contract_check`, `doctor`, `cli`, `errors`, `canonical`.
+
+Details: [docs/operations.md](docs/operations.md) (typed model, graph rules, media compatibility, validation, error
+classification), [docs/contract.md](docs/contract.md) (versioning, pinned blocks, drift), [docs/security.md](docs/security.md).
 
 ## Contract
 
 `video-editing contract --json` (alias `skill --json`) prints the machine-readable contract;
 `video-editing contract --check [FILE|-]` verifies it against the implementation and the docs (operation
-allowlist, compiler flags, capabilities, unsupported list, error table, execution guarantees) and, with a saved
-copy, reports drift in the fields an agent registry keys on (`tool_id`, `skill_id`, `version`,
-`required_capabilities`, `inputs`, `produces_output`, `deterministic`, `result_keys`, …). CI runs it against
+allowlist, compiler flags, capabilities, unsupported list, media table, error table, execution guarantees) and,
+with a saved copy, reports drift, classifying every difference as `[breaking]` (a pinned block or pinned ToolSpec
+field changed, a key removed) or `[additive]` (a key added outside the pinned blocks). CI runs it against
 `tests/contract/contract.json`; regenerate that file with `video-editing contract --json > tests/contract/contract.json`
 when a contract change is intended. The contract prints:
 `skill_id`, `version`, `capabilities`, `unsupported`, `tools[]` (ToolSpec fields aligned with
 video-production-agent: `tool_id`, `skill_id`, `version`, `required_capabilities`, `inputs`, `produces_output`,
-`deterministic`, `result_keys`), `operations` with parameter docs, `engine`, `execution`, `request_shape`,
-`time`, `formats`, `identity`, `provenance`, `errors` (codes, exit codes, retryable defaults), `response_shape`.
+`deterministic`, `result_keys`, plus `media`), `operations` with parameter docs, `media_compatibility`, `graph`,
+`validation`, `engine`, `execution`, `request_shape`, `time`, `formats`, `identity`, `provenance`, `errors` (codes,
+exit codes, retryable defaults), `response_shape`, `doctor_shape`, `versioning`.
+
+**Versioning** ([docs/contract.md](docs/contract.md)): the blocks `schema, skill_id, version, operations,
+unsupported, errors, execution, capabilities, schemas` and the pinned ToolSpec fields are what agents pin and
+compare verbatim; a change in them is breaking and bumps the version. New keys outside them are additive and allowed
+within a version — this is how 0.1.0 gained `media_compatibility`, `doctor_shape` and the richer execution report
+without invalidating the agent's snapshot.
 
 ### Input schema (`video-editing/request@1`)
 
@@ -125,8 +137,13 @@ serialised as `{"seconds": "12.500000", "rational": "25/2"}`.
   "ok": true, "schema": "video-editing/response@1", "skill": {"id": "video-editing", "version": "0.1.0"},
   "status": "completed | reused", "command": "run",
   "engine": {"ffmpeg-skill": "0.9.0", "ffmpeg": "6.1.1", "ffprobe": "6.1.1"},
+  "request_sha256": "…sha256 of the canonical request document…",
   "execution": {
     "status": "completed", "started_at": "...Z", "finished_at": "...Z", "work_dir": ".../.video-editing/work",
+    "request_sha256": "…", "reused": false,
+    "engine": {"id": "ffmpeg-skill", "version": "0.9.0", "root": "…", "tools": ["cut", "fit", "join", "overlay", "probe", "…"], "version_supported": true, "missing_tools": []},
+    "sources": [{"id": "camA", "kind": "video", "path": "…", "sha256": "…", "size": 606688,
+                 "observation": {"kind": "media.probe", "provenance": "OBSERVED", "source": "ffmpeg-skill/probe@0.9.0", "data": {…}}}],
     "operations": [{
       "operation": "trimA", "operation_id": "op_…", "type": "TRIM", "capability": "video.trim", "status": "completed",
       "skill": "video-editing", "skill_version": "0.1.0", "tool": "ffmpeg-skill/cut", "tool_versions": {"ffmpeg-skill": "0.9.0", "ffmpeg": "…", "ffprobe": "…"},
@@ -136,7 +153,8 @@ serialised as `{"seconds": "12.500000", "rational": "25/2"}`.
       "commands": ["…ffmpeg command lines ffmpeg-skill ran…"], "started_at": "…", "finished_at": "…", "seconds": 0.67
     }],
     "outputs": [{
-      "id": "final", "operation": "branded", "path": "…/out/final.mp4", "delivered": true, "sha256": "…", "size": 401765,
+      "id": "final", "operation": "branded", "operation_id": "op_…", "path": "…/out/final.mp4", "delivered": true,
+      "sha256": "…", "size": 401765, "container": ".mp4", "reused": false,
       "timeline": {"duration_known": true, "duration": {"seconds": "5.500000", "rational": "11/2"},
                    "tracks": [{"id": "V1", "kind": "video", "segments": [
                        {"source": "camA", "source_range": {"start": {…"1/1"}, "end": {…"7/2"}}, "timeline_range": {"start": {…"0/1"}, "end": {…"5/2"}}, "speed": "1/1"},
@@ -156,7 +174,11 @@ Failure:
 {"ok": false, "error": {"code": "INVALID_TIME_RANGE", "message": "...", "retryable": false, "details": {}}}
 ```
 
-`run` failures additionally carry `status`, `execution` (records up to the failure) and `project`.
+`run` failures additionally carry `status`, `execution` (the failed record with its error, the operations after
+it with `status: "skipped"`, `outputs[]` with `delivered: false`) and `project`. Success is never inferred from
+the exit code: a run is `completed` / `reused` only when every output was delivered, hashed, probed and validated,
+and the whole document passed the response self-check (`response.check_response`); a document that would violate
+the contract shape is replaced by an `INTERNAL_ERROR` failure.
 
 ## CLI
 
@@ -169,9 +191,14 @@ video-editing run      <request.json | -> --json --workspace DIR [--allowed-inpu
    [--ffmpeg-skill-dir DIR] [--verbose]
 ```
 
+- `doctor` is the capability-discovery endpoint: skill id / version, contract schema ids, the engine (ffmpeg-skill
+  location, version, ffmpeg / ffprobe, missing capabilities), one row per operation type with `status`
+  `AVAILABLE` or `MISSING` and what is missing, `supported_operations` (exactly the AVAILABLE ones — never a
+  guess), the declared `unsupported` gaps, `checks`, `problems`. Exit 1 when anything is missing.
 - `validate` needs no engine: schema, paths, graph, ids.
-- `plan` probes the sources (durations, ranges are checked), prints the timeline per step, the idempotency key,
-  whether the step would be reused, and ffmpeg-skill's `--dry-run` command preview. **No media is written.**
+- `plan` probes every source (durations, frame, audio; ranges, media compatibility and engine capabilities are
+  checked), prints the timeline per step, the idempotency key, whether the step would be reused, and ffmpeg-skill's
+  `--dry-run` command preview. **No media is written.**
 - `run` executes; `--verbose` prints progress on stderr.
 - `--allowed-input` defaults to the workspace. Repeat the flag for several roots.
 - `VIDEO_EDITING_FFMPEG_SKILL_DIR` names the ffmpeg-skill checkout; defaults are `~/.claude/skills/ffmpeg-skill`,
@@ -198,10 +225,22 @@ One request document on stdin (`-`) or a file, **exactly one** JSON document on 
 | `CANCELLED` | 130 | yes | SIGINT / SIGTERM or `timeout_seconds` |
 | `INTERNAL_ERROR` | 1 | no | a bug; still one JSON document, never a traceback on stdout |
 
+## Operation graph and media compatibility
+
+Requests are graphs: a source or an operation's result may feed several operations, `CONCAT` takes several
+inputs, several outputs may be delivered from one request. Cycles, unknown references, duplicates, orphans and
+slot mismatches are refused before anything runs; so is media an operation cannot take (every source is probed
+first: a video needs a video stream and a duration, an image must decode; `OVERLAY` needs a video input with an
+audio stream because ffmpeg-skill 0.9.x's overlay never terminates without one) and an engine tool / encoder /
+filter that ffmpeg-skill's doctor reports missing. After each operation the output is validated against what the
+request and the inputs imply (frame size / aspect / width, frame rate, audio presence, duration). Full tables:
+[docs/operations.md](docs/operations.md).
+
 ## Security
 
 See [docs/security.md](docs/security.md). In one paragraph: the request can name files, operations and typed
-parameters and nothing else. `command`, `argv`, `shell`, `executable`, `filter` … are refused before parsing;
+parameters and nothing else. `command`, `argv`, `shell`, `executable`, `filter`, `env`, `api_key`, `workspace`,
+`allowed_input`, `ffmpeg_skill_dir` … are refused at any level before parsing;
 values that reach a filter graph are closed vocabularies or integers; outputs are confined to the workspace and
 never overwrite inputs; inputs are confined to allowed roots with `..`, symlink escapes and Windows reserved
 names refused; the only process launcher is the ffmpeg-skill adapter, argv lists only, process group, scrubbed
@@ -209,12 +248,17 @@ environment, timeout. `tests/test_security.py` proves the static properties and 
 
 ## Provenance
 
-Every operation record carries `skill`, `skill_version`, `tool`, `tool_versions` (ffmpeg-skill, ffmpeg, ffprobe),
-`operation_id`, `type`, `capability`, `inputs[].sha256` (or upstream `operation_id`), `output.sha256`,
-`parameters` (the exact flags), `commands` (the ffmpeg command lines ffmpeg-skill ran), `started_at`,
-`finished_at`, `status`. Every output carries its `sha256`, its `timeline` (which source range became which
-timeline range, at what speed) and an `observation` of kind `media.probe` marked **`OBSERVED`** with source
-`ffmpeg-skill/probe@<version>`. Request values are reported under `project`, never as observations.
+The chain request → operation → execution → engine → output is traceable from one document:
+`request_sha256` (hash of the canonical request), `project` (the validated request with `operation_id`s),
+`execution.engine` (which ffmpeg-skill, where, which tools), `execution.sources[]` (every source with its sha256 and
+its OBSERVED probe), `execution.operations[]` and `execution.outputs[]`. Every operation record carries `skill`,
+`skill_version`, `tool`, `tool_versions` (ffmpeg-skill, ffmpeg, ffprobe), `operation_id`, `type`, `capability`,
+`inputs[].sha256` (or upstream `operation_id`), `output.sha256`, `parameters` (the exact flags), `commands` (the
+ffmpeg command lines ffmpeg-skill ran — recorded for audit, never an API to replay them), `started_at`,
+`finished_at`, `status` (`completed`, `reused`, `failed`, `skipped`). Every output carries its `sha256`, `size`,
+`container`, `reused`, its `timeline` (which source range became which timeline range, at what speed) and an
+`observation` of kind `media.probe` marked **`OBSERVED`** with source `ffmpeg-skill/probe@<version>`. Request
+values are reported under `project`, never as observations.
 
 ## Determinism and idempotency
 
@@ -224,7 +268,11 @@ timeline range, at what speed) and an `observation` of kind `media.probe` marked
   parameter changes it and everything downstream.
 - `idempotency_key = sha256(operation_id, tool, tool versions, skill version, container)`.
 - Intermediates live in `<workspace>/.video-editing/work/<operation_id>.<ext>` with a record; a later run whose
-  key and hash match reuses them (`status: "reused"`). `options.reuse: false` disables it.
+  key, size and hash match re-validates them (probe, duration, frame, audio) and reuses them (`status: "reused"`,
+  `execution.reused: true`, `outputs[].reused`); a candidate that no longer validates is run again.
+  `options.reuse: false` disables it.
+- Nothing machine-specific enters an identity: paths, timestamps, the work directory and the engine location are
+  reported, not hashed.
 - Output settings are explicit (frame precision re-encodes; CONCAT can pin width / height / fps). Encoded
   bytes are `content_equivalent` across encoder builds, as ffmpeg-skill states; within one build the tests
   check byte equality of reused results.
@@ -237,42 +285,63 @@ the request (no video stream, zero duration, wrong frame size, duration off by m
 failure: the partial file is deleted, nothing is delivered, the record has `status: "failed"` and the error.
 Final outputs are written by copy + atomic rename, so a delivered file is always a validated one.
 
+## Development
+
+```
+pip install -e . ruff mypy
+ruff check src tests && mypy src && python -m compileall -q src tests
+video-editing contract --check tests/contract/contract.json        # implementation ↔ contract ↔ golden copy
+video-editing contract --json > tests/contract/contract.json       # only for an intended contract change (see docs/contract.md)
+```
+
 ## Testing
 
 ```
 cd tests
-python -m unittest test_unit test_paths test_security          # no ffmpeg needed
+python -m unittest test_unit test_paths test_security test_engine_contract     # no ffmpeg needed
 VIDEO_EDITING_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill python -m unittest -v test_integration   # real media
 ```
 
 - `test_unit.py`: time forms and arithmetic, parameter validation, schema / dependency / cycle / orphan errors,
   operation id determinism, source→timeline mapping (trim, cut with reorder, speed, transition overlap,
-  trim of a sped clip, unknown durations), stable serialisation, compiler argv, contract consistency.
+  trim of a sped clip, unknown durations), stable serialisation, compiler argv, contract consistency and golden
+  drift (breaking vs additive), the media table, profile derivation and pre-execution refusals (audio, engine
+  gaps), output validation rules, the response self-check (accepts a conforming document, refuses every
+  malformed success it is meant to catch), doctor operation availability.
 - `test_paths.py`: component containment (POSIX and Windows via `ntpath`), prefix collisions, drive / UNC
-  escapes, traversal, reserved names, symlink escape, output rules.
+  escapes, traversal, reserved names, symlink escape, output rules; on a real Windows file system (CI's
+  windows-latest job) also 8.3 short names, case-insensitive spellings, drive-letter outputs, reserved names.
 - `test_security.py`: AST scan (no shell / eval / exec / importlib / network, subprocess with lists only), and
-  black-box attacks through the CLI: command keys, shell metacharacters, executable and filter injection,
+  black-box attacks through the CLI: command keys, shell metacharacters, executable and filter injection, argv
+  injection through every typed value, environment / boundary keys (`env`, `workspace`, `allowed_input`,
+  `ffmpeg_skill_dir`, `api_key` …) at every level, environment references in paths, unknown keys and wrong types,
   traversal and absolute outputs, request-level workspace override, malformed JSON, oversized input.
 - `test_engine_contract.py`: the error contract at the engine boundary with a fake ffmpeg-skill (a test double for
   the *boundary only*, never reported as integration): TOOL_ERROR vs OUTPUT_ERROR vs VALIDATION_ERROR vs
   CANCELLED, no partial left behind, plan writes nothing, reuse / invalidation / tampered intermediate,
-  unsupported engine version.
+  unsupported engine version; media compatibility and engine gaps refused before any tool runs, doctor as
+  capability discovery, a stale reuse candidate re-run, downstream operations recorded as skipped after a failure,
+  sources / engine / request identity in the execution report, a five-operation multi-input graph, and the
+  response self-check on every document.
 - `test_integration.py` (skipped, never faked, without ffmpeg + ffmpeg-skill): trim, cut + reorder, concat +
   transition + reorder, fill / resize / fit, speed + overlay, the full pipeline (trim → fill → second source →
   concat → validation, plan before run, reuse, chained invalidation), range beyond duration, transition too
-  long, corrupt input, still image as video, timeout → `CANCELLED`, doctor. Fixtures are generated with
-  ffmpeg lavfi at test time; the suite asserts sources are byte-identical afterwards.
+  long, corrupt input, still image as video, timeout → `CANCELLED`, doctor; and one real-media E2E per operation
+  (`CUT`, `CONCAT`, `CONCAT` with a silent input, `SPEED`, `RESIZE`, `FIT`, `FILL`, `OVERLAY`) asserting file
+  existence, size, sha256, duration, streams, frame and timeline, the overlay-without-audio and corrupt-image
+  refusals, a cut → speed → resize → overlay chain with two outputs and full reuse, and doctor availability.
+  Fixtures are generated with ffmpeg lavfi at test time; the suite asserts sources are byte-identical afterwards.
 
-CI (`.github/workflows/tests.yml`, manual trigger like the sibling skills; GitHub offers the trigger only once the
-file is on the default branch): lint (ruff, mypy, compileall, `contract --check`); unit + engine-contract on
-Linux / Windows / macOS × Python 3.9 / 3.11; integration on Ubuntu with apt ffmpeg and a checkout of
-kajisho5/ffmpeg-skill.
+CI (`.github/workflows/tests.yml`, on pull requests, pushes to main and manually): lint (ruff, mypy, compileall,
+`contract --check`); unit + paths + security + engine-contract on Linux / Windows / macOS × Python 3.9 / 3.11;
+integration on Ubuntu with apt ffmpeg and a checkout of kajisho5/ffmpeg-skill.
 
 ## ffmpeg-skill relationship
 
 ffmpeg-skill is the media execution engine. This skill uses five of its tools (`probe`, `cut`, `join`, `fit`,
 `overlay`) through their public CLI contract (`python3 scripts/<tool>.py … --json`, `status: completed | failed`,
-`error.kind`), pinned to versions `>=0.9.0,<1.0.0`, located from the environment, never from the request.
+`error.kind`) and its doctor (`scripts/_contract.py doctor --json`: ffmpeg / ffprobe versions, available encoders
+and filters), pinned to versions `>=0.9.0,<1.0.0`, located from the environment, never from the request.
 Nothing here builds ffmpeg command lines or filter strings; what ffmpeg-skill ran is reported verbatim in
 `commands`. Gaps in ffmpeg-skill (pixel crop, freeze, reverse, image-to-clip) are reported as gaps, not worked
 around with a direct ffmpeg call. ffmpeg-skill's `render.py` project format is not used: it has a fixed stage
@@ -285,23 +354,29 @@ orchestration, QA, Artifact and Delivery. This skill is an external execution co
 `contract --json` (SkillPackage / ToolSpec field names match) and drive with `run - --json` on stdin like the
 documented adapters for media-analysis-skill and transcription-skill. Its results are shaped so the agent can
 hash artifacts itself, store `commands` as provenance and map `error.code` / `retryable` without parsing stderr.
-The agent's current `video.trim {asset, keep}` IR op maps onto `CUT`; `CONCAT` and the others are additive
-vocabulary the agent does not yet emit. No agent code was changed for this skill.
+The agent's adapter (video-production-agent PR #19) lowers its `video.trim {asset, keep}` IR op onto `CUT` and can
+lower every other type from the contract, but its planner emits only `video.trim` today; `CONCAT` and the others
+are vocabulary the agent does not yet generate. No agent code is changed by this skill.
 
 ## Current limitations
 
 - Operations beyond ffmpeg-skill 0.9.x: `CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION` are not implemented.
+- `OVERLAY` needs a video input with an audio stream (ffmpeg-skill 0.9.x limitation, refused up front).
+- `FIT` / `FILL` without `width` and `RESIZE` leave the exact frame to ffmpeg-skill (the width is kept, the height
+  follows); only the aspect / width is promised and validated.
 - One video track plus image overlays; no picture-in-picture of video, no audio-only sources, no per-track audio.
 - Encoding parameters are ffmpeg-skill's defaults (x264 CRF 18 medium, AAC 192k; HDR sources become HEVC 10-bit).
   A `keyframe` precision `TRIM` / `CUT` may stream-copy and land on a keyframe (tolerance 1.5 s in validation).
 - Source durations come from the container; ranges are checked against them with 0.1 s slack.
 - `SPEED` computes its target duration from the timeline; the tool retimes to that duration (audio via `atempo`).
 - Reuse records are trusted on key + hash; the work directory is not pruned automatically.
-- Windows: reserved names and semantics are handled; the test suite's Windows paths run through `ntpath` on any
-  OS, but real Windows execution has not been verified in this environment.
+- Windows: reserved names, short (8.3) names, case-insensitive spellings and drive letters are handled and tested
+  on CI's Windows runner (unit suites); real-media execution on Windows / macOS is not part of CI (ffmpeg is
+  installed only on the Ubuntu integration job).
 
 ## Future extensions
 
 Pixel `CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT` once ffmpeg-skill (or an equivalent typed engine) provides
-them; explicit encoding profiles per output; audio tracks and video-on-video layers; `contract --check` drift
-detection like media-analysis-skill; a lowering adapter from the agent's Project IR to this request format.
+them (a new operation type is a breaking contract change: 0.2.0); explicit encoding profiles per output; audio
+tracks and video-on-video layers; an `OVERLAY` that tolerates silent inputs once ffmpeg-skill's overlay terminates
+on them.

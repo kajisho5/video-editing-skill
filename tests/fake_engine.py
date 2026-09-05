@@ -14,6 +14,10 @@ Modes (written to <root>/MODE):
   hang           tool sleeps 60 s (for timeout / cancellation)
   noisy          like ok, but prints junk before the JSON on stdout
   no_ffmpeg      doctor reports ffmpeg / ffprobe missing (tools never run)
+  no_xfade       doctor reports filter:xfade / filter:acrossfade missing (CONCAT unavailable, the rest fine)
+  stale_reuse    probe reports no video stream for a *finished* work-dir intermediate (a reuse candidate), never for a partial
+Probe facts: a video whose name contains "noaudio" has no audio stream; an image whose bytes start with "corrupt" does
+not decode (no frame size); a video whose name contains "silent" is fine but has no audio (alias of noaudio).
 """
 import json
 import os
@@ -37,16 +41,42 @@ SCRIPT = textwrap.dedent('''
         except (OSError, ValueError):
             pass
         return 2.0  # every real (fixture) source is "2 s"
+    def header(path):
+        try:
+            with open(path, "rb") as fh:
+                head = fh.read()
+            if head.startswith(b"FAKE{"):
+                return json.loads(head[4:].decode())
+        except (OSError, ValueError):
+            pass
+        return {}
     def probe_doc(path):
-        video = {"codec": "h264", "width": 640, "height": 360, "fps": 30.0}
+        h = header(path)
+        video = {"codec": "h264", "width": h.get("width", 640), "height": h.get("height", 360), "fps": h.get("fps", 30.0)}
         if mode == "bad_probe" and ".partial." in path:
+            video = None
+        if mode == "stale_reuse" and os.sep + "work" + os.sep in path and ".partial." not in path:
             video = None
         dur = dur_of(path)
         if mode == "short" and ".partial." in path:
             dur = 0.5
-        if path.endswith(".png"):
-            return {"file": path, "duration": None, "size_bytes": 1, "video": {"codec": "png", "width": 120, "height": 40}, "audio": None}
-        return {"file": path, "duration": dur, "size_bytes": os.path.getsize(path) if os.path.exists(path) else 0, "video": video, "audio": None}
+        if path.endswith((".png", ".jpg", ".jpeg")):
+            try:
+                with open(path, "rb") as fh:
+                    corrupt = fh.read(7) == b"corrupt"
+            except OSError:
+                corrupt = True
+            return {"file": path, "duration": None, "size_bytes": 1, "video": None if corrupt else {"codec": "png", "width": 120, "height": 40, "pix_fmt": "rgba"}, "audio": None}
+        base = os.path.basename(path)
+        audio = None if ("noaudio" in base or "silent" in base) else {"codec": "aac", "channels": 2, "sample_rate": 48000}
+        try:
+            with open(path, "rb") as fh:
+                head = fh.read()
+            if head.startswith(b"FAKE{"):
+                audio = None if json.loads(head[4:].decode()).get("noaudio") else audio
+        except (OSError, ValueError):
+            pass
+        return {"file": path, "duration": dur, "size_bytes": os.path.getsize(path) if os.path.exists(path) else 0, "video": video, "audio": audio}
     def flag(name, default=None):
         for a in args:
             if a.startswith(name + "="):
@@ -76,8 +106,27 @@ SCRIPT = textwrap.dedent('''
     if dry:
         emit({"status": "completed", "output": out, "dry_run": True, "commands": ["ffmpeg -i x " + out]}); sys.exit(0)
     if mode != "no_output":
+        inputs = [a for a in args[:args.index("-o")] if not a.startswith("--")]
+        noaudio = all(("noaudio" in os.path.basename(p) or "silent" in os.path.basename(p) or (probe_doc(p).get("audio") is None)) for p in inputs if not p.endswith(".png")) if name != "join" else all(probe_doc(p).get("audio") is None for p in inputs)
+        first = probe_doc(inputs[0])["video"]
+        width, height, fps = first["width"], first["height"], first["fps"]
+        if flag("--fps"):
+            fps = float(flag("--fps"))
+        if name == "join":
+            width, height = int(flag("--width", width)), int(flag("--height", height))
+        if name == "fit" and (flag("--aspect") or flag("--width")):
+            width = int(flag("--width", width))
+            if flag("--aspect"):
+                aw, ah = (int(x) for x in flag("--aspect").split(":"))
+                if flag("--width") is None and flag("--fit", "pad") == "crop":   # centre crop keeps the height when the source is wider
+                    height = first["height"]; width = int(round(height * aw / ah)); width += width % 2
+                else:
+                    height = int(round(width * ah / aw)); height += height % 2
+            else:
+                height = int(round(width * first["height"] / first["width"])); height += height % 2
         with open(out, "wb") as fh:
-            fh.write(b"FAKE" + json.dumps({"duration": expected_duration(), "tool": name, "args": args}).encode())
+            fh.write(b"FAKE" + json.dumps({"duration": expected_duration(), "tool": name, "args": args, "noaudio": noaudio,
+                                           "width": width, "height": height, "fps": fps}).encode())
     if mode == "noisy":
         sys.stdout.write("some junk line\\n")
     emit({"status": "completed", "output": out, "dry_run": False, "commands": ["ffmpeg -i x " + out]})
@@ -88,9 +137,13 @@ DOCTOR = textwrap.dedent('''
     import json, os, sys
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     mode = open(os.path.join(ROOT, "MODE")).read().strip()
+    available = ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade", "filter:loudnorm"]
     if mode == "no_ffmpeg":
-        print(json.dumps({"ok": False, "ffmpeg": None, "ffprobe": None, "missing": ["ffmpeg", "ffprobe"], "python": "3"})); sys.exit(1)
-    print(json.dumps({"ok": True, "ffmpeg": "fake-6.0", "ffprobe": "fake-6.0", "missing": [], "python": "3"}))
+        print(json.dumps({"ok": False, "ffmpeg": None, "ffprobe": None, "missing": ["ffmpeg", "ffprobe"], "available": [], "python": "3"})); sys.exit(1)
+    if mode == "no_xfade":
+        available = [a for a in available if not a.startswith("filter:xfade") and not a.startswith("filter:acrossfade")]
+        print(json.dumps({"ok": True, "ffmpeg": "fake-6.0", "ffprobe": "fake-6.0", "missing": ["filter:xfade", "filter:acrossfade"], "available": available, "python": "3"})); sys.exit(0)
+    print(json.dumps({"ok": True, "ffmpeg": "fake-6.0", "ffprobe": "fake-6.0", "missing": [], "available": available, "python": "3"}))
 ''')
 
 
