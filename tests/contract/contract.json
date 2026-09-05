@@ -839,6 +839,48 @@
       ]
     }
   },
+  "provides": [
+    {
+      "id": "video.concat",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/concat"
+    },
+    {
+      "id": "video.cut",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/cut"
+    },
+    {
+      "id": "video.fill",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/fill"
+    },
+    {
+      "id": "video.fit",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/fit"
+    },
+    {
+      "id": "video.overlay",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/overlay"
+    },
+    {
+      "id": "video.resize",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/resize"
+    },
+    {
+      "id": "video.speed",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/speed"
+    },
+    {
+      "id": "video.trim",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/trim"
+    }
+  ],
   "media_compatibility": {
     "CONCAT": {
       "inputs": "two or more videos (any sizes / frame rates; conformed by params.mode to params.width/height/fps or the first input)",

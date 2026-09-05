@@ -88,3 +88,32 @@ engine's encoders need even sizes and the failure would otherwise surface only i
 operations normalize it. **Why.** A hang or a late FFmpeg failure is the worst outcome for an execution Skill; the overlay-without-audio hang
 in ffmpeg-skill 0.9.x is the canonical example. What cannot be promised is refused; what the engine converts on its
 own is stated, not hidden.
+
+## ADR-006 — `provides`: publishing our Capability ids for cross-repository discovery
+
+**Decision.** The contract gained one additive top-level block, `provides`, listing this Skill's eight operations
+by the same `capability` string `operations.OPERATIONS`/`tool_specs()` already carry (`video.trim`, `video.cut`,
+`video.concat`, `video.speed`, `video.fit`, `video.fill`, `video.resize`, `video.overlay`), each paired with its
+`tool_id` and a `lifecycle` of `EXPERIMENTAL`. It is derived from `OPERATIONS` — the same source `tool_specs()`
+already reads — so it cannot independently drift, and it deliberately excludes `capability_list()`'s two synthetic
+entries (`video.transition`, `video.reorder`): those describe a property of `CONCAT`/`CUT`, not something a caller
+can request on its own, and `provides` is meant to list only capabilities a planner could target directly.
+
+**Why.** A companion project, `kajisho5/AI-video-production-OS`, is defining a cross-repository contract
+(`docs/SPEC.md` `CapabilityContract.provides`) so that a Capability id like `video.trim` can be resolved to a
+Provider — this Skill — without an orchestrator hardcoding which of the ten Skill repos implements it. This
+Skill already had the hard part: every operation is tagged with exactly this dotted, cross-Skill-shaped
+`capability` string in `operations.py` (that field predates this ADR and was never advertised at the top level).
+`provides` is the mechanical step of surfacing what already existed, not a new capability or a new judgement about
+what this Skill can do.
+
+`lifecycle: EXPERIMENTAL` is not a comment on the operations themselves — `TRIM`, `CUT`, `CONCAT`, and the rest are
+the same tested, already-in-production behavior `tool_specs()` has always described, exercised by
+`video-production-agent`'s real integration suite. It reflects that the *Capability id* concept this field
+publishes is new: as of this ADR, no registry or Agent is known to consume `provides` yet. It should move to
+`STABLE` once one does.
+
+This block is additive, not pinned (`contract.py`'s `PINNED_BLOCKS`): nothing outside this repository is known to
+depend on it yet, so it is free to change shape without a version bump if the companion project's schema changes
+before anything consumes it in practice — exactly the same latitude `media_compatibility`, `graph`, and the other
+0.1.x additive blocks already have.
