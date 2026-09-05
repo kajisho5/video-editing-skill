@@ -117,3 +117,38 @@ This block is additive, not pinned (`contract.py`'s `PINNED_BLOCKS`): nothing ou
 depend on it yet, so it is free to change shape without a version bump if the companion project's schema changes
 before anything consumes it in practice — exactly the same latitude `media_compatibility`, `graph`, and the other
 0.1.x additive blocks already have.
+
+## ADR-007 — `contract_version`: a shape axis independent of the skill's release version
+
+**Decision.** The contract gained a second, independent version field, `contract_version` (starts at `"1.0"`),
+alongside the existing `version` (the package's own release version, `"0.1.0"`). `contract_version` moved into
+`PINNED_BLOCKS` in place of `version`; `version` moved out of it (and out of `contract_check.py`'s
+`PINNED_TOP_FIELDS`). Concretely:
+
+- `version` — this package's release version. Free to change on any release, including one that changes nothing a
+  dependent needs to react to (an internal refactor, a bug fix, a new non-breaking operation). `contract_check.py`'s
+  `check_saved()` now reports a `version`-only change as *additive* drift, never *breaking*.
+- `contract_version` — the version of the *shape* the pinned blocks publish (`operations`, `capabilities`,
+  `errors`, `execution`, `schemas`, `unsupported`, `schema`, `skill_id`). Changes only when one of them changes in a
+  way a dependent (an Agent, a registry) would need to react to; a dependent pins a range against
+  `contract_version`, never `version`.
+
+`contract_version` starts at `"1.0"`, not `"0.1.0"`: the contract shape established when this Skill reached 0.1.0
+has had no breaking change since (PR #2's `provides` field and the audit-fix commit were both additive), so there
+is exactly one contract shape to number, and `"1.0"` names it — the same convention `ffmpeg-skill` already uses
+(`skill.version` 0.9.1, `contract_version` "1.0"; see `kajisho5/AI-video-production-OS` `docs/VERSIONING.md` §1).
+
+**Why.** Before this ADR, `version` did double duty: it was both this package's release identity and the only
+signal a change to a pinned block had happened, forcing every future non-breaking release (a bug fix, a new
+`0.2.0` operation added additively) to either bump `version` and *look* like a contract-breaking event, or leave
+`version` frozen and give dependents no way to tell "the package moved" from "the contract shape moved". This is
+exactly the two-axis pattern `kajisho5/AI-video-production-OS` documents as already proven in `ffmpeg-skill`
+(`docs/VERSIONING.md` §1) and names as the one per-Skill gap most of the ecosystem still has
+(`docs/ROADMAP.md`: "7 of 10 Skills don't publish this field at all today"). Adopting it here needs no change to
+`video-production-agent`: its adapter (`check_contract()`) range-checks `version` against `("0.1.",)` and never
+reads `contract_version`, so publishing the new field is purely additive to every known caller, and `version`
+continuing to report `"0.1.0"` keeps that range check passing unchanged.
+
+`versioning.rule` in the contract states the two-axis rule in full; `doctor --json`'s `contract` block also carries
+`contract_version` alongside `version`, since doctor is the other place a caller checks compatibility before
+`contract --json`.

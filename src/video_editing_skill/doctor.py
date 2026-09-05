@@ -5,7 +5,7 @@ Prints no environment variables and no secrets. Exit 1 when the skill cannot run
 import platform
 from typing import Any, Dict, List, Optional
 
-from . import CONTRACT_SCHEMA, DOCTOR_SCHEMA, PLAN_SCHEMA, REQUEST_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
+from . import CONTRACT_SCHEMA, CONTRACT_VERSION, DOCTOR_SCHEMA, PLAN_SCHEMA, REQUEST_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
 from .contract import TOOL_REQUIREMENTS
 from .errors import EditError
 from .ffmpeg_skill import ENV_DIR, REQUIRED_TOOLS, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN, engine_doctor, locate, missing_capabilities
@@ -88,7 +88,8 @@ def doctor_report(ffmpeg_skill_dir: Optional[str] = None, workspace: Optional[st
             problems.append(f"operation {row['type']} unavailable: " + ", ".join(row["missing"]))
     supported = [r["type"] for r in operations if r["status"] == "AVAILABLE"]
     return {"schema": DOCTOR_SCHEMA, "ok": not problems, "skill": {"id": SKILL_ID, "version": VERSION},
-            "contract": {"schema": CONTRACT_SCHEMA, "version": VERSION, "request": REQUEST_SCHEMA, "response": RESPONSE_SCHEMA, "plan": PLAN_SCHEMA, "doctor": DOCTOR_SCHEMA},
+            "contract": {"schema": CONTRACT_SCHEMA, "version": VERSION, "contract_version": CONTRACT_VERSION,
+                         "request": REQUEST_SCHEMA, "response": RESPONSE_SCHEMA, "plan": PLAN_SCHEMA, "doctor": DOCTOR_SCHEMA},
             "engine": {"id": "ffmpeg-skill", "found": skill is not None, "version": skill.version if skill else None, "root": skill.root if skill else None,
                        "version_supported": skill.version_supported() if skill else None, "tools_required": list(REQUIRED_TOOLS),
                        "tools_missing": skill.missing_tools() if skill else list(REQUIRED_TOOLS),

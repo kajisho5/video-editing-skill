@@ -80,17 +80,20 @@ with a saved copy, reports drift, classifying every difference as `[breaking]` (
 field changed, a key removed) or `[additive]` (a key added outside the pinned blocks). CI runs it against
 `tests/contract/contract.json`; regenerate that file with `video-editing contract --json > tests/contract/contract.json`
 when a contract change is intended. The contract prints:
-`skill_id`, `version`, `capabilities`, `unsupported`, `tools[]` (ToolSpec fields aligned with
+`skill_id`, `version`, `contract_version`, `capabilities`, `unsupported`, `tools[]` (ToolSpec fields aligned with
 video-production-agent: `tool_id`, `skill_id`, `version`, `required_capabilities`, `inputs`, `produces_output`,
 `deterministic`, `result_keys`, plus `media`), `operations` with parameter docs, `media_compatibility`, `graph`,
 `validation`, `engine`, `execution`, `request_shape`, `time`, `formats`, `identity`, `provenance`, `errors` (codes,
 exit codes, retryable defaults), `response_shape`, `doctor_shape`, `versioning`.
 
-**Versioning** ([docs/contract.md](docs/contract.md)): the blocks `schema, skill_id, version, operations,
-unsupported, errors, execution, capabilities, schemas` and the pinned ToolSpec fields are what agents pin and
-compare verbatim; a change in them is breaking and bumps the version. New keys outside them are additive and allowed
-within a version — this is how 0.1.0 gained `media_compatibility`, `doctor_shape` and the richer execution report
-without invalidating the agent's snapshot.
+**Versioning** ([docs/contract.md](docs/contract.md), [docs/decisions.md](docs/decisions.md) ADR-007): two
+independent axes. `version` (`"0.1.0"`) is this package's own release version and may move on any release,
+including a non-breaking one. `contract_version` (`"1.0"`) is the version of the pinned shape — `schema, skill_id,
+contract_version, operations, unsupported, errors, execution, capabilities, schemas` plus the pinned ToolSpec
+fields — and changes only when one of them changes in a way a dependent must react to; a dependent pins a range
+against `contract_version`, never `version`. New keys outside the pinned blocks are additive and allowed within
+the same `contract_version` — this is how 0.1.0 gained `media_compatibility`, `doctor_shape`, `provides` and the
+richer execution report without invalidating the agent's snapshot.
 
 ### Input schema (`video-editing/request@1`)
 

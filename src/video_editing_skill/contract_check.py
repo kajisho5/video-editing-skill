@@ -7,7 +7,7 @@ contract document against the live one (drift). Both return a list of problems; 
 import os
 from typing import Any, Dict, List, Optional
 
-from . import CONTRACT_SCHEMA, SKILL_ID, VERSION
+from . import CONTRACT_SCHEMA, CONTRACT_VERSION, SKILL_ID, VERSION
 from .compiler import ALLOWED_FLAGS, compile_operation
 from .contract import PINNED_BLOCKS, TOOL_REQUIREMENTS, skill_contract
 from .errors import ERROR_CODES, EXIT_CODES
@@ -18,7 +18,7 @@ from .project import EditOperation
 # fields of a ToolSpec an agent-side registry keys on; a change in any of them is a contract change
 PINNED_TOOL_FIELDS = ("tool_id", "skill_id", "version", "operation_type", "capability", "required_capabilities", "inputs", "input_arity",
                       "produces_output", "deterministic", "result_keys", "executed_by", "kind")
-PINNED_TOP_FIELDS = ("schema", "skill_id", "version", "role", "capability_names", "schemas", "formats", "not_provided")
+PINNED_TOP_FIELDS = ("schema", "skill_id", "contract_version", "role", "capability_names", "schemas", "formats", "not_provided")
 DOCS = ("README.md", "SKILL.md")
 
 
@@ -44,7 +44,8 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
     """Problems between the (live) contract and the code / docs."""
     c = contract or skill_contract()
     problems: List[str] = []
-    if c.get("schema") != CONTRACT_SCHEMA or c.get("skill_id") != SKILL_ID or c.get("version") != VERSION:
+    if (c.get("schema") != CONTRACT_SCHEMA or c.get("skill_id") != SKILL_ID or c.get("version") != VERSION
+            or c.get("contract_version") != CONTRACT_VERSION):
         problems.append("contract header does not match the package")
     ops_in_contract = set(c.get("operations", {}))
     if ops_in_contract != set(OPERATIONS):
@@ -108,8 +109,9 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
         if ts.get("media", {}).get("requires") != MEDIA[t]["requires"]:
             problems.append(f"ToolSpec {t}: media.requires differs from operations.MEDIA")
     ver = c.get("versioning", {})
-    if tuple(ver.get("pinned_blocks", [])) != PINNED_BLOCKS or ver.get("version") != VERSION:
-        problems.append("contract.versioning does not name the pinned blocks / version")
+    if (tuple(ver.get("pinned_blocks", [])) != PINNED_BLOCKS or ver.get("version") != VERSION
+            or ver.get("contract_version") != CONTRACT_VERSION):
+        problems.append("contract.versioning does not name the pinned blocks / version / contract_version")
     # encoding profile: the contract's parameter list is exactly what validate_encoding accepts, every flag is allowlisted for every re-encoding tool
     enc = c.get("encoding") or {}
     if enc != ENCODING or set(enc.get("parameters", {})) != {"crf", "preset"}:
