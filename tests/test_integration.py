@@ -424,6 +424,9 @@ class MediaMatrixE2ETests(unittest.TestCase):
         run("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "3",
             "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc",
             "-c:a", "aac", cls.media["hdr"])
+        cls.media["odd"] = os.path.join(media, "odd.mp4")   # 641x361: only mpeg4 stores an odd frame (libx264 yuv420p refuses it)
+        run("-f", "lavfi", "-i", "testsrc2=size=642x362:rate=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "2", "-vf", "scale=641:361",
+            "-c:v", "mpeg4", "-q:v", "3", "-c:a", "aac", cls.media["odd"])
         cls.media["broken"] = os.path.join(media, "broken.mp4")
         with open(cls.media["a"], "rb") as src, open(cls.media["broken"], "wb") as dst:
             dst.write(src.read()[: os.path.getsize(cls.media["a"]) * 3 // 5])
@@ -666,6 +669,24 @@ class MediaMatrixE2ETests(unittest.TestCase):
             doc = request([{"id": op["input"], "path": self.media[key]}], [dict(op, id="x")], [{"id": "o", "operation": "x", "path": "out/o.mp4"}])
             out = self.run_cli("run", doc)
             self.facts(out, "o", 6.0 if key == "a" else 5.0, frame, audio=True)
+
+    def test_concat_single_dimension_and_odd_frames(self):
+        for params, frame in (({"width": 300}, (300, 168)), ({"height": 250}, (444, 250))):
+            self.setUp()
+            doc = request([self.src("a", "A"), self.src("b", "B")], [{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": params}], [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
+            out = self.run_cli("run", doc)
+            self.facts(out, "o", 11.0, frame, audio=True, tol=0.6)
+        self.setUp()   # an odd 641x361 source: TRIM is refused before the engine, RESIZE / FIT / CONCAT normalize it to even
+        doc = request([self.src("odd", "O")], [{"id": "t", "type": "TRIM", "input": "O", "params": {"start": 0, "end": 1}}], [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        out = self.run_cli("run", doc, expect=3)
+        self.assertEqual((out["error"]["details"]["reason"], out["error"]["details"]["frame"]), ("odd_frame", [641, 361]))
+        self.assertFalse(os.path.exists(os.path.join(self.ws, ".video-editing")), "nothing ran")
+        for op, frame in (({"type": "RESIZE", "input": "O", "params": {"width": 202}}, (202, 114)), ({"type": "FIT", "input": "O", "params": {"aspect": "1:1"}}, (642, 642)),
+                          ({"type": "CONCAT", "inputs": ["O", "A"], "params": {}}, (640, 360))):
+            self.setUp()
+            doc = request([self.src("odd", "O"), self.src("a", "A")], [dict(op, id="x")], [{"id": "o", "operation": "x", "path": "out/o.mp4"}])
+            out = self.run_cli("run", doc)
+            self.facts(out, "o", 2.0 if op["type"] != "CONCAT" else 8.0, frame, audio=True, tol=0.6)
 
     def test_rotation_metadata_is_measured_as_displayed(self):
         doc = request([self.src("rot90", "R")], [{"id": "r", "type": "RESIZE", "input": "R", "params": {"width": 180}}], [{"id": "o", "operation": "r", "path": "out/o.mp4"}])

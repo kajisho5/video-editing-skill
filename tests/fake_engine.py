@@ -129,8 +129,13 @@ SCRIPT = textwrap.dedent('''
         width, height, fps = sw, sh, first["fps"]
         if flag("--fps"):
             fps = float(flag("--fps"))
-        if name == "join":
-            width, height = int(flag("--width", sw)), int(flag("--height", sh))
+        if name == "join":   # join.py rule
+            if flag("--width") and flag("--height"):
+                width, height = int(flag("--width")), int(flag("--height"))
+            elif flag("--width"):
+                width = int(flag("--width")); height = int(round(width * sh / sw))
+            elif flag("--height"):
+                height = int(flag("--height")); width = int(round(height * sw / sh))
             width, height = width - (width % 2), height - (height % 2)
         if name == "fit" and (flag("--aspect") or flag("--width")):
             src_ratio = sw / sh

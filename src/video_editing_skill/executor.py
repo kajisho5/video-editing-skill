@@ -156,12 +156,18 @@ class Executor:
         p = op.params
         first = self.profile(op.inputs[0])
         sw, sh = first["width"], first["height"]
-        if op.type == "CONCAT":
+        if op.type == "CONCAT":   # join.py: both given -> as given; one given -> the other from the first input's aspect (round); none -> the first input; floored to even
             if "width" in p and "height" in p:
-                return (p["width"], p["height"])
-            if sw and sh:
-                return (sw - (sw % 2), sh - (sh % 2))
-            return None
+                w, h = p["width"], p["height"]
+            elif "width" in p and sw and sh:
+                w, h = p["width"], int(round(p["width"] * sh / sw))
+            elif "height" in p and sw and sh:
+                w, h = int(round(p["height"] * sw / sh)), p["height"]
+            elif sw and sh:
+                w, h = sw, sh
+            else:
+                return None
+            return (w - (w % 2), h - (h % 2))
         if op.type == "RESIZE":
             if sw and sh:
                 return (even(p["width"]), even(p["width"] * sh / sw))
@@ -236,6 +242,12 @@ class Executor:
                 if any(h is True for h in hdrs.values()) and any(h is False for h in hdrs.values()):
                     raise EditError("INVALID_INPUT", f"operation {ref!r} (CONCAT): HDR and SDR inputs cannot be joined (the engine encodes from the first input's colour system)",
                                     {"operation": ref, "inputs": hdrs, "reason": "hdr_mismatch"})
+            if op.type in ("TRIM", "CUT", "SPEED", "OVERLAY"):   # these keep the input frame; the engine's encoders need even sizes
+                prof = self.profile(video_inputs[0])
+                if prof["width"] and prof["height"] and (prof["width"] % 2 or prof["height"] % 2):
+                    raise EditError("INVALID_INPUT", f"operation {ref!r} ({op.type}): input {video_inputs[0]!r} frame {prof['width']}x{prof['height']} has an odd dimension; "
+                                    f"{op.type} keeps the input frame and the engine's encoder needs even sizes; run RESIZE, FIT, FILL or CONCAT on it first",
+                                    {"operation": ref, "input": video_inputs[0], "frame": [prof["width"], prof["height"]], "reason": "odd_frame"})
             for r in video_inputs:
                 prof = self.profile(r)
                 if req["audio"] and prof["audio"] is False:

@@ -871,7 +871,8 @@
       },
       "refused_before_execution": [
         "source without a video stream or duration",
-        "range beyond the input duration"
+        "range beyond the input duration",
+        "input frame with an odd width or height (odd_frame)"
       ]
     },
     "FILL": {
@@ -922,7 +923,8 @@
         "source without a video stream or duration",
         "image that does not decode",
         "video input without an audio stream: ffmpeg-skill 0.9.x overlay (-loop 1 image, -shortest) never terminates on it",
-        "start / end beyond the input duration"
+        "start / end beyond the input duration",
+        "input frame with an odd width or height (odd_frame)"
       ]
     },
     "RESIZE": {
@@ -956,7 +958,8 @@
       },
       "refused_before_execution": [
         "source without a video stream or duration",
-        "factor outside [1/4, 4]"
+        "factor outside [1/4, 4]",
+        "input frame with an odd width or height (odd_frame)"
       ]
     },
     "TRIM": {
@@ -973,7 +976,8 @@
       },
       "refused_before_execution": [
         "source without a video stream or duration",
-        "range beyond the input duration"
+        "range beyond the input duration",
+        "input frame with an odd width or height (odd_frame)"
       ]
     }
   },
@@ -1166,7 +1170,8 @@
     "rules": [
       "a source whose rotation metadata is ±90 / 270 is measured with width and height swapped (as the engine does)",
       "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)",
-      "CONCAT: params.width x params.height, else the first input's frame floored to even",
+      "CONCAT (ffmpeg-skill join.py): params.width x params.height; only one given -> the other from the first input's aspect (round); none -> the first input's frame; then floored to even",
+      "TRIM / CUT / SPEED / OVERLAY keep the input frame; an input with an odd width or height is refused before execution (INVALID_INPUT odd_frame) because the engine's encoders need even sizes",
       "no operation stretches (distorts) the picture; anamorphic output is not provided",
       "the normalized target frame is reported in plan.steps[].normalized and execution.operations[].normalized and verified on the output exactly"
     ]
@@ -1177,6 +1182,7 @@
       "video source without a duration (a still image or a broken container declared as video): INVALID_INPUT no_duration",
       "image source that does not decode to a frame: INVALID_INPUT image_undecodable",
       "OVERLAY on a video input without an audio stream: INVALID_INPUT audio_required (ffmpeg-skill 0.9.x overlay never terminates on it)",
+      "TRIM / CUT / SPEED / OVERLAY on an input whose frame has an odd width or height: INVALID_INPUT odd_frame (the encoder needs even sizes; RESIZE / FIT / FILL / CONCAT normalize to even)",
       "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
       "unsupported input extension / output container: UNSUPPORTED_FORMAT",
       "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
@@ -1207,7 +1213,8 @@
       "different_frame_rate_in_concat": "allowed; conformed to params.fps or the first input's rate",
       "variable_frame_rate": "allowed; conformed to constant fps by the engine (warning)",
       "hdr": "allowed alone (output hevc, warning); not mixed with SDR in CONCAT",
-      "rotation_metadata": "honoured: the frame is measured as displayed"
+      "rotation_metadata": "honoured (a display matrix): the frame is measured as displayed; a legacy `rotate` tag is ignored by ffmpeg >= 5 and therefore by the probe",
+      "odd_frame": "RESIZE / FIT / FILL / CONCAT normalize to even sizes; TRIM / CUT / SPEED / OVERLAY refuse it up front (odd_frame)"
     }
   }
 }

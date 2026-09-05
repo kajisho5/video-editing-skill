@@ -393,6 +393,10 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 - Operations beyond ffmpeg-skill 0.9.x: `CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION` are not implemented.
 - `OVERLAY` needs a video input with an audio stream (ffmpeg-skill 0.9.x limitation, refused up front).
 - The encoding surface is `crf` + `preset`; codec, bitrate modes, audio and pixel format are the engine's.
+- `TRIM` / `CUT` / `SPEED` / `OVERLAY` refuse an input whose frame has an odd width or height (`odd_frame`); the
+  frame-changing operations normalize it to even first.
+- The integration HDR fixture is an SDR pattern flagged as HDR (colour tags); real HDR10 / HLG content and tone
+  mapping are not covered. Verified against ffmpeg-skill 0.9.0 and 0.9.1.
 - Real rotation metadata (a display matrix) is honoured; a legacy `rotate` tag is ignored by ffmpeg ≥ 5 and therefore
   by this Skill's probe-based normalization (the frame is then the stored one).
 - One video track plus image overlays; no picture-in-picture of video, no audio-only sources, no per-track audio.

@@ -436,6 +436,14 @@ class NormalizationEncodingAndPathsTests(FakeEngineHarness):
         self.assertEqual(out["error"]["details"]["reason"], "hdr_mismatch")
         self.assertEqual(self.calls(), [], "refused before any tool ran")
 
+    def test_concat_single_dimension_follows_join_py(self):
+        for params, want in (({"width": 300}, [300, 168]), ({"height": 250}, [444, 250]), ({"width": 300, "height": 250}, [300, 250]), ({}, [640, 360])):
+            self.setUp()
+            doc = request(self.sources(), [{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": params}], [{"id": "o", "operation": "c", "path": "out/c.mp4"}])
+            rc, out = self.run_(doc, expect=0)
+            rec = out["execution"]["operations"][0]
+            self.assertEqual((rec["normalized"]["target_frame"], [rec["probe"]["video"]["width"], rec["probe"]["video"]["height"]]), (want, want), params)
+
     def test_unicode_and_space_paths_end_to_end(self):
         sub = os.path.join(self.ws, "素材 テスト", "sub dir")
         os.makedirs(sub)

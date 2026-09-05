@@ -83,6 +83,8 @@ layout in CONCAT, HEVC 10-bit for HDR sources, AAC). Delegated conversions that 
 (VFR conform, HDR → HEVC) are reported as `warnings`; the output is then verified against the normalized expectation
 (frame, fps, audio presence, codec, duration).
 
-**Why.** A hang or a late FFmpeg failure is the worst outcome for an execution Skill; the overlay-without-audio hang
+An input frame with an odd width or height is refused for the frame-keeping operations (`odd_frame`) because the
+engine's encoders need even sizes and the failure would otherwise surface only inside ffmpeg; the frame-changing
+operations normalize it. **Why.** A hang or a late FFmpeg failure is the worst outcome for an execution Skill; the overlay-without-audio hang
 in ffmpeg-skill 0.9.x is the canonical example. What cannot be promised is refused; what the engine converts on its
 own is stated, not hidden.

@@ -623,9 +623,26 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         ex = self.executor([{"id": "x", "type": "RESIZE", "input": "A", "params": {"width": 180}}], probes={"A": rotated, "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
         self.assertEqual((ex.profile("A")["width"], ex.profile("A")["height"]), (360, 640))
         self.assertEqual(ex.target_frame("x"), (180, 320))
-        # CONCAT: params, else the first input's frame floored to even
-        ex = self.executor([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}], probes={"A": self.probe(641, 361), "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+        # CONCAT (join.py): both given -> as given; one given -> the other from the first input's aspect, rounded; none -> the first input; floored to even
+        odd = {"A": self.probe(641, 361), "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}}
+        ex = self.executor([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}], probes=odd)
         self.assertEqual(ex.target_frame("c"), (640, 360))
+        for params, first, want in (({"width": 300}, (640, 360), (300, 168)), ({"width": 300}, (360, 640), (300, 532)), ({"height": 250}, (640, 360), (444, 250)),
+                                    ({"height": 250}, (360, 640), (140, 250)), ({"width": 1000}, (640, 360), (1000, 562)), ({"width": 300, "height": 250}, (360, 640), (300, 250))):
+            ex = self.executor([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": params}],
+                               probes={"A": self.probe(*first), "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+            self.assertEqual(ex.target_frame("c"), want, (params, first))
+        # an odd input frame: normalized to even by RESIZE / FIT / FILL / CONCAT, refused up front by the frame-keeping operations
+        for op in ({"type": "TRIM", "params": {"start": 0, "end": 1}}, {"type": "CUT", "params": {"keep": [{"start": 0, "end": 1}]}}, {"type": "SPEED", "params": {"factor": 2}},
+                   {"type": "OVERLAY", "params": {"image": "logo"}}):
+            ex = self.executor([dict(op, id="x", input="A")], probes=dict(odd, logo={"duration": None, "video": {"width": 120, "height": 40}, "audio": None}))
+            with self.assertRaises(EditError, msg=op["type"]) as cm:
+                ex._check_media()
+            self.assertEqual((cm.exception.code, cm.exception.details["reason"], cm.exception.details["frame"]), ("INVALID_INPUT", "odd_frame", [641, 361]))
+        for op in ({"type": "RESIZE", "params": {"width": 202}}, {"type": "FIT", "params": {"aspect": "1:1"}}, {"type": "FILL", "params": {"aspect": "9:16"}}):
+            ex = self.executor([dict(op, id="x", input="A")], probes=odd)
+            ex._check_media()
+            self.assertTrue(all(v % 2 == 0 for v in ex.target_frame("x")), op)
         # the semantics block names the three types and no operation stretches
         sem = contract.skill_contract()["frame_semantics"]
         self.assertEqual(set(sem) - {"rules"}, {"RESIZE", "FIT", "FILL"})

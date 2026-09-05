@@ -60,7 +60,9 @@ FRAME_SEMANTICS = {
     "FILL": {"changes": "frame aspect ratio", "keeps": "the centre of the picture (scaled to cover, centre-cropped); edges are lost",
              "target": "same rule as FIT", "when": "a delivery aspect differs from the source and a full frame matters more than the edges"},
     "rules": ["a source whose rotation metadata is ±90 / 270 is measured with width and height swapped (as the engine does)",
-              "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)", "CONCAT: params.width x params.height, else the first input's frame floored to even",
+              "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)",
+              "CONCAT (ffmpeg-skill join.py): params.width x params.height; only one given -> the other from the first input's aspect (round); none -> the first input's frame; then floored to even",
+              "TRIM / CUT / SPEED / OVERLAY keep the input frame; an input with an odd width or height is refused before execution (INVALID_INPUT odd_frame) because the engine's encoders need even sizes",
               "no operation stretches (distorts) the picture; anamorphic output is not provided",
               "the normalized target frame is reported in plan.steps[].normalized and execution.operations[].normalized and verified on the output exactly"],
 }
@@ -72,6 +74,7 @@ MEDIA_POLICY = {
         "video source without a duration (a still image or a broken container declared as video): INVALID_INPUT no_duration",
         "image source that does not decode to a frame: INVALID_INPUT image_undecodable",
         "OVERLAY on a video input without an audio stream: INVALID_INPUT audio_required (ffmpeg-skill 0.9.x overlay never terminates on it)",
+        "TRIM / CUT / SPEED / OVERLAY on an input whose frame has an odd width or height: INVALID_INPUT odd_frame (the encoder needs even sizes; RESIZE / FIT / FILL / CONCAT normalize to even)",
         "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
         "unsupported input extension / output container: UNSUPPORTED_FORMAT", "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
         "engine tool / encoder / filter missing: TOOL_ERROR (not retryable)",
@@ -95,7 +98,8 @@ MEDIA_POLICY = {
         "different_frame_rate_in_concat": "allowed; conformed to params.fps or the first input's rate",
         "variable_frame_rate": "allowed; conformed to constant fps by the engine (warning)",
         "hdr": "allowed alone (output hevc, warning); not mixed with SDR in CONCAT",
-        "rotation_metadata": "honoured: the frame is measured as displayed",
+        "rotation_metadata": "honoured (a display matrix): the frame is measured as displayed; a legacy `rotate` tag is ignored by ffmpeg >= 5 and therefore by the probe",
+        "odd_frame": "RESIZE / FIT / FILL / CONCAT normalize to even sizes; TRIM / CUT / SPEED / OVERLAY refuse it up front (odd_frame)",
     },
 }
 
@@ -129,10 +133,10 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
 MEDIA: Dict[str, Dict[str, Any]] = {
     "TRIM": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
              "output": {"frame_size": "as input", "audio": "as input", "fps": "as input"},
-             "refused_before_execution": ["source without a video stream or duration", "range beyond the input duration"]},
+             "refused_before_execution": ["source without a video stream or duration", "range beyond the input duration", "input frame with an odd width or height (odd_frame)"]},
     "CUT": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
             "output": {"frame_size": "as input", "audio": "as input", "fps": "as input"},
-            "refused_before_execution": ["source without a video stream or duration", "range beyond the input duration"]},
+            "refused_before_execution": ["source without a video stream or duration", "range beyond the input duration", "input frame with an odd width or height (odd_frame)"]},
     "CONCAT": {"inputs": "two or more videos (any sizes / frame rates; conformed by params.mode to params.width/height/fps or the first input)",
                "requires": {"video": True, "audio": False, "image": False},
                "output": {"frame_size": "params.width x params.height, else the first input", "fps": "params.fps, else the first input",
@@ -140,7 +144,7 @@ MEDIA: Dict[str, Dict[str, Any]] = {
                "refused_before_execution": ["source without a video stream or duration", "an input shorter than twice the transition"]},
     "SPEED": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
               "output": {"frame_size": "as input", "audio": "as input, pitch preserved (atempo)", "fps": "as input", "duration": "input duration / factor"},
-              "refused_before_execution": ["source without a video stream or duration", "factor outside [1/4, 4]"]},
+              "refused_before_execution": ["source without a video stream or duration", "factor outside [1/4, 4]", "input frame with an odd width or height (odd_frame)"]},
     "FIT": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
             "output": {"frame_size": "params.aspect (params.width when given; padded, nothing cropped)", "audio": "as input", "fps": "params.fps or as input"},
             "refused_before_execution": ["source without a video stream or duration"]},
@@ -154,7 +158,7 @@ MEDIA: Dict[str, Dict[str, Any]] = {
                 "output": {"frame_size": "as input", "audio": "as input", "fps": "as input"},
                 "refused_before_execution": ["source without a video stream or duration", "image that does not decode",
                                              "video input without an audio stream: ffmpeg-skill 0.9.x overlay (-loop 1 image, -shortest) never terminates on it",
-                                             "start / end beyond the input duration"]},
+                                             "start / end beyond the input duration", "input frame with an odd width or height (odd_frame)"]},
 }
 
 # capabilities that video editing normally has but ffmpeg-skill 0.9.x has no tool for: declared as gaps,

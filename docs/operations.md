@@ -28,10 +28,18 @@ integers; times are exact rationals. See `contract.operations` for the documente
 | `FIT` | aspect | every source pixel (scaled to fit inside, padded with `pad_color`) | `width = params.width`, else `sw` if `aspect ≤ source_aspect` else `even(sh × aspect)`; `height = even(width / aspect)` |
 | `FILL` | aspect | the centre (scaled to cover, centre-cropped); edges are lost | same rule as FIT |
 
-`even(n) = round(n)`, +1 when odd (ffmpeg-skill fit.py). A source with rotation metadata (±90 / 270 display matrix)
-is measured as displayed. No operation stretches the picture. The target is reported in `plan.steps[].normalized`
-and `execution.operations[].normalized` and verified on the output exactly. Examples: 1280×720 → `RESIZE 300` =
-300×170; 640×360 → `FILL 1:1` = 640×640; 1280×720 → `FIT 9:16` = 1280×2276; 640×360 → `FIT 21:9` = 840×360.
+`even(n) = round(n)`, +1 when odd (ffmpeg-skill fit.py). `CONCAT` (join.py): `params.width × params.height`; when
+only one is given the other follows the first input's aspect (rounded); when none is given the first input's frame;
+then floored to even. A source with rotation metadata (a ±90 / 270 display matrix) is measured as displayed; a
+legacy `rotate` tag is ignored by ffmpeg ≥ 5 and therefore by the probe. No operation stretches the picture. The
+target is reported in `plan.steps[].normalized` and `execution.operations[].normalized` and verified on the output
+exactly. Examples: 1280×720 → `RESIZE 300` = 300×170; 640×360 → `FILL 1:1` = 640×640; 1280×720 → `FIT 9:16` =
+1280×2276; 640×360 → `FIT 21:9` = 840×360; 641×361 → `FIT 1:1` = 642×642; `CONCAT width 300` of a 640×360 first
+input = 300×168.
+
+An input whose frame has an odd width or height (some screen recordings) is refused up front by `TRIM`, `CUT`,
+`SPEED` and `OVERLAY` (`INVALID_INPUT odd_frame`): they keep the input frame and the engine's encoders (libx264 /
+libx265, yuv420p) need even sizes. `RESIZE`, `FIT`, `FILL` and `CONCAT` normalize such a source to an even frame.
 
 ### Encoding profile (contract.encoding, ADR-004)
 
@@ -93,6 +101,7 @@ semantics, audio presence, fps, HDR); once an intermediate exists its probe (`OB
 | video source without a duration (still image / broken container as video) | refused: `INVALID_INPUT no_duration` |
 | image that does not decode | refused: `INVALID_INPUT image_undecodable` |
 | OVERLAY on a video input without audio | refused: `INVALID_INPUT audio_required` (ffmpeg-skill 0.9.x never terminates) |
+| TRIM / CUT / SPEED / OVERLAY on an input with an odd width or height | refused: `INVALID_INPUT odd_frame` (RESIZE / FIT / FILL / CONCAT normalize it) |
 | CONCAT of HDR and SDR inputs | refused: `INVALID_INPUT hdr_mismatch` |
 | unsupported extension / container | refused: `UNSUPPORTED_FORMAT` |
 | ranges beyond the input, transition longer than half an input | refused: `INVALID_TIME_RANGE` |
@@ -137,3 +146,15 @@ with the same probe checks; a candidate that no longer validates is discarded an
 | output exists but is not what was requested (stream, duration, frame, aspect, fps, audio) | `VALIDATION_ERROR` |
 | timeout (`retryable: true`) or SIGINT / SIGTERM | `CANCELLED` |
 | a bug (including a response that fails the self-check) | `INTERNAL_ERROR` |
+
+## Engine versions and what the tests prove
+
+Verified against ffmpeg-skill 0.9.0 and 0.9.1 (`>=0.9.0,<1.0.0`) with ffmpeg 6.1.1. 0.9.1 adds audio-only cut /
+join modes and a three-state capability doctor (`available` / `missing` / `unknown`); this Skill uses none of the
+audio-only modes and treats a capability absent from `available` as missing (conservative: a detection failure
+refuses rather than guesses). The overlay behaviour on silent inputs is unchanged in 0.9.1.
+
+The HDR fixture in `tests/test_integration.py` is an SDR test pattern **flagged** as HDR (BT.2020 primaries, PQ
+transfer tags): it exercises the engine's HDR detection and HEVC path and this Skill's codec / mixing rules, not
+real HDR10 / HLG content or tone mapping. The rotation fixture carries a real display matrix (`-display_rotation`);
+the VFR path was verified with a frame-dropped source (engine conforms to CFR, a warning is reported).
