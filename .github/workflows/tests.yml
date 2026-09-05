@@ -1,0 +1,63 @@
+name: tests
+
+# Runs on every pull request and on pushes to main (same policy as media-analysis-skill), plus a manual trigger.
+# workflow_dispatch is only offered by GitHub once this file is on the default branch; pull_request works from the PR head.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e . ruff mypy
+      - run: ruff check src tests
+      - run: mypy src
+      - run: python -m compileall -q src tests
+      - run: video-editing contract --check tests/contract/contract.json --json
+
+  unit:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.9", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e .
+      - run: python -m unittest -v test_unit test_paths test_security test_engine_contract
+        working-directory: tests
+      - run: video-editing contract --check tests/contract/contract.json
+      - run: video-editing skill --json > /dev/null
+        shell: bash
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      - uses: actions/checkout@v4
+        with:
+          repository: kajisho5/ffmpeg-skill
+          path: vendor/ffmpeg-skill
+      - run: pip install -e .
+      - run: video-editing doctor --json --workspace .
+        env:
+          VIDEO_EDITING_FFMPEG_SKILL_DIR: ${{ github.workspace }}/vendor/ffmpeg-skill
+      - run: python -m unittest -v test_integration
+        working-directory: tests
+        env:
+          VIDEO_EDITING_FFMPEG_SKILL_DIR: ${{ github.workspace }}/vendor/ffmpeg-skill
