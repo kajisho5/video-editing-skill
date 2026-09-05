@@ -11,8 +11,14 @@ Agents pin a snapshot of the contract and compare these blocks **verbatim** (vid
 in its integration test):
 
 ```
-schema, skill_id, version, operations, unsupported, errors, execution, capabilities, schemas
+schema, skill_id, contract_version, operations, unsupported, errors, execution, capabilities, schemas
 ```
+
+`contract_version` (docs/decisions.md ADR-007), not `version`, is the pinned identity field: it is the version of
+this *shape*, separate from `version` (this package's own release version, free to change on any release — a
+dependent pins a range against `contract_version`, never `version`). `version` still appears at the top level and
+in every response's `skill` block (it names which release produced a given document), but a `version`-only change
+is additive drift, not breaking.
 
 plus, per ToolSpec in `tools[]`: `tool_id, skill_id, version, operation_type, capability, required_capabilities,
 inputs, input_arity, produces_output, deterministic, result_keys, executed_by, kind`, and the list of tool ids itself.
@@ -23,7 +29,8 @@ are treated as pinned too: an optional request field such as `outputs[].encoding
 
 A change inside any of them is a **breaking contract change**:
 
-- bump the skill version (while the major version is 0: the minor version, e.g. `0.1.x → 0.2.0`);
+- bump `contract_version` (this package does not yet release independently of its contract, so bump the skill
+  version too — while the major version is 0: the minor version, e.g. `0.1.x → 0.2.0`);
 - expect every agent to re-pin its snapshot and to review its lowering (parameter names, types, error mapping);
 - regenerate `tests/contract/contract.json` in the same change.
 

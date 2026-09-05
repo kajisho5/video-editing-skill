@@ -7,7 +7,7 @@ deterministic, result_keys).
 """
 from typing import Any, Dict, List
 
-from . import CONTRACT_SCHEMA, DOCTOR_SCHEMA, PACKAGE_NAME, PLAN_SCHEMA, REQUEST_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
+from . import CONTRACT_SCHEMA, CONTRACT_VERSION, DOCTOR_SCHEMA, PACKAGE_NAME, PLAN_SCHEMA, REQUEST_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
 from .errors import DEFAULT_RETRYABLE, ERROR_CODES, EXIT_CODES
 from .ffmpeg_skill import REQUIRED_TOOLS, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
 from .operations import (ENCODING, FORBIDDEN_KEYS, FRAME_SEMANTICS, MEDIA, MEDIA_POLICY, OPERATIONS, POSITIONS, TRANSITIONS, capability_list,
@@ -17,7 +17,7 @@ from .paths import IMAGE_EXTENSIONS, OUTPUT_EXTENSIONS, VIDEO_EXTENSIONS
 # Contract versioning (documented in docs/contract.md). Agents pin a snapshot of this document and compare these blocks
 # verbatim: a change in any of them is a breaking contract change and needs a new skill version *and* a review on the
 # agent side. Anything outside them may be added within the same version (additive).
-PINNED_BLOCKS = ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "schemas")
+PINNED_BLOCKS = ("schema", "skill_id", "contract_version", "operations", "unsupported", "errors", "execution", "capabilities", "schemas")
 
 TOOL_REQUIREMENTS = {
     "ffmpeg-skill/cut": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
@@ -82,7 +82,7 @@ def tool_specs() -> List[Dict[str, Any]]:
 def skill_contract() -> Dict[str, Any]:
     return {
         "schema": CONTRACT_SCHEMA,
-        "skill_id": SKILL_ID, "name": "Video Editing Skill", "package": PACKAGE_NAME, "version": VERSION,
+        "skill_id": SKILL_ID, "name": "Video Editing Skill", "package": PACKAGE_NAME, "version": VERSION, "contract_version": CONTRACT_VERSION,
         "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, image overlay) "
                        "compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing "
                        "decisions, no LLM, no commands.",
@@ -157,10 +157,14 @@ def skill_contract() -> Dict[str, Any]:
                          "contract": "schema ids", "engine": "ffmpeg-skill location, version, ffmpeg / ffprobe, missing capabilities",
                          "operations": [{"type": "…", "tool_id": "…", "status": "AVAILABLE | MISSING", "missing": ["what is missing"]}],
                          "supported_operations": "types whose status is AVAILABLE (never a guess)", "unsupported": "declared gaps", "checks": "…", "problems": "…"},
-        "versioning": {"version": VERSION, "pinned_blocks": list(PINNED_BLOCKS),
-                       "rule": "a change inside a pinned block is breaking: bump the version (0.x: minor) and expect agents to re-pin; new keys outside them "
-                               "(top level or inside tools[]) are additive and allowed within the same version; the golden copy tests/contract/contract.json "
-                               "is regenerated deliberately in the same change, and `contract --check` classifies every difference as breaking or additive",
+        "versioning": {"version": VERSION, "contract_version": CONTRACT_VERSION, "pinned_blocks": list(PINNED_BLOCKS),
+                       "rule": "two independent axes (docs/decisions.md ADR-007): `version` is this package's own release version and may move on any "
+                               "release, including one that changes nothing a dependent needs to react to; `contract_version` is the version of the "
+                               "shape a pinned block publishes and changes only when a pinned block changes in a breaking way. A change inside a "
+                               "pinned block bumps `contract_version` (and `version`, since this package does not yet release independently of its "
+                               "contract) and agents must re-pin; new keys outside the pinned blocks (top level or inside tools[]) are additive and "
+                               "allowed within the same contract_version; the golden copy tests/contract/contract.json is regenerated deliberately in "
+                               "the same change, and `contract --check` classifies every difference as breaking or additive",
                        "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
                        "next": {"0.2.0": ["RESIZE: `height` as the alternative to `width` (exactly one of the two)",
                                          "request_shape: `outputs[].encoding` folded into the documented shape (accepted since 0.1.0 as an optional key)",

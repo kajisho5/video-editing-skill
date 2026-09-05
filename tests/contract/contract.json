@@ -4,6 +4,7 @@
   "name": "Video Editing Skill",
   "package": "video-editing-skill",
   "version": "0.1.0",
+  "contract_version": "1.0",
   "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, image overlay) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing decisions, no LLM, no commands.",
   "role": "execution",
   "repository": "https://github.com/kajisho5/video-editing-skill",
@@ -1128,10 +1129,11 @@
   },
   "versioning": {
     "version": "0.1.0",
+    "contract_version": "1.0",
     "pinned_blocks": [
       "schema",
       "skill_id",
-      "version",
+      "contract_version",
       "operations",
       "unsupported",
       "errors",
@@ -1139,7 +1141,7 @@
       "capabilities",
       "schemas"
     ],
-    "rule": "a change inside a pinned block is breaking: bump the version (0.x: minor) and expect agents to re-pin; new keys outside them (top level or inside tools[]) are additive and allowed within the same version; the golden copy tests/contract/contract.json is regenerated deliberately in the same change, and `contract --check` classifies every difference as breaking or additive",
+    "rule": "two independent axes (docs/decisions.md ADR-007): `version` is this package's own release version and may move on any release, including one that changes nothing a dependent needs to react to; `contract_version` is the version of the shape a pinned block publishes and changes only when a pinned block changes in a breaking way. A change inside a pinned block bumps `contract_version` (and `version`, since this package does not yet release independently of its contract) and agents must re-pin; new keys outside the pinned blocks (top level or inside tools[]) are additive and allowed within the same contract_version; the golden copy tests/contract/contract.json is regenerated deliberately in the same change, and `contract --check` classifies every difference as breaking or additive",
     "also_pinned_by_agents": [
       "request_shape",
       "response_shape",

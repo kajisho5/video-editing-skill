@@ -309,6 +309,12 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(t["tool_id"].split("/")[0], c["skill_id"])
         json.dumps(c)
         self.assertEqual(stable_hash(c), stable_hash(contract.skill_contract()))
+        # two independent version axes (docs/decisions.md ADR-007): skill release version, and
+        # contract_version, which changes only when a pinned block changes in a breaking way
+        self.assertEqual(c["contract_version"], contract.CONTRACT_VERSION)
+        self.assertIn("contract_version", contract.PINNED_BLOCKS)
+        self.assertNotIn("version", contract.PINNED_BLOCKS)
+        self.assertEqual(c["versioning"]["contract_version"], contract.CONTRACT_VERSION)
 
     def test_implementation_matches_contract_and_golden(self):
         self.assertEqual(contract_check.verify_implementation(), [])
@@ -327,7 +333,7 @@ class ContractTests(unittest.TestCase):
             (lambda d: d["tools"][0].update(produces_output=False), "produces_output changed"),
             (lambda d: d["tools"].pop(), "tool added"),
             (lambda d: d["tools"].append({"tool_id": "video-editing/freeze"}), "tool removed"),
-            (lambda d: d.update(version="9.9.9"), "version changed"),
+            (lambda d: d.update(contract_version="9.9"), "pinned block contract_version changed"),
             (lambda d: d.update(skill_id="other"), "skill_id changed"),
             (lambda d: d["errors"]["exit_codes"].update(TOOL_ERROR=99), "errors (codes / exit codes / retryable) changed"),
             (lambda d: d["unsupported"].pop(), "unsupported list changed"),
@@ -338,6 +344,15 @@ class ContractTests(unittest.TestCase):
             rep = contract_check.check_saved(saved, live)
             self.assertEqual(rep["status"], "drift", expect)
             self.assertTrue(any(expect in p for p in rep["problems"]), (expect, rep["problems"]))
+        # the skill's own release version is a separate axis (docs/decisions.md ADR-007) and may
+        # move without being a breaking contract change: it is drift, but additive, not a problem
+        saved = json.loads(json.dumps(live))
+        saved["version"] = "9.9.9"
+        rep = contract_check.check_saved(saved, live)
+        self.assertEqual(rep["status"], "drift")
+        self.assertEqual(rep["compatibility"], "additive")
+        self.assertEqual(rep["problems"], [])
+        self.assertTrue(any("version" in a for a in rep["additions"]), rep["additions"])
         self.assertEqual(contract_check.check_saved("junk", live)["status"], "drift")
         # a contract that lies about the implementation is caught too
         lying = json.loads(json.dumps(live))
