@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from . import CONTRACT_SCHEMA, CONTRACT_VERSION, SKILL_ID, VERSION
 from .compiler import ALLOWED_FLAGS, compile_operation
-from .contract import PINNED_BLOCKS, TOOL_REQUIREMENTS, skill_contract
+from .contract import PINNED_BLOCKS, TOOL_REQUIREMENTS, ffmpeg_skill_version_range, skill_contract
 from .errors import ERROR_CODES, EXIT_CODES
 from .ffmpeg_skill import REQUIRED_TOOLS
 from .operations import CRF_MAX, CRF_MIN, ENCODING, FRAME_SEMANTICS, MEDIA, MEDIA_POLICY, OPERATIONS, UNSUPPORTED, X264_PRESETS, capability_list, media_compatibility, validate_encoding
@@ -112,6 +112,9 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
     if (tuple(ver.get("pinned_blocks", [])) != PINNED_BLOCKS or ver.get("version") != VERSION
             or ver.get("contract_version") != CONTRACT_VERSION):
         problems.append("contract.versioning does not name the pinned blocks / version / contract_version")
+    # dependencies: must name exactly the range version_supported() already enforces at runtime - never an exact pin
+    if c.get("dependencies") != [{"skill_id": "ffmpeg-skill", "version_range": ffmpeg_skill_version_range()}]:
+        problems.append("contract.dependencies does not match the ffmpeg-skill version range this Skill enforces")
     # encoding profile: the contract's parameter list is exactly what validate_encoding accepts, every flag is allowlisted for every re-encoding tool
     enc = c.get("encoding") or {}
     if enc != ENCODING or set(enc.get("parameters", {})) != {"crf", "preset"}:

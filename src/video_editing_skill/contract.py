@@ -42,6 +42,15 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
 }
 
 
+def ffmpeg_skill_version_range() -> str:
+    """The version range this Skill's own `version_supported()` check already enforces at runtime
+    (`ffmpeg_skill.py`'s `SUPPORTED_MIN` / `SUPPORTED_MAX_EXCLUSIVE`), as the range-string shape
+    `dependencies[].version_range` uses (never an exact pin: `kajisho5/AI-video-production-OS`
+    `docs/VERSIONING.md` section 2). Shared by `engine.version_range` and `dependencies` so the two
+    can never say something different."""
+    return f">={'.'.join(map(str, SUPPORTED_MIN))},<{'.'.join(map(str, SUPPORTED_MAX_EXCLUSIVE))}"
+
+
 def capability_provides() -> List[Dict[str, str]]:
     """Cross-repository Capability ids this Skill can be asked to perform (AI Video Production OS
     `CapabilityContract.provides`, kajisho5/AI-video-production-OS docs/SPEC.md section 1).
@@ -95,7 +104,7 @@ def skill_contract() -> Dict[str, Any]:
         "unsupported": unsupported_list(),
         "tools": tool_specs(),
         "operations": {t: {"capability": s["capability"], "tool": s["tool"], "arity": s["arity"], "parameters": PARAM_DOCS[t]} for t, s in sorted(OPERATIONS.items())},
-        "engine": {"id": "ffmpeg-skill", "version_range": f">={'.'.join(map(str, SUPPORTED_MIN))},<{'.'.join(map(str, SUPPORTED_MAX_EXCLUSIVE))}",
+        "engine": {"id": "ffmpeg-skill", "version_range": ffmpeg_skill_version_range(),
                    "tools_used": [f"ffmpeg-skill/{t}" for t in REQUIRED_TOOLS],
                    "location": "VIDEO_EDITING_FFMPEG_SKILL_DIR | --ffmpeg-skill-dir | ~/.claude/skills/ffmpeg-skill | ./vendor/ffmpeg-skill | ../ffmpeg-skill",
                    "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout"},
@@ -136,6 +145,8 @@ def skill_contract() -> Dict[str, Any]:
         # ---- additive blocks (outside PINNED_BLOCKS; see docs/contract.md)
         # ---- provides: cross-repository Capability ids (docs/decisions.md ADR-006)
         "provides": capability_provides(),
+        # ---- dependencies: cross-repository Skill dependencies (docs/decisions.md ADR-008)
+        "dependencies": [{"skill_id": "ffmpeg-skill", "version_range": ffmpeg_skill_version_range()}],
         "media_compatibility": media_compatibility(),
         "graph": {"model": "sources -> operations (DAG) -> outputs; every operation feeds an output; order is topological, ties by id",
                   "refused": ["cycle (DEPENDENCY_ERROR)", "unknown input / operation reference (DEPENDENCY_ERROR)", "duplicate source / operation / output id (INVALID_REQUEST)",

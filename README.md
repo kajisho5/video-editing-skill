@@ -84,7 +84,7 @@ when a contract change is intended. The contract prints:
 video-production-agent: `tool_id`, `skill_id`, `version`, `required_capabilities`, `inputs`, `produces_output`,
 `deterministic`, `result_keys`, plus `media`), `operations` with parameter docs, `media_compatibility`, `graph`,
 `validation`, `engine`, `execution`, `request_shape`, `time`, `formats`, `identity`, `provenance`, `errors` (codes,
-exit codes, retryable defaults), `response_shape`, `doctor_shape`, `versioning`.
+exit codes, retryable defaults), `response_shape`, `doctor_shape`, `versioning`, `provides`, `dependencies`.
 
 **Versioning** ([docs/contract.md](docs/contract.md), [docs/decisions.md](docs/decisions.md) ADR-007): two
 independent axes. `version` (`"0.1.0"`) is this package's own release version and may move on any release,
@@ -92,8 +92,8 @@ including a non-breaking one. `contract_version` (`"1.0"`) is the version of the
 contract_version, operations, unsupported, errors, execution, capabilities, schemas` plus the pinned ToolSpec
 fields — and changes only when one of them changes in a way a dependent must react to; a dependent pins a range
 against `contract_version`, never `version`. New keys outside the pinned blocks are additive and allowed within
-the same `contract_version` — this is how 0.1.0 gained `media_compatibility`, `doctor_shape`, `provides` and the
-richer execution report without invalidating the agent's snapshot.
+the same `contract_version` — this is how 0.1.0 gained `media_compatibility`, `doctor_shape`, `provides`,
+`dependencies` and the richer execution report without invalidating the agent's snapshot.
 
 ### Input schema (`video-editing/request@1`)
 

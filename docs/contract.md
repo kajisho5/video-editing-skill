@@ -42,7 +42,8 @@ CLI flag in `canonical_invocation`.
 
 Everything outside the pinned blocks may be added or extended without a version bump:
 
-- new top-level keys (`media_compatibility`, `graph`, `validation`, `doctor_shape`, `versioning`, `provides`, …);
+- new top-level keys (`media_compatibility`, `graph`, `validation`, `doctor_shape`, `versioning`, `provides`,
+  `dependencies`, …);
 - new keys inside a `tools[]` entry (`media`, …);
 - new keys in a response document (`execution.sources`, `execution.reused`, `execution.request_sha256`,
   `execution.engine`, `outputs[].container / reused / operation_id`, records with `status: skipped`, …). The
@@ -80,6 +81,15 @@ string `operations.OPERATIONS` and `tools[].capability` already carry), each wit
 It exists for `kajisho5/AI-video-production-OS`'s `CapabilityContract.provides` (`docs/SPEC.md` there), so a
 registry can resolve "who provides `video.trim`" without hardcoding this repository. It is additive, not pinned,
 and derived from `OPERATIONS` — it cannot say anything `tools[]` doesn't already say, only index it differently.
+
+## `dependencies` (docs/decisions.md ADR-008)
+
+`dependencies` is `[{"skill_id": "ffmpeg-skill", "version_range": ">=0.9.0,<1.0.0"}]` — the exact range
+`ffmpeg_skill.py`'s `version_supported()` already enforces at runtime, computed once
+(`contract.ffmpeg_skill_version_range()`) and shared with `engine.version_range` so the two never disagree. It adds
+no new guarantee over what `doctor --json` already reports; it makes an existing runtime fact readable from
+`contract --json` alone, in the shape `kajisho5/AI-video-production-OS`'s `CapabilityContract.dependencies`
+(`docs/SPEC.md` there) expects. It is additive, not pinned.
 
 ## What an agent may rely on
 

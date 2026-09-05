@@ -882,6 +882,12 @@
       "tool_id": "video-editing/trim"
     }
   ],
+  "dependencies": [
+    {
+      "skill_id": "ffmpeg-skill",
+      "version_range": ">=0.9.0,<1.0.0"
+    }
+  ],
   "media_compatibility": {
     "CONCAT": {
       "inputs": "two or more videos (any sizes / frame rates; conformed by params.mode to params.width/height/fps or the first input)",

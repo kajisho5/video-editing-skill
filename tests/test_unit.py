@@ -315,6 +315,10 @@ class ContractTests(unittest.TestCase):
         self.assertIn("contract_version", contract.PINNED_BLOCKS)
         self.assertNotIn("version", contract.PINNED_BLOCKS)
         self.assertEqual(c["versioning"]["contract_version"], contract.CONTRACT_VERSION)
+        # dependencies (docs/decisions.md ADR-008): the ffmpeg-skill range this Skill already enforces at runtime
+        self.assertEqual(c["dependencies"], [{"skill_id": "ffmpeg-skill", "version_range": contract.ffmpeg_skill_version_range()}])
+        self.assertEqual(c["dependencies"][0]["version_range"], c["engine"]["version_range"])
+        self.assertNotIn("dependencies", contract.PINNED_BLOCKS)
 
     def test_implementation_matches_contract_and_golden(self):
         self.assertEqual(contract_check.verify_implementation(), [])

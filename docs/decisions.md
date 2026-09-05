@@ -152,3 +152,37 @@ continuing to report `"0.1.0"` keeps that range check passing unchanged.
 `versioning.rule` in the contract states the two-axis rule in full; `doctor --json`'s `contract` block also carries
 `contract_version` alongside `version`, since doctor is the other place a caller checks compatibility before
 `contract --json`.
+
+## ADR-008 — `dependencies`: publishing the ffmpeg-skill version range we already enforce
+
+**Decision.** The contract gained one additive top-level block, `dependencies`, with exactly one entry:
+`{"skill_id": "ffmpeg-skill", "version_range": ">=0.9.0,<1.0.0"}`. The range string is computed once
+(`contract.ffmpeg_skill_version_range()`) from `ffmpeg_skill.py`'s `SUPPORTED_MIN` / `SUPPORTED_MAX_EXCLUSIVE` and
+shared with `engine.version_range`, so the two can never say something different from each other or from what
+`FfmpegSkill.version_supported()` actually enforces at runtime.
+
+**Why.** `kajisho5/AI-video-production-OS`'s `docs/SPEC.md` §1 sketches `dependencies: [{skill_id, version_range}]`
+as an aspirational field every Skill would eventually publish, citing this repository's own adapter pattern as the
+existing behavior it generalizes (`docs/MIGRATION_STRATEGY.md`'s `video-editing-skill` row names this exact
+field, this exact range, as a small, well-defined per-Skill task — "reflecting the `SUPPORTED_MIN`/`SUPPORTED_MAX`
+check that already exists in code"). Publishing it does not add a new guarantee: the runtime check
+(`doctor.py`'s `operation_availability()`, `ffmpeg_skill.py`'s `version_supported()`) already refuses to run when
+the located `ffmpeg-skill` is out of range; this field only makes that existing fact readable from `contract --json`
+without invoking `doctor`.
+
+It also moves one entry of the OS registry's conformance suite (`registry/conformance.py`'s
+`check_dependency_version_ranges`, `SKILL_SPEC.md` §8) from `NOT_IMPLEMENTED` (no Skill publishes `dependencies`
+yet, an honestly empty check, not a stub) to a real `PASS` for this Skill — verified directly against the real
+`registry` library, not assumed.
+
+**Why the range names `ffmpeg-skill`'s own release version, not a `contract_version` range (a known, accepted gap).**
+`docs/VERSIONING.md` §2's proposed rule is that a dependency range should be expressed against the dependency's
+`contract_version`, never its release version, precisely so a wide span of releases can share one range. This
+repository's actual runtime check compares against `ffmpeg-skill`'s release version (`skill.version`), because that
+is the only version `ffmpeg-skill`'s own doctor output currently exposes to this Skill; `docs/VERSIONING.md` itself
+notes the literal range every adapter hardcodes today is `UNKNOWN` against that ideal. Changing the runtime check to
+compare against `ffmpeg-skill`'s `contract_version` instead would be a real, separate piece of work (it would need
+`ffmpeg-skill` to expose `contract_version` somewhere this Skill's `doctor`/`locate` step reads, and a change to
+`ffmpeg_skill.py`'s actual comparison logic, not just contract metadata) — out of scope here. This field publishes
+what is real today, not what the two-axis ideal would eventually look like; this ADR says so explicitly rather
+than let the field imply a compatibility guarantee it does not carry yet.
