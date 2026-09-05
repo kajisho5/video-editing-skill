@@ -35,7 +35,7 @@ CLI flag in `canonical_invocation`.
 
 Everything outside the pinned blocks may be added or extended without a version bump:
 
-- new top-level keys (`media_compatibility`, `graph`, `validation`, `doctor_shape`, `versioning`, …);
+- new top-level keys (`media_compatibility`, `graph`, `validation`, `doctor_shape`, `versioning`, `provides`, …);
 - new keys inside a `tools[]` entry (`media`, …);
 - new keys in a response document (`execution.sources`, `execution.reused`, `execution.request_sha256`,
   `execution.engine`, `outputs[].container / reused / operation_id`, records with `status: skipped`, …). The
@@ -64,6 +64,15 @@ width / height), `outputs[].encoding` in `request_shape`, `CROP` and `IMAGE_INSE
 tools for them. `FREEZE`, `REVERSE` and `POSITION` are not planned. Until then 0.1.x grows only additively:
 `media_compatibility`, `media_policy`, `frame_semantics`, `encoding`, `graph`, `validation`, `doctor_shape`,
 `versioning`, `tools[].media`, and the richer execution report.
+
+## `provides` (docs/decisions.md ADR-006)
+
+`provides` lists this Skill's eight operations by their cross-repository Capability id (`video.trim`, `video.cut`,
+`video.concat`, `video.speed`, `video.fit`, `video.fill`, `video.resize`, `video.overlay` — the same `capability`
+string `operations.OPERATIONS` and `tools[].capability` already carry), each with its `tool_id` and a `lifecycle`.
+It exists for `kajisho5/AI-video-production-OS`'s `CapabilityContract.provides` (`docs/SPEC.md` there), so a
+registry can resolve "who provides `video.trim`" without hardcoding this repository. It is additive, not pinned,
+and derived from `OPERATIONS` — it cannot say anything `tools[]` doesn't already say, only index it differently.
 
 ## What an agent may rely on
 

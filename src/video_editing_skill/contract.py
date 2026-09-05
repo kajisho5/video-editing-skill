@@ -42,6 +42,25 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
 }
 
 
+def capability_provides() -> List[Dict[str, str]]:
+    """Cross-repository Capability ids this Skill can be asked to perform (AI Video Production OS
+    `CapabilityContract.provides`, kajisho5/AI-video-production-OS docs/SPEC.md section 1).
+
+    Derived from OPERATIONS, the same source tool_specs() uses, so it can never drift from what the
+    Skill actually does. Deliberately excludes capability_list()'s two synthetic entries
+    (video.transition, video.reorder): those describe a property of CONCAT/CUT, not something an
+    Operation can independently target, and a Capability id here is meant to be one a ProductionPlan
+    step can request on its own.
+
+    `lifecycle` is EXPERIMENTAL for all of them, not because the operations themselves are unproven
+    (they are the same tested, already-in-production TRIM/CUT/... operations tool_specs() describes),
+    but because the cross-Skill Capability id concept this field publishes is new: no Agent or registry
+    is known to consume it yet. See docs/decisions.md ADR-006.
+    """
+    return [{"id": spec["capability"], "lifecycle": "EXPERIMENTAL", "tool_id": f"{SKILL_ID}/{t.lower()}"}
+            for t, spec in sorted(OPERATIONS.items())]
+
+
 def tool_specs() -> List[Dict[str, Any]]:
     specs = []
     for t in sorted(OPERATIONS):
@@ -115,6 +134,8 @@ def skill_contract() -> Dict[str, Any]:
         "response_shape": {"ok": True, "schema": RESPONSE_SCHEMA, "skill": {"id": SKILL_ID, "version": VERSION}, "status": "completed | reused",
                            "project": "...", "execution": {"operations": ["provenance records"], "outputs": ["path, sha256, timeline, observation"]}},
         # ---- additive blocks (outside PINNED_BLOCKS; see docs/contract.md)
+        # ---- provides: cross-repository Capability ids (docs/decisions.md ADR-006)
+        "provides": capability_provides(),
         "media_compatibility": media_compatibility(),
         "graph": {"model": "sources -> operations (DAG) -> outputs; every operation feeds an output; order is topological, ties by id",
                   "refused": ["cycle (DEPENDENCY_ERROR)", "unknown input / operation reference (DEPENDENCY_ERROR)", "duplicate source / operation / output id (INVALID_REQUEST)",
