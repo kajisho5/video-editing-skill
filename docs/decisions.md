@@ -47,12 +47,33 @@ whose frame computation was implicit. An execution Skill must promise the frame 
   `operations.even`.
 - A source with rotation metadata (±90 / 270, a real display matrix) is measured as displayed (`sw, sh` swapped),
   as the engine does.
-- No operation stretches / distorts. A `height` for `RESIZE` (exactly one of width / height) is a 0.2.0 candidate:
-  it changes the pinned `operations` block.
+- No operation stretches / distorts.
 
 **Consequences.** The target frame is computed before execution (`plan.steps[].normalized.target_frame`,
 `execution.operations[].normalized`) and the output must match it exactly (`VALIDATION_ERROR frame_size`
 otherwise); "the engine picks" no longer exists in the contract (`frame_semantics`).
+
+**Correction (found by live verification against a real ffmpeg-skill 0.10.0 checkout, not assumed): `RESIZE.height`
+is engine-blocked, not a small addition.** This ADR originally listed a `height` alternative to `RESIZE.width`
+(exactly one of the two) as a straightforward 0.2.0 candidate. Re-verifying `fit.py` directly (ffmpeg-skill 0.10.0,
+the only single-video geometry tool in the skill; `--width` is its sole size flag, `height` "follows the aspect")
+shows there is no engine-side way to request a specific output height: this Skill would have to invert the
+width→height formula itself and search for an integer `width` whose fit.py-computed height matches the request
+exactly, which is not guaranteed to exist for an arbitrary source aspect ratio, and unwinding it via computed
+approximation would break the "the target frame is computed before execution and the output must match it exactly"
+guarantee this ADR itself established above. `RESIZE.height` is therefore the same shape of gap as `CROP` /
+`IMAGE_INSERT` (ADR-002): blocked on ffmpeg-skill adding a typed `--height` flag to `fit.py`, not implementable here
+without building the geometry math ADR-001 assigns to the engine boundary. `contract.py`'s `versioning.next` has
+been corrected to say so; it is not withdrawn as a future 0.2.0 item, only reclassified from "ready" to "blocked."
+
+**New 0.2.0 candidate from the same verification pass: `FILL`'s crop anchor.** ffmpeg-skill 0.10.0 added
+`--crop-x` / `--crop-y` to `fit.py` (0=left/top, 0.5=centre default, 1=right/bottom, range-checked engine-side) so
+`--fit crop` no longer always crops from the centre — relevant because `FILL` (this Skill's crop-to-aspect
+operation) currently has no way to say "keep the left third" / "keep the top" when cropping a wide shot to a
+narrower aspect loses a subject held off-centre. This is a genuine, currently-unclaimed 0.2.0 candidate (a new
+optional `FILL` parameter, e.g. `anchor: {x, y}` mapped straight to the existing engine flags — no new engine
+capability needed, unlike `RESIZE.height`) — not decided on or scheduled here; a future session or an explicit
+request should make that call.
 
 ## ADR-004 — Encoding profile: typed, closed, minimal
 

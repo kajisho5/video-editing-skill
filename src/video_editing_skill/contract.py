@@ -177,8 +177,12 @@ def skill_contract() -> Dict[str, Any]:
                                "allowed within the same contract_version; the golden copy tests/contract/contract.json is regenerated deliberately in "
                                "the same change, and `contract --check` classifies every difference as breaking or additive",
                        "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
-                       "next": {"0.2.0": ["RESIZE: `height` as the alternative to `width` (exactly one of the two)",
-                                         "request_shape: `outputs[].encoding` folded into the documented shape (accepted since 0.1.0 as an optional key)",
+                       "next": {"0.2.0": ["request_shape: `outputs[].encoding` folded into the documented shape (accepted since 0.1.0 as an optional key; "
+                                         "ready, but not yet worth its own breaking release since it changes no behavior)",
+                                         "FILL: an `anchor` parameter for off-centre cropping, once ffmpeg-skill's `fit.py --crop-x/--crop-y` (0.10.0) is mapped in "
+                                         "(docs/decisions.md ADR-003 correction; not yet decided)",
+                                         "RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
+                                         "(docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
                                          "CROP (pixel rectangle) once ffmpeg-skill provides a typed crop tool", "IMAGE_INSERT (still -> timed clip) once ffmpeg-skill provides a typed tool",
                                          "FREEZE / REVERSE / POSITION: not planned (see docs/decisions.md ADR-002)"]}},
         # ---- 0.1.x additive blocks: encoding profile, frame semantics, media policy (docs/decisions.md ADR-003 .. ADR-005)
