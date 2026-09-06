@@ -65,17 +65,22 @@ Removing a key, or changing the meaning of an existing one, is breaking even out
   regenerated on purpose (`video-editing contract --json > tests/contract/contract.json`), reviewed in the same
   change, and the classification tells the reviewer whether agents must re-pin.
 
-## 0.2.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-004)
+## 0.2.0 (shipped; docs/decisions.md ADR-009)
 
-`versioning.next["0.2.0"]` lists breaking-change candidates for a future version, none currently in progress:
-`outputs[].encoding` formally in `request_shape` (ready — already accepted since 0.1.0, but not yet worth a
-breaking release on its own since it changes no behavior), a `FILL.anchor` parameter mapping ffmpeg-skill 0.10.0's
-`fit.py --crop-x/--crop-y` (not yet decided), `CROP` and `IMAGE_INSERT` once ffmpeg-skill ships typed tools for
-them, and `RESIZE.height` — found, by live verification against ffmpeg-skill 0.10.0, to be blocked the same way as
-`CROP`/`IMAGE_INSERT` (`fit.py` has no `--height` flag), not the small addition it was first framed as. `FREEZE`,
-`REVERSE` and `POSITION` are not planned. Until one of these actually ships, 0.1.x grows only additively:
-`media_compatibility`, `media_policy`, `frame_semantics`, `encoding`, `graph`, `validation`, `doctor_shape`,
-`versioning`, `tools[].media`, and the richer execution report.
+`version` `0.1.0` → `0.2.0`, `contract_version` `"1.0"` → `"2.0"`: `FILL` gained an optional `anchor: {x, y}`
+(mapping to ffmpeg-skill 0.10.0's `fit.py --crop-x/--crop-y`) and `outputs[].encoding` is now named directly in
+`request_shape` instead of only via `contract.encoding.request_field`. Both are breaking by this repository's own
+pinning convention (`operations` and `request_shape` both changed) — `video-production-agent`'s
+`SUPPORTED_SKILL_VERSIONS = ("0.1.",)` must widen before it accepts this contract; see ADR-009 for why this cost
+was accepted.
+
+## 0.3.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003)
+
+`versioning.next["0.3.0"]` lists breaking-change candidates for a future version, none currently in progress:
+`CROP` and `IMAGE_INSERT` once ffmpeg-skill ships typed tools for them, and `RESIZE.height` — found, by live
+verification against ffmpeg-skill 0.10.0, to be blocked the same way as `CROP`/`IMAGE_INSERT` (`fit.py` has no
+`--height` flag), not the small addition it was first framed as. `FREEZE`, `REVERSE` and `POSITION` are not
+planned. Until one of these actually ships, 0.2.x grows only additively.
 
 ## `provides` (docs/decisions.md ADR-006)
 

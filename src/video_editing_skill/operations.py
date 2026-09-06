@@ -207,6 +207,14 @@ def _aspect(v: Any, what: str) -> str:
     return v
 
 
+def _unit_float(v: Any, what: str) -> Fraction:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise EditError("INVALID_REQUEST", f"{what}: must be a number")
+    if not (0 <= v <= 1):
+        raise EditError("INVALID_REQUEST", f"{what}: must be between 0 and 1")
+    return Fraction(repr(float(v))).limit_denominator(1000)
+
+
 def _range(raw: Any, what: str) -> Dict[str, Time]:
     if not isinstance(raw, dict) or set(raw) != {"start", "end"}:
         raise EditError("INVALID_REQUEST", f"{what}: must be an object with start and end")
@@ -287,12 +295,18 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
             raise EditError("INVALID_REQUEST", f"{what}.factor: 1 changes nothing; drop the operation")
         p["factor"] = f
     elif op_type in ("FIT", "FILL"):
-        _keys(params, what, ("aspect", "width", "fps") + (("pad_color",) if op_type == "FIT" else ()), ("aspect",))
+        _keys(params, what, ("aspect", "width", "fps") + (("pad_color",) if op_type == "FIT" else ("anchor",)), ("aspect",))
         p["aspect"] = _aspect(params["aspect"], what + ".aspect")
         if "width" in params:
             p["width"] = _even(params["width"], what + ".width")
         if op_type == "FIT":
             p["pad_color"] = _color(params.get("pad_color", "black"), what + ".pad_color")
+        elif "anchor" in params:
+            a = params["anchor"]
+            if not isinstance(a, dict):
+                raise EditError("INVALID_REQUEST", f"{what}.anchor: must be an object with x and y")
+            _keys(a, what + ".anchor", ("x", "y"), ("x", "y"))
+            p["anchor"] = {"x": _unit_float(a["x"], what + ".anchor.x"), "y": _unit_float(a["y"], what + ".anchor.y")}
         _frame(params, what, p)
     elif op_type == "RESIZE":
         _keys(params, what, ("width", "fps"), ("width",))

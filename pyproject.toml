@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "video-editing-skill"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deterministic video editing Skill: typed edit requests (trim, cut, concat, speed, fit, overlay) compiled to an operation graph and executed through ffmpeg-skill. Not an AI agent."
 readme = "README.md"
 license = {text = "MIT"}
