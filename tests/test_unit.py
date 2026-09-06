@@ -9,9 +9,9 @@ from helpers import make_workspace, request, write_fake_media
 from video_editing_skill import contract, contract_check, operations
 from video_editing_skill.canonical import canonical_json, stable_hash
 from video_editing_skill.errors import ERROR_CODES, EXIT_CODES, EditError
-from video_editing_skill.compiler import compile_project
+from video_editing_skill.compiler import compile_operation, compile_project
 from video_editing_skill.paths import PathPolicy
-from video_editing_skill.project import parse_request
+from video_editing_skill.project import EditOperation, parse_request
 from video_editing_skill.timebase import Time, parse_fraction
 from video_editing_skill.timeline import build_timelines
 
@@ -89,6 +89,20 @@ class OperationParamTests(unittest.TestCase):
             operations.validate_params("OVERLAY", {"image": "logo", "start": 2, "end": 1}, "op")
         with self.assertRaises(EditError):
             operations.validate_params("OVERLAY", {"image": "logo", "opacity": 0}, "op")
+
+    def test_fill_anchor(self):
+        # docs/decisions.md ADR-009: FILL.anchor maps to ffmpeg-skill fit.py's --crop-x/--crop-y (0.10.0)
+        p = operations.validate_params("FILL", {"aspect": "9:16", "anchor": {"x": 0, "y": 1}}, "op")
+        self.assertEqual(p["anchor"], {"x": Fraction(0), "y": Fraction(1)})
+        p2 = operations.validate_params("FILL", {"aspect": "9:16"}, "op")
+        self.assertNotIn("anchor", p2)   # optional: absent means the engine's own centre default
+        for bad in ({"x": 1.5, "y": 0}, {"x": -0.1, "y": 0}, {"x": 0}, {"x": "0", "y": 0}):
+            with self.assertRaises(EditError):
+                operations.validate_params("FILL", {"aspect": "9:16", "anchor": bad}, "op")
+        with self.assertRaises(EditError):
+            operations.validate_params("FILL", {"aspect": "9:16", "anchor": "centre"}, "op")
+        with self.assertRaises(EditError):   # FIT never crops: anchor is FILL-only
+            operations.validate_params("FIT", {"aspect": "9:16", "anchor": {"x": 0, "y": 0}}, "op")
 
 
 class ProjectTests(unittest.TestCase):
@@ -232,6 +246,20 @@ class ProjectTests(unittest.TestCase):
         self.assertNotIn("--json", argv)
         t = steps["t1"].argv_for(["/x/1.mp4"], "/x/o.mp4")
         self.assertEqual(t, ["/x/1.mp4", "-o", "/x/o.mp4", "--start", "1.000000", "--end", "3.000000", "--accurate"])
+
+    def test_fill_anchor_compiles_to_ffmpeg_skill_crop_flags(self):
+        # docs/decisions.md ADR-009: FILL.anchor -> fit.py --crop-x/--crop-y (ffmpeg-skill 0.10.0)
+        params = operations.validate_params("FILL", {"aspect": "9:16", "anchor": {"x": 0, "y": 1}}, "op")
+        step = compile_operation(EditOperation("f", "FILL", ["A"], params))
+        argv = step.argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertEqual(argv[argv.index("--fit") + 1], "crop")
+        self.assertEqual(argv[argv.index("--crop-x") + 1], "0.000")
+        self.assertEqual(argv[argv.index("--crop-y") + 1], "1.000")
+        # no anchor given: fit.py's own centre default applies, nothing is passed
+        no_anchor = operations.validate_params("FILL", {"aspect": "9:16"}, "op")
+        argv2 = compile_operation(EditOperation("f2", "FILL", ["A"], no_anchor)).argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertNotIn("--crop-x", argv2)
+        self.assertNotIn("--crop-y", argv2)
 
 
 class TimelineTests(unittest.TestCase):
@@ -731,14 +759,19 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         self.assertIn("video codec choice", c["encoding"]["not_configurable"])
         self.assertEqual(c["request_shape"], json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))["request_shape"])
 
-    def test_pinned_blocks_are_unchanged_since_0_1_0(self):
-        """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the 0.1.0 snapshot the agent carries."""
+    def test_pinned_blocks_are_unchanged_since_0_2_0(self):
+        """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the golden copy.
+
+        Bumped from 0.1.0 to 0.2.0 deliberately (docs/decisions.md ADR-009: FILL.anchor, outputs[].encoding
+        formalized in request_shape) - a breaking contract_version change video-production-agent's
+        SUPPORTED_SKILL_VERSIONS = ("0.1.",) must widen before it accepts this release; this test only
+        guards against further *undocumented* drift from here, not against 0.2.0 itself."""
         c = contract.skill_contract()
         golden = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))
         for k in ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "capability_names", "schemas",
                   "engine", "response_shape", "request_shape", "formats"):
             self.assertEqual(c[k], golden[k], k)
-        self.assertEqual(c["version"], "0.1.0")
+        self.assertEqual(c["version"], "0.2.0")
         for t in c["tools"]:
             g = next(x for x in golden["tools"] if x["tool_id"] == t["tool_id"])
             for f in ("parameters", "required_capabilities", "inputs", "result_keys", "executed_by", "deterministic", "produces_output", "writes_media", "kind"):

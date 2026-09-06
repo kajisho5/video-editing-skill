@@ -13,7 +13,7 @@ name an execution escape hatch (`command`, `argv`, `shell`, `filter`, `env`, `ap
 | `CONCAT` | `inputs` (2..100 videos) | transition `{type, duration}`, width, height, fps, mode `pad` \| `crop`, pad_color | `ffmpeg-skill/join` |
 | `SPEED` | `input` (video) | **factor** in [1/4, 4], not 1 | `ffmpeg-skill/fit` |
 | `FIT` | `input` (video) | **aspect** `W:H`, width, pad_color, fps | `ffmpeg-skill/fit` |
-| `FILL` | `input` (video) | **aspect** `W:H`, width, fps | `ffmpeg-skill/fit` |
+| `FILL` | `input` (video) | **aspect** `W:H`, width, anchor `{x, y}` each 0..1, fps | `ffmpeg-skill/fit` |
 | `RESIZE` | `input` (video) | **width** (even), fps | `ffmpeg-skill/fit` |
 | `OVERLAY` | `input` (video) + `params.image` (image source) | **image**, position (name or `{x, y}`), margin, scale, opacity, start, end, fade | `ffmpeg-skill/overlay` |
 
@@ -26,7 +26,12 @@ integers; times are exact rationals. See `contract.operations` for the documente
 |---|---|---|---|
 | `RESIZE` | size | the source aspect; nothing padded, cropped or stretched | `width = params.width`; `height = even(width × sh / sw)` |
 | `FIT` | aspect | every source pixel (scaled to fit inside, padded with `pad_color`) | `width = params.width`, else `sw` if `aspect ≤ source_aspect` else `even(sh × aspect)`; `height = even(width / aspect)` |
-| `FILL` | aspect | the centre (scaled to cover, centre-cropped); edges are lost | same rule as FIT |
+| `FILL` | aspect | the centre by default (scaled to cover, cropped); edges are lost | same rule as FIT |
+
+`FILL.anchor` (docs/decisions.md ADR-009, 0.2.0): `{x, y}` each `0..1` picks which edge the crop keeps instead of
+always the centre (`0`=left/top, `0.5`=centre — the default when `anchor` is omitted, `1`=right/bottom); maps
+directly to `ffmpeg-skill fit.py`'s `--crop-x`/`--crop-y` (0.10.0). It changes *what part* of the frame survives,
+never the target frame size — the size rule above is unaffected.
 
 `even(n) = round(n)`, +1 when odd (ffmpeg-skill fit.py). `CONCAT` (join.py): `params.width × params.height`; when
 only one is given the other follows the first input's aspect (rounded); when none is given the first input's frame;

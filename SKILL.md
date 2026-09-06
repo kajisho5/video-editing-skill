@@ -33,7 +33,8 @@ with `UNSUPPORTED_OPERATION`; the contract's `unsupported` list says why.
 Times are exact: `"1:30"`, `"00:01:30.250"`, `{"frames": 300, "fps": "30000/1001"}` or a number of seconds.
 
 Frames are exact too: `RESIZE` keeps the aspect (`width` → `height = even(width × sh / sw)`), `FIT` pads to an aspect,
-`FILL` crops to it; the target frame is reported before execution (`normalized.target_frame`) and verified after.
+`FILL` crops to it (optionally off-centre via `anchor: {x, y}`, each `0..1`); the target frame is reported before
+execution (`normalized.target_frame`) and verified after.
 `outputs[].encoding` may set `crf` (14..28) and `preset` (x264 vocabulary); nothing else about encoding is
 configurable (`contract.encoding`).
 

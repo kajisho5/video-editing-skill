@@ -35,7 +35,8 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
                "mode": "pad | crop (how inputs of another aspect reach the frame)", "pad_color": "named colour or 0xRRGGBB"},
     "SPEED": {"factor": "number or N/D in [1/4, 4], not 1"},
     "FIT": {"aspect": "W:H", "width": "even int (optional)", "pad_color": "named colour or 0xRRGGBB", "fps": "optional"},
-    "FILL": {"aspect": "W:H", "width": "even int (optional)", "fps": "optional"},
+    "FILL": {"aspect": "W:H", "width": "even int (optional)",
+             "anchor": "{x, y} each 0..1: which edge the crop keeps (0=left/top, 0.5=centre default, 1=right/bottom) (optional)", "fps": "optional"},
     "RESIZE": {"width": "even int", "fps": "optional"},
     "OVERLAY": {"image": "image source id", "position": "|".join(POSITIONS) + " or {x, y} px", "margin": "int px", "scale": "image width px (optional)",
                 "opacity": "(0, 1]", "start": "time (optional)", "end": "time (optional)", "fade": "seconds 0..10 (optional)"},
@@ -125,7 +126,8 @@ def skill_contract() -> Dict[str, Any]:
             "schema": REQUEST_SCHEMA,
             "project": {"id": "optional label", "sources": [{"id": "label", "path": "file under an allowed root", "kind": "video | image"}],
                         "operations": [{"id": "label", "type": "one of operations", "input": "source or operation id", "inputs": "[ids] for CONCAT", "params": {}}],
-                        "outputs": [{"id": "label", "operation": "operation id", "path": "relative path under the workspace (.mp4 | .mov | .mkv)"}]},
+                        "outputs": [{"id": "label", "operation": "operation id", "path": "relative path under the workspace (.mp4 | .mov | .mkv)",
+                                     "encoding": "optional {crf, preset} (contract.encoding); refused where noted there"}]},
             "options": {"timeout_seconds": "1..86400 (default 3600)", "overwrite": "bool (default false)", "reuse": "bool (default true)"},
         },
         "time": {"forms": ["number (seconds)", "'ss.fff' | 'mm:ss' | 'hh:mm:ss.fff'", "{seconds}", "{rational: 'N/D'}", "{frames, timebase}", "{frames, fps}"],
@@ -177,11 +179,7 @@ def skill_contract() -> Dict[str, Any]:
                                "allowed within the same contract_version; the golden copy tests/contract/contract.json is regenerated deliberately in "
                                "the same change, and `contract --check` classifies every difference as breaking or additive",
                        "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
-                       "next": {"0.2.0": ["request_shape: `outputs[].encoding` folded into the documented shape (accepted since 0.1.0 as an optional key; "
-                                         "ready, but not yet worth its own breaking release since it changes no behavior)",
-                                         "FILL: an `anchor` parameter for off-centre cropping, once ffmpeg-skill's `fit.py --crop-x/--crop-y` (0.10.0) is mapped in "
-                                         "(docs/decisions.md ADR-003 correction; not yet decided)",
-                                         "RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
+                       "next": {"0.3.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
                                          "(docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
                                          "CROP (pixel rectangle) once ffmpeg-skill provides a typed crop tool", "IMAGE_INSERT (still -> timed clip) once ffmpeg-skill provides a typed tool",
                                          "FREEZE / REVERSE / POSITION: not planned (see docs/decisions.md ADR-002)"]}},

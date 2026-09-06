@@ -17,7 +17,7 @@ ENCODING_FLAGS = ("crf", "preset")   # the typed encoding profile (operations.va
 ALLOWED_FLAGS: Dict[str, tuple] = {
     "cut": ("start", "end", "segments", "accurate") + ENCODING_FLAGS,
     "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color") + ENCODING_FLAGS,
-    "fit": ("duration", "method", "max_speed", "aspect", "fit", "width", "pad_color", "fps") + ENCODING_FLAGS,
+    "fit": ("duration", "method", "max_speed", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps") + ENCODING_FLAGS,
     "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
     "probe": (),
 }
@@ -114,6 +114,9 @@ def _compile(op: EditOperation) -> Step:
         args = {"aspect": p["aspect"], "fit": "pad" if op.type == "FIT" else "crop"}
         if op.type == "FIT":
             args["pad_color"] = p["pad_color"]
+        elif "anchor" in p:
+            args["crop_x"] = f"{float(p['anchor']['x']):.3f}"
+            args["crop_y"] = f"{float(p['anchor']['y']):.3f}"
         if "width" in p:
             args["width"] = p["width"]
         if "fps" in p:

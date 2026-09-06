@@ -207,3 +207,39 @@ compare against `ffmpeg-skill`'s `contract_version` instead would be a real, sep
 `ffmpeg_skill.py`'s actual comparison logic, not just contract metadata) — out of scope here. This field publishes
 what is real today, not what the two-axis ideal would eventually look like; this ADR says so explicitly rather
 than let the field imply a compatibility guarantee it does not carry yet.
+
+## ADR-009 — 0.2.0: `FILL.anchor` and `outputs[].encoding` formalized in `request_shape`
+
+**Decision.** Release 0.2.0 (`version` `"0.1.0"` → `"0.2.0"`, `contract_version` `"1.0"` → `"2.0"`) ships exactly
+two changes, both already fully designed in ADR-003 / ADR-004 and both verified against real ffmpeg-skill 0.10.0
+and the one known consumer before merging:
+
+- **`FILL` gains an optional `anchor: {x, y}`** (each `0..1`; `0`=left/top, `0.5`=centre — unchanged default when
+  omitted, `1`=right/bottom), mapped straight onto `ffmpeg-skill fit.py`'s `--crop-x`/`--crop-y` (added in 0.10.0;
+  see ADR-003's correction). No new ffmpeg-skill capability is required — `crop_x`/`crop_y` parametrize the same
+  `crop` filter `--fit crop` already used, so `TOOL_REQUIREMENTS["ffmpeg-skill/fit"]` is unchanged. Verified against
+  a real ffmpeg-skill 0.10.0 checkout end-to-end: two `FILL` requests differing only in `anchor` (`x: 0` vs `x: 1`)
+  on a source with distinguishable left/right content produced different delivered bytes (`tests/test_integration.py`
+  `test_fill_anchor`), not just different compiled flags.
+- **`outputs[].encoding` is now named directly in `request_shape`** (`contract.py`'s `request_shape.project.outputs[]`),
+  not only in the separate `contract.encoding.request_field` pointer ADR-004 used as a stopgap. No behavior changes:
+  the key has been accepted since 0.1.0.
+
+**Why both in one release, and why now.** Neither is urgent alone — `anchor` is a genuine new capability but a
+small one; the `encoding` move is purely representational. Bundling them pays the one-time cost of a breaking
+release (below) once for both, rather than twice.
+
+**The real cost, stated plainly, not glossed over.** Both changes touch blocks this repository's own tooling treats
+as pinned (`operations` is a formal `PINNED_BLOCKS` member; `request_shape` is `also_pinned_by_agents`), so
+`contract_check.check_saved()` classifies this release as breaking, not additive — correctly. Concretely, this
+means `video-production-agent`'s adapter (`SUPPORTED_SKILL_VERSIONS = ("0.1.",)` in
+`src/video_agent/tools/video_editing/adapter.py`) will reject this Skill's `0.2.0` contract via `check_contract()`
+until that repository's own maintainers widen the accepted range — a real, external, out-of-repo action this
+release depends on and cannot itself perform (ADR-001: never edit `video-production-agent` from here). This is the
+anticipated, accepted consequence of a deliberate breaking version bump (docs/contract.md), not an oversight; it
+was disclosed and explicitly authorized before this release was cut, rather than discovered by the agent's
+maintainers after the fact.
+
+**Not included.** `RESIZE.height` stays out (ADR-003: blocked on ffmpeg-skill, `fit.py` has no `--height` flag);
+`CROP`, `IMAGE_INSERT` stay out (ADR-002: blocked on ffmpeg-skill); `FREEZE`, `REVERSE`, `POSITION` remain not
+planned. `contract.py`'s `versioning.next` now lists these under `"0.3.0"`.

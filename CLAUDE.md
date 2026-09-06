@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-007). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-009). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -29,8 +29,8 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 Two independent version axes, both on `skill_contract()`:
 
-- **`version`** (currently `"0.1.0"`) — this package's release version. Free to move on any release.
-- **`contract_version`** (currently `"1.0"`) — the version of the *pinned shape*
+- **`version`** (currently `"0.2.0"`) — this package's release version. Free to move on any release.
+- **`contract_version`** (currently `"2.0"`) — the version of the *pinned shape*
   (`PINNED_BLOCKS` in `contract.py`). Bumps only when a pinned block changes in a breaking way.
   A dependent pins a range against `contract_version`, never `version`.
 
@@ -71,15 +71,18 @@ sandboxed session. `.github/workflows/tests.yml` runs both, matrixed across OS/P
   verification against 0.10.0 (not assumed):** `fit.py` still has no `--height` flag (only
   `--width`) and no other script offers single-video resize — `RESIZE`'s `height` alternative
   (docs/decisions.md ADR-003) is genuinely blocked on ffmpeg-skill, not a small addition, despite
-  how ADR-003 originally framed it. **New real opportunity, same source:** 0.10.0's `fit.py`
-  gained `--crop-x`/`--crop-y` for `FILL`'s crop mode (which edge to keep when cropping to an
-  aspect, not just centre) — a genuine, currently-unclaimed 0.2.0 candidate, not yet decided on.
+  how ADR-003 originally framed it; still blocked, next candidate is `contract.versioning.next["0.3.0"]`.
+  0.10.0's `fit.py --crop-x`/`--crop-y` (which edge `FILL`'s crop keeps) was mapped into `FILL.anchor`
+  in 0.2.0 (ADR-009) — verified end-to-end against a real 0.10.0 checkout (different anchors produce
+  different delivered bytes, `tests/test_integration.py::test_fill_anchor`).
 - **`video-production-agent`** (consumer) — the only known caller. Its adapter
   (`src/video_agent/tools/video_editing/adapter.py`, `check_contract()`) range-checks `version`
   against `("0.1.",)` and validates the pinned blocks; it does not (yet) read `contract_version`.
-  Never edit that repo from here — verify compatibility by reading its adapter code and, ideally,
-  running its `check_contract()` against this repo's live `skill_contract()` before merging a
-  contract change (see PR #3's description for the pattern).
+  **This means it will reject this Skill's 0.2.0 contract until its own maintainers widen that
+  range** — a known, accepted, disclosed consequence of the ADR-009 breaking release, not a bug to
+  fix from here. Never edit that repo from here — verify compatibility by reading its adapter code
+  and, ideally, running its `check_contract()` against this repo's live `skill_contract()` before
+  merging a contract change (see PR #3's description for the pattern).
 - **`AI-video-production-OS`** (parent architecture repo) — defines the cross-repository
   `CapabilityContract` (`provides`, `contract_version`, ...) this repo participates in as one of
   ten Skills. Its own `docs/ROADMAP.md` describes an 8-phase rollout; Phases 1–2 (schema + registry
@@ -110,6 +113,15 @@ exception to ADR-001.
 - PR #5 (merged) — `dependencies`: publishes the `ffmpeg-skill` version range already enforced at
   runtime (ADR-008); moved the OS registry's `dependency_version_ranges` conformance check for
   this Skill from `NOT_IMPLEMENTED` to a real `PASS`.
+- PR #6 (merged) — trivial: kept this file's status snapshot current.
+- PR #7 (merged) — verified ffmpeg-skill 0.10.0 (full real-media matrix, 43/43); corrected
+  ADR-003's `RESIZE.height` framing (engine-blocked, not a small addition, found live); flagged
+  `FILL.anchor` as a genuine unblocked candidate. Documentation-only, additive.
+- PR #8 (0.2.0, ADR-009) — `FILL.anchor` (maps ffmpeg-skill 0.10.0's `fit.py --crop-x/--crop-y`,
+  verified end-to-end against real media) and `outputs[].encoding` formalized in `request_shape`.
+  Breaking by this repo's own convention: `version` 0.1.0 → 0.2.0, `contract_version` "1.0" → "2.0".
+  `video-production-agent` needs its own follow-up to widen `SUPPORTED_SKILL_VERSIONS` before it
+  accepts this contract — a known, disclosed, explicitly-authorized consequence, not an oversight.
 
 ## Picking the next task
 

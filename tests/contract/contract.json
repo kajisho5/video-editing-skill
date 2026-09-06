@@ -3,8 +3,8 @@
   "skill_id": "video-editing",
   "name": "Video Editing Skill",
   "package": "video-editing-skill",
-  "version": "0.1.0",
-  "contract_version": "1.0",
+  "version": "0.2.0",
+  "contract_version": "2.0",
   "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, image overlay) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing decisions, no LLM, no commands.",
   "role": "execution",
   "repository": "https://github.com/kajisho5/video-editing-skill",
@@ -142,7 +142,7 @@
     {
       "tool_id": "video-editing/concat",
       "skill_id": "video-editing",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "operation_type": "CONCAT",
       "capability": "video.concat",
       "description": "join two or more inputs in order, optionally with a transition, conforming size / fps",
@@ -196,7 +196,7 @@
     {
       "tool_id": "video-editing/cut",
       "skill_id": "video-editing",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "operation_type": "CUT",
       "capability": "video.cut",
       "description": "keep several ranges of one input, joined in the order given (removes everything else)",
@@ -244,7 +244,7 @@
     {
       "tool_id": "video-editing/fill",
       "skill_id": "video-editing",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "operation_type": "FILL",
       "capability": "video.fill",
       "description": "centre-crop into an aspect ratio (edges are lost)",
@@ -261,6 +261,7 @@
       "parameters": {
         "aspect": "W:H",
         "width": "even int (optional)",
+        "anchor": "{x, y} each 0..1: which edge the crop keeps (0=left/top, 0.5=centre default, 1=right/bottom) (optional)",
         "fps": "optional"
       },
       "media": {
@@ -293,7 +294,7 @@
     {
       "tool_id": "video-editing/fit",
       "skill_id": "video-editing",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "operation_type": "FIT",
       "capability": "video.fit",
       "description": "letterbox / pillarbox into an aspect ratio (nothing is cropped)",
@@ -343,7 +344,7 @@
     {
       "tool_id": "video-editing/overlay",
       "skill_id": "video-editing",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "operation_type": "OVERLAY",
       "capability": "video.overlay",
       "description": "composite a still image (logo, lower-third PNG) at a named position for a time range",
@@ -397,7 +398,7 @@
     {
       "tool_id": "video-editing/resize",
       "skill_id": "video-editing",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "operation_type": "RESIZE",
       "capability": "video.resize",
       "description": "scale to a width keeping the aspect ratio",
@@ -445,7 +446,7 @@
     {
       "tool_id": "video-editing/speed",
       "skill_id": "video-editing",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "operation_type": "SPEED",
       "capability": "video.speed",
       "description": "retime by a constant factor (video and pitch-preserved audio)",
@@ -493,7 +494,7 @@
     {
       "tool_id": "video-editing/trim",
       "skill_id": "video-editing",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "operation_type": "TRIM",
       "capability": "video.trim",
       "description": "keep one source time range [start, end)",
@@ -570,6 +571,7 @@
       "parameters": {
         "aspect": "W:H",
         "width": "even int (optional)",
+        "anchor": "{x, y} each 0..1: which edge the crop keeps (0=left/top, 0.5=centre default, 1=right/bottom) (optional)",
         "fps": "optional"
       }
     },
@@ -697,7 +699,8 @@
         {
           "id": "label",
           "operation": "operation id",
-          "path": "relative path under the workspace (.mp4 | .mov | .mkv)"
+          "path": "relative path under the workspace (.mp4 | .mov | .mkv)",
+          "encoding": "optional {crf, preset} (contract.encoding); refused where noted there"
         }
       ]
     },
@@ -827,7 +830,7 @@
     "schema": "video-editing/response@1",
     "skill": {
       "id": "video-editing",
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     "status": "completed | reused",
     "project": "...",
@@ -1114,7 +1117,7 @@
     "ok": "bool",
     "skill": {
       "id": "video-editing",
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     "contract": "schema ids",
     "engine": "ffmpeg-skill location, version, ffmpeg / ffprobe, missing capabilities",
@@ -1134,8 +1137,8 @@
     "problems": "…"
   },
   "versioning": {
-    "version": "0.1.0",
-    "contract_version": "1.0",
+    "version": "0.2.0",
+    "contract_version": "2.0",
     "pinned_blocks": [
       "schema",
       "skill_id",
@@ -1157,9 +1160,7 @@
       "tools[].parameters"
     ],
     "next": {
-      "0.2.0": [
-        "request_shape: `outputs[].encoding` folded into the documented shape (accepted since 0.1.0 as an optional key; ready, but not yet worth its own breaking release since it changes no behavior)",
-        "FILL: an `anchor` parameter for off-centre cropping, once ffmpeg-skill's `fit.py --crop-x/--crop-y` (0.10.0) is mapped in (docs/decisions.md ADR-003 correction; not yet decided)",
+      "0.3.0": [
         "RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag (docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
         "CROP (pixel rectangle) once ffmpeg-skill provides a typed crop tool",
         "IMAGE_INSERT (still -> timed clip) once ffmpeg-skill provides a typed tool",
