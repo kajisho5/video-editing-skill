@@ -65,8 +65,15 @@ sandboxed session. `.github/workflows/tests.yml` runs both, matrixed across OS/P
 
 - **`ffmpeg-skill`** (dependency) — the only FFmpeg boundary. Version range pinned in
   `ffmpeg_skill.py` (`SUPPORTED_MIN` / `SUPPORTED_MAX_EXCLUSIVE`, currently `>=0.9.0,<1.0.0`).
-  Verified against both 0.9.0 and 0.9.1 as of this writing; re-verify `fit.py` / `join.py` /
-  `overlay.py` geometry and behavior before raising the ceiling.
+  Verified against 0.9.0, 0.9.1, and 0.10.0 as of this writing (full real-media integration
+  matrix green against a live 0.10.0 checkout); re-verify `fit.py` / `join.py` / `overlay.py`
+  geometry and behavior before raising the ceiling. **Known real gap, found by live
+  verification against 0.10.0 (not assumed):** `fit.py` still has no `--height` flag (only
+  `--width`) and no other script offers single-video resize — `RESIZE`'s `height` alternative
+  (docs/decisions.md ADR-003) is genuinely blocked on ffmpeg-skill, not a small addition, despite
+  how ADR-003 originally framed it. **New real opportunity, same source:** 0.10.0's `fit.py`
+  gained `--crop-x`/`--crop-y` for `FILL`'s crop mode (which edge to keep when cropping to an
+  aspect, not just centre) — a genuine, currently-unclaimed 0.2.0 candidate, not yet decided on.
 - **`video-production-agent`** (consumer) — the only known caller. Its adapter
   (`src/video_agent/tools/video_editing/adapter.py`, `check_contract()`) range-checks `version`
   against `("0.1.",)` and validates the pinned blocks; it does not (yet) read `contract_version`.

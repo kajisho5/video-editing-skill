@@ -399,7 +399,8 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 - `TRIM` / `CUT` / `SPEED` / `OVERLAY` refuse an input whose frame has an odd width or height (`odd_frame`); the
   frame-changing operations normalize it to even first.
 - The integration HDR fixture is an SDR pattern flagged as HDR (colour tags); real HDR10 / HLG content and tone
-  mapping are not covered. Verified against ffmpeg-skill 0.9.0 and 0.9.1.
+  mapping are not covered. Verified against ffmpeg-skill 0.9.0, 0.9.1, and 0.10.0 (full real-media integration
+  matrix, 43/43, against a live 0.10.0 checkout).
 - Real rotation metadata (a display matrix) is honoured; a legacy `rotate` tag is ignored by ffmpeg ≥ 5 and therefore
   by this Skill's probe-based normalization (the frame is then the stored one).
 - One video track plus image overlays; no picture-in-picture of video, no audio-only sources, no per-track audio.
@@ -414,7 +415,11 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 
 ## Future extensions
 
-Contract 0.2.0 (ADR-002, `contract.versioning.next`): `CROP` (pixel rectangle) and `IMAGE_INSERT` (still → timed
-clip) once ffmpeg-skill provides typed tools; `RESIZE.height`; `outputs[].encoding` folded into `request_shape`.
-Not planned: `FREEZE` (compose from IMAGE_INSERT), `REVERSE`, `POSITION` (would extend OVERLAY with a video layer).
+Contract 0.2.0 candidates, none scheduled (ADR-002 / ADR-003, `contract.versioning.next`): `CROP` (pixel rectangle),
+`IMAGE_INSERT` (still → timed clip), and `RESIZE.height` all wait on ffmpeg-skill shipping a typed tool/flag they
+need — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be blocked this way too
+(`fit.py` has no `--height` flag), not the small addition ADR-003 first described. A `FILL.anchor` parameter could
+map ffmpeg-skill 0.10.0's new `fit.py --crop-x/--crop-y` (no engine gap, but not yet decided on). `outputs[].encoding`
+folded into `request_shape` is ready today but not yet worth a breaking release on its own. Not planned: `FREEZE`
+(compose from IMAGE_INSERT), `REVERSE`, `POSITION` (would extend OVERLAY with a video layer).
 Also: an `OVERLAY` that tolerates silent inputs once ffmpeg-skill's overlay terminates on them.
