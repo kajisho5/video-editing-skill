@@ -171,7 +171,7 @@ DOCTOR = textwrap.dedent('''
 ''')
 
 
-def make_fake_skill(root: str, mode: str = "ok", version: str = "0.9.0") -> str:
+def make_fake_skill(root: str, mode: str = "ok", version: str = "0.10.0") -> str:
     scripts = os.path.join(root, "scripts")
     os.makedirs(scripts, exist_ok=True)
     for name in ("probe", "cut", "join", "fit", "overlay"):

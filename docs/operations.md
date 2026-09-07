@@ -83,12 +83,11 @@ image must decode to a frame. Per operation:
 | `FIT` | video | aspect as requested (width when given, padded); audio, fps as the input unless `fps` |
 | `FILL` | video | aspect as requested (width when given, centre-cropped); audio, fps as the input unless `fps` |
 | `RESIZE` | video | `width` as requested, height by the source aspect; audio, fps as the input unless `fps` |
-| `OVERLAY` | video **with an audio stream** + image | frame size, fps and audio as the input |
+| `OVERLAY` | video + image | frame size, fps and audio as the input |
 
-`OVERLAY` requires audio because ffmpeg-skill 0.9.x's overlay (`-loop 1` image + `-shortest`) never terminates on a
-video without an audio stream; the skill refuses it (`INVALID_INPUT`, reason `audio_required`) instead of hanging
-until the timeout. A `CONCAT` with at least one audio-bearing input produces audio and therefore satisfies a
-downstream `OVERLAY`.
+`OVERLAY` no longer requires audio (ADR-009): ffmpeg-skill 0.9.x's overlay (`-loop 1` image + `-shortest`) could run
+unbounded on a video without an audio stream, but ffmpeg-skill >=0.10.0 bounds it with an explicit `-t <video
+duration>` instead, verified against real audio-less footage. `SUPPORTED_MIN` was bumped to `0.10.0` accordingly.
 
 Profiles of not-yet-produced intermediates are derived (`EXPECTED`) with the same rules the engine applies (frame
 semantics, audio presence, fps, HDR); once an intermediate exists its probe (`OBSERVED`) is used.
@@ -100,7 +99,6 @@ semantics, audio presence, fps, HDR); once an intermediate exists its probe (`OB
 | no video stream (audio-only file, corrupt container) | refused: `INVALID_INPUT no_video_stream` |
 | video source without a duration (still image / broken container as video) | refused: `INVALID_INPUT no_duration` |
 | image that does not decode | refused: `INVALID_INPUT image_undecodable` |
-| OVERLAY on a video input without audio | refused: `INVALID_INPUT audio_required` (ffmpeg-skill 0.9.x never terminates) |
 | TRIM / CUT / SPEED / OVERLAY on an input with an odd width or height | refused: `INVALID_INPUT odd_frame` (RESIZE / FIT / FILL / CONCAT normalize it) |
 | CONCAT of HDR and SDR inputs | refused: `INVALID_INPUT hdr_mismatch` |
 | unsupported extension / container | refused: `UNSUPPORTED_FORMAT` |
@@ -149,10 +147,12 @@ with the same probe checks; a candidate that no longer validates is discarded an
 
 ## Engine versions and what the tests prove
 
-Verified against ffmpeg-skill 0.9.0 and 0.9.1 (`>=0.9.0,<1.0.0`) with ffmpeg 6.1.1. 0.9.1 adds audio-only cut /
-join modes and a three-state capability doctor (`available` / `missing` / `unknown`); this Skill uses none of the
-audio-only modes and treats a capability absent from `available` as missing (conservative: a detection failure
-refuses rather than guesses). The overlay behaviour on silent inputs is unchanged in 0.9.1.
+Verified against ffmpeg-skill 0.9.0, 0.9.1 and 0.10.0 with ffmpeg 6.1.1 (`>=0.10.0,<1.0.0` since ADR-009). 0.9.1
+adds audio-only cut / join modes and a three-state capability doctor (`available` / `missing` / `unknown`); this
+Skill uses none of the audio-only modes and treats a capability absent from `available` as missing (conservative: a
+detection failure refuses rather than guesses). 0.10.0 bounds `overlay.py --image` with an explicit `-t <video
+duration>` instead of `-shortest`, verified (ADR-009) to terminate correctly on a real, audio-less clip — the
+reason `SUPPORTED_MIN` no longer allows 0.9.x, which lacks that fix.
 
 The HDR fixture in `tests/test_integration.py` is an SDR test pattern **flagged** as HDR (BT.2020 primaries, PQ
 transfer tags): it exercises the engine's HDR detection and HEVC path and this Skill's codec / mixing rules, not

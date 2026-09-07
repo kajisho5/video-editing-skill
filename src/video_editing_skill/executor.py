@@ -251,8 +251,8 @@ class Executor:
             for r in video_inputs:
                 prof = self.profile(r)
                 if req["audio"] and prof["audio"] is False:
-                    raise EditError("INVALID_INPUT", f"operation {ref!r} ({op.type}): input {r!r} has no audio stream and {op.type} needs one "
-                                    "(ffmpeg-skill 0.9.x overlay never terminates on a video without audio); add audio upstream or use a source with audio",
+                    raise EditError("INVALID_INPUT", f"operation {ref!r} ({op.type}): input {r!r} has no audio stream and {op.type} needs one; "
+                                    "add audio upstream or use a source with audio",
                                     {"operation": ref, "input": r, "reason": "audio_required"})
             if op.type == "OVERLAY":
                 img = self.profile(op.inputs[-1])

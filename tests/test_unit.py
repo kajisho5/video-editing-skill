@@ -423,7 +423,7 @@ class MediaAndValidationTests(ExecutorHarness):
         for t, m in operations.MEDIA.items():
             self.assertTrue(m["requires"]["video"], t)
             self.assertEqual(m["requires"]["image"], t == "OVERLAY", t)
-            self.assertEqual(m["requires"]["audio"], t == "OVERLAY", "only OVERLAY needs audio (ffmpeg-skill 0.9.x overlay hangs without it)")
+            self.assertFalse(m["requires"]["audio"], "no operation needs audio (ffmpeg-skill >=0.10.0 bounds OVERLAY's looped-image composite with -t, not audio-dependent -shortest)")
         c = contract.skill_contract()
         self.assertEqual(c["media_compatibility"], operations.media_compatibility())
         for t in c["tools"]:
@@ -453,19 +453,14 @@ class MediaAndValidationTests(ExecutorHarness):
                             probes={"A": self.probe(audio=False), "B": self.probe(audio=True), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
         self.assertIs(ex3.profile("c")["audio"], True)
 
-    def test_overlay_without_audio_is_refused_before_execution(self):
+    def test_overlay_on_audio_less_input_is_allowed(self):
+        """ffmpeg-skill >=0.10.0's overlay.py bounds a looped-image overlay with an explicit -t instead of
+        -shortest, so OVERLAY no longer needs an audio stream to terminate correctly (ADR-009)."""
         ex = self.executor([{"id": "o", "type": "OVERLAY", "input": "A", "params": {"image": "logo"}}],
                            probes={"A": self.probe(audio=False), "B": self.probe(), "logo": {"duration": None, "video": {"width": 120, "height": 40}, "audio": None}})
-        with self.assertRaises(EditError) as cm:
-            ex._check_media()
-        self.assertEqual((cm.exception.code, cm.exception.details["reason"]), ("INVALID_INPUT", "audio_required"))
+        ex._check_media()
         # through an upstream operation too (a TRIM keeps the input's audio profile)
         ex = self.executor([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}, {"id": "o", "type": "OVERLAY", "input": "t", "params": {"image": "logo"}}],
-                           probes={"A": self.probe(audio=False), "B": self.probe(), "logo": {"duration": None, "video": {"width": 120, "height": 40}, "audio": None}})
-        with self.assertRaises(EditError):
-            ex._check_media()
-        # a CONCAT that adds audio (one input has it) satisfies OVERLAY
-        ex = self.executor([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}, {"id": "o", "type": "OVERLAY", "input": "c", "params": {"image": "logo"}}],
                            probes={"A": self.probe(audio=False), "B": self.probe(), "logo": {"duration": None, "video": {"width": 120, "height": 40}, "audio": None}})
         ex._check_media()
 
@@ -595,7 +590,7 @@ class DoctorAvailabilityTests(unittest.TestCase):
         from video_editing_skill.doctor import operation_availability
         from video_editing_skill.ffmpeg_skill import FfmpegSkill
         full = {"ffmpeg": "6", "ffprobe": "6", "ok": True, "missing": [], "available": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade"]}
-        skill = FfmpegSkill("/x", "0.9.0", ["probe", "cut", "join", "fit", "overlay"])
+        skill = FfmpegSkill("/x", "0.10.0", ["probe", "cut", "join", "fit", "overlay"])
         rows = {r["type"]: r for r in operation_availability(skill, full)}
         self.assertEqual(sorted(rows), sorted(operations.OPERATIONS))
         self.assertTrue(all(r["status"] == "AVAILABLE" and r["missing"] == [] for r in rows.values()), rows)
@@ -604,7 +599,7 @@ class DoctorAvailabilityTests(unittest.TestCase):
         rows = {r["type"]: r for r in operation_availability(skill, no_xfade)}
         self.assertEqual((rows["CONCAT"]["status"], rows["CONCAT"]["missing"]), ("MISSING", ["filter:xfade", "filter:acrossfade"]))
         self.assertEqual(rows["TRIM"]["status"], "AVAILABLE")
-        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.9.0", ["probe", "cut"]), full)}
+        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.10.0", ["probe", "cut"]), full)}
         self.assertEqual(rows["OVERLAY"]["missing"], ["tool:ffmpeg-skill/overlay"])
         rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "1.2.0", ["probe", "cut", "join", "fit", "overlay"]), full)}
         self.assertTrue(all(r["status"] == "MISSING" for r in rows.values()))
@@ -732,11 +727,14 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         self.assertEqual(c["request_shape"], json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))["request_shape"])
 
     def test_pinned_blocks_are_unchanged_since_0_1_0(self):
-        """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the 0.1.0 snapshot the agent carries."""
+        """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the 0.1.0 snapshot the agent carries.
+        `engine` is deliberately excluded: it is an additive block (docs/decisions.md ADR-008), free to drift as the
+        ffmpeg-skill version range this Skill enforces changes (ADR-009 bumped it to >=0.10.0) — covered by
+        test_drift_is_detected, not by this byte-identity freeze."""
         c = contract.skill_contract()
         golden = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))
         for k in ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "capability_names", "schemas",
-                  "engine", "response_shape", "request_shape", "formats"):
+                  "response_shape", "request_shape", "formats"):
             self.assertEqual(c[k], golden[k], k)
         self.assertEqual(c["version"], "0.1.0")
         for t in c["tools"]:

@@ -12,7 +12,7 @@ video-editing-skill ≠ video-production-agent   (no decisions, no plan, no LLM,
 video-editing-skill ≠ ffmpeg-skill             (no ffmpeg command generation, no filter strings)
 ```
 
-Python ≥ 3.9, standard library only. Requires an ffmpeg-skill 0.9.x checkout and ffmpeg / ffprobe on `PATH`.
+Python ≥ 3.9, standard library only. Requires an ffmpeg-skill >=0.10.0 checkout and ffmpeg / ffprobe on `PATH`.
 
 ## Scope
 
@@ -46,7 +46,7 @@ no scripting, no raw ffmpeg or filter interface. See "Explicit non-goals" in the
 
 **Not implemented in this version** (declared as gaps in `contract.unsupported`, refused with
 `UNSUPPORTED_OPERATION`): `CROP` (pixel rectangle), `FREEZE`, `REVERSE`, `IMAGE_INSERT` (still → clip),
-`POSITION` (free video-layer placement). ffmpeg-skill 0.9.x has no tool for them and this skill does not run
+`POSITION` (free video-layer placement). ffmpeg-skill has no tool for them and this skill does not run
 ffmpeg itself. Multi-track assembly is limited to one video track plus image overlays.
 
 ## Architecture
@@ -144,17 +144,17 @@ serialised as `{"seconds": "12.500000", "rational": "25/2"}`.
 {
   "ok": true, "schema": "video-editing/response@1", "skill": {"id": "video-editing", "version": "0.1.0"},
   "status": "completed | reused", "command": "run",
-  "engine": {"ffmpeg-skill": "0.9.0", "ffmpeg": "6.1.1", "ffprobe": "6.1.1"},
+  "engine": {"ffmpeg-skill": "0.10.0", "ffmpeg": "6.1.1", "ffprobe": "6.1.1"},
   "request_sha256": "…sha256 of the canonical request document…",
   "execution": {
     "status": "completed", "started_at": "...Z", "finished_at": "...Z", "work_dir": ".../.video-editing/work",
     "request_sha256": "…", "reused": false,
-    "engine": {"id": "ffmpeg-skill", "version": "0.9.0", "root": "…", "tools": ["cut", "fit", "join", "overlay", "probe", "…"], "version_supported": true, "missing_tools": []},
+    "engine": {"id": "ffmpeg-skill", "version": "0.10.0", "root": "…", "tools": ["cut", "fit", "join", "overlay", "probe", "…"], "version_supported": true, "missing_tools": []},
     "sources": [{"id": "camA", "kind": "video", "path": "…", "sha256": "…", "size": 606688,
-                 "observation": {"kind": "media.probe", "provenance": "OBSERVED", "source": "ffmpeg-skill/probe@0.9.0", "data": {…}}}],
+                 "observation": {"kind": "media.probe", "provenance": "OBSERVED", "source": "ffmpeg-skill/probe@0.10.0", "data": {…}}}],
     "operations": [{
       "operation": "trimA", "operation_id": "op_…", "type": "TRIM", "capability": "video.trim", "status": "completed",
-      "skill": "video-editing", "skill_version": "0.1.0", "tool": "ffmpeg-skill/cut", "tool_versions": {"ffmpeg-skill": "0.9.0", "ffmpeg": "…", "ffprobe": "…"},
+      "skill": "video-editing", "skill_version": "0.1.0", "tool": "ffmpeg-skill/cut", "tool_versions": {"ffmpeg-skill": "0.10.0", "ffmpeg": "…", "ffprobe": "…"},
       "idempotency_key": "…", "parameters": {"start": "1.000000", "end": "3.500000", "accurate": true},
       "inputs": [{"ref": "camA", "kind": "source", "sha256": "…"}], "output": {"path": "…", "sha256": "…"},
       "probe": {"…ffmpeg-skill probe of the output…"}, "provenance": "OBSERVED",
@@ -168,7 +168,7 @@ serialised as `{"seconds": "12.500000", "rational": "25/2"}`.
                        {"source": "camA", "source_range": {"start": {…"1/1"}, "end": {…"7/2"}}, "timeline_range": {"start": {…"0/1"}, "end": {…"5/2"}}, "speed": "1/1"},
                        {"source": "camB", "source_range": {"start": {…"1/1"}, "end": {…"4/1"}}, "timeline_range": {"start": {…"2/1"}, "end": {…"7/2"}}, "speed": "2/1"}]},
                               {"id": "V2", "kind": "overlay", "segments": [{"source": "logo", "kind": "image", "timeline_range": {…}}]}]},
-      "observation": {"kind": "media.probe", "provenance": "OBSERVED", "source": "ffmpeg-skill/probe@0.9.0", "data": {…}}
+      "observation": {"kind": "media.probe", "provenance": "OBSERVED", "source": "ffmpeg-skill/probe@0.10.0", "data": {…}}
     }]
   },
   "project": {"id": "demo", "project_hash": "…", "sources": [...], "operations": [...], "outputs": [...], "options": {...}},
@@ -253,8 +253,7 @@ for HDR sources), audio (AAC 192 kb/s), pixel format and container are the engin
 Requests are graphs: a source or an operation's result may feed several operations, `CONCAT` takes several
 inputs, several outputs may be delivered from one request. Cycles, unknown references, duplicates, orphans and
 slot mismatches are refused before anything runs; so is media an operation cannot take (every source is probed
-first: a video needs a video stream and a duration, an image must decode; `OVERLAY` needs a video input with an
-audio stream because ffmpeg-skill 0.9.x's overlay never terminates without one; HDR and SDR are never joined) and an
+first: a video needs a video stream and a duration, an image must decode; HDR and SDR are never joined) and an
 engine tool / encoder / filter that ffmpeg-skill's doctor reports missing. VFR sources (conformed to CFR) and HDR
 sources (encoded HEVC) are reported as warnings. After each operation the output is validated against the
 normalized expectation (frame, codec, frame rate, audio presence, duration). `contract.media_policy` states per
@@ -374,7 +373,7 @@ integration on Ubuntu with apt ffmpeg and a checkout of kajisho5/ffmpeg-skill.
 ffmpeg-skill is the media execution engine. This skill uses five of its tools (`probe`, `cut`, `join`, `fit`,
 `overlay`) through their public CLI contract (`python3 scripts/<tool>.py … --json`, `status: completed | failed`,
 `error.kind`) and its doctor (`scripts/_contract.py doctor --json`: ffmpeg / ffprobe versions, available encoders
-and filters), pinned to versions `>=0.9.0,<1.0.0`, located from the environment, never from the request.
+and filters), pinned to versions `>=0.10.0,<1.0.0`, located from the environment, never from the request.
 Nothing here builds ffmpeg command lines or filter strings; what ffmpeg-skill ran is reported verbatim in
 `commands`. Gaps in ffmpeg-skill (pixel crop, freeze, reverse, image-to-clip) are reported as gaps, not worked
 around with a direct ffmpeg call. ffmpeg-skill's `render.py` project format is not used: it has a fixed stage
@@ -393,13 +392,12 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 
 ## Current limitations
 
-- Operations beyond ffmpeg-skill 0.9.x: `CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION` are not implemented.
-- `OVERLAY` needs a video input with an audio stream (ffmpeg-skill 0.9.x limitation, refused up front).
+- Operations beyond ffmpeg-skill's tools: `CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION` are not implemented.
 - The encoding surface is `crf` + `preset`; codec, bitrate modes, audio and pixel format are the engine's.
 - `TRIM` / `CUT` / `SPEED` / `OVERLAY` refuse an input whose frame has an odd width or height (`odd_frame`); the
   frame-changing operations normalize it to even first.
 - The integration HDR fixture is an SDR pattern flagged as HDR (colour tags); real HDR10 / HLG content and tone
-  mapping are not covered. Verified against ffmpeg-skill 0.9.0 and 0.9.1.
+  mapping are not covered. Verified against ffmpeg-skill 0.9.0, 0.9.1 and 0.10.0.
 - Real rotation metadata (a display matrix) is honoured; a legacy `rotate` tag is ignored by ffmpeg ≥ 5 and therefore
   by this Skill's probe-based normalization (the frame is then the stored one).
 - One video track plus image overlays; no picture-in-picture of video, no audio-only sources, no per-track audio.

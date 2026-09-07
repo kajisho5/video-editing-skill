@@ -73,7 +73,6 @@ MEDIA_POLICY = {
         "source with no video stream (audio-only files, corrupt containers): INVALID_INPUT no_video_stream",
         "video source without a duration (a still image or a broken container declared as video): INVALID_INPUT no_duration",
         "image source that does not decode to a frame: INVALID_INPUT image_undecodable",
-        "OVERLAY on a video input without an audio stream: INVALID_INPUT audio_required (ffmpeg-skill 0.9.x overlay never terminates on it)",
         "TRIM / CUT / SPEED / OVERLAY on an input whose frame has an odd width or height: INVALID_INPUT odd_frame (the encoder needs even sizes; RESIZE / FIT / FILL / CONCAT normalize to even)",
         "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
         "unsupported input extension / output container: UNSUPPORTED_FORMAT", "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
@@ -89,7 +88,7 @@ MEDIA_POLICY = {
         "audio codec / bitrate / sample rate (AAC 192 kb/s)", "keyframe snapping for precision keyframe TRIM / CUT",
     ],
     "by_stream": {
-        "video_only": "TRIM / CUT / SPEED / FIT / FILL / RESIZE / CONCAT: allowed; the output has no audio stream (validated). OVERLAY: refused (audio_required)",
+        "video_only": "all operations allowed, OVERLAY included (ffmpeg-skill >=0.10.0 bounds the looped-image overlay with an explicit -t instead of -shortest); the output has no audio stream (validated)",
         "video_and_audio": "all operations; the audio stream is kept (validated)",
         "audio_only": "refused as a source (no_video_stream); audio-only editing is not provided",
         "image": "OVERLAY.params.image only (png / jpg, alpha respected); an image in a video slot is DEPENDENCY_ERROR kind_mismatch",
@@ -154,10 +153,9 @@ MEDIA: Dict[str, Dict[str, Any]] = {
     "RESIZE": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
                "output": {"frame_size": "params.width, height by the input aspect (even)", "audio": "as input", "fps": "params.fps or as input"},
                "refused_before_execution": ["source without a video stream or duration"]},
-    "OVERLAY": {"inputs": "one video plus one image source (png / jpg; alpha respected)", "requires": {"video": True, "audio": True, "image": True},
+    "OVERLAY": {"inputs": "one video plus one image source (png / jpg; alpha respected)", "requires": {"video": True, "audio": False, "image": True},
                 "output": {"frame_size": "as input", "audio": "as input", "fps": "as input"},
                 "refused_before_execution": ["source without a video stream or duration", "image that does not decode",
-                                             "video input without an audio stream: ffmpeg-skill 0.9.x overlay (-loop 1 image, -shortest) never terminates on it",
                                              "start / end beyond the input duration", "input frame with an odd width or height (odd_frame)"]},
 }
 

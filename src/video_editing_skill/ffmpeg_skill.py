@@ -21,7 +21,10 @@ from typing import Any, Dict, List, Optional
 from .errors import EditError
 
 ENV_DIR = "VIDEO_EDITING_FFMPEG_SKILL_DIR"
-SUPPORTED_MIN = (0, 9, 0)
+# 0.10.0 is the floor, not 0.9.x: 0.9.x's overlay.py (-loop 1 image + -shortest, no explicit -t) could run far
+# longer than the source on an audio-less input; 0.10.0 added an explicit -t bound (verified against real,
+# audio-less footage) and OVERLAY no longer needs to refuse those inputs up front. See ADR-009.
+SUPPORTED_MIN = (0, 10, 0)
 SUPPORTED_MAX_EXCLUSIVE = (1, 0, 0)
 REQUIRED_TOOLS = ("probe", "cut", "join", "fit", "overlay")
 _ENV_KEEP = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "TERM", "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT",

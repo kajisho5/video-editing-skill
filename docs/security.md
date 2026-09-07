@@ -15,7 +15,7 @@ request can describe an edit; it cannot describe how to run anything.
 | an output path that is absolute, contains `..`, leaves the workspace through a symlinked parent, equals an input, or already exists (without `options.overwrite`) | `PATH_NOT_ALLOWED` |
 | an input outside the allowed roots, reached by `..` or by a symlink whose target is outside | `PATH_NOT_ALLOWED` with reason `traversal` / `outside_allowed_roots` / `symlink_escape` |
 | Windows reserved device names (`CON`, `NUL`, `COM1`…), `<>:"|?*`, control characters, trailing dots / spaces in any component | `PATH_NOT_ALLOWED` (reason `reserved_name`), on every platform |
-| a still image or broken container declared as a video source, an image that does not decode, a video without audio under `OVERLAY` (ffmpeg-skill 0.9.x would never terminate) | `INVALID_INPUT` (reason `no_duration` / `no_video_stream` / `image_undecodable` / `audio_required`) at probe time, before any encode |
+| a still image or broken container declared as a video source, an image that does not decode | `INVALID_INPUT` (reason `no_duration` / `no_video_stream` / `image_undecodable`) at probe time, before any encode |
 | an operation whose engine tool, encoder or filter ffmpeg-skill's doctor did not find | `TOOL_ERROR` (not retryable, `details.missing`) before any encode |
 | a request over 4 MiB, more than 200 sources / 500 operations / 50 outputs | `INVALID_REQUEST` |
 | choosing the workspace, the allowed roots or the ffmpeg-skill location | not request fields: CLI flags / environment only |
