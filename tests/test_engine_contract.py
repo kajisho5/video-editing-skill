@@ -90,7 +90,7 @@ class FakeEngineTests(unittest.TestCase):
         self.assertEqual(out["status"], "completed")
         rec = out["execution"]["operations"][0]
         self.assertEqual(rec["status"], "completed")
-        self.assertEqual(rec["tool_versions"], {"ffmpeg-skill": "0.9.0", "ffmpeg": "fake-6.0", "ffprobe": "fake-6.0"})
+        self.assertEqual(rec["tool_versions"], {"ffmpeg-skill": "0.11.0", "ffmpeg": "fake-6.0", "ffprobe": "fake-6.0"})
         self.assertTrue(os.path.isfile(out["execution"]["outputs"][0]["path"]))
         self.assertTrue(out["execution"]["outputs"][0]["delivered"])
         # the engine flags are the compiled ones, nothing more
@@ -269,6 +269,12 @@ class PreExecutionAndResponseTests(FakeEngineHarness):
         self.assertEqual(out["error"]["details"]["reason"], "image_undecodable")
         self.assertEqual(self.calls(), [])
 
+    def test_image_insert_undecodable_image_is_invalid_input(self):
+        doc = request(self.sources(bad=True), [{"id": "i", "type": "IMAGE_INSERT", "input": "bad", "params": {"duration": 3}}], [{"id": "x", "operation": "i", "path": "out/o.mp4"}])
+        rc, out = self.run_(doc, expect=EXIT_CODES["INVALID_INPUT"])
+        self.assertEqual(out["error"]["details"]["reason"], "image_undecodable")
+        self.assertEqual(self.calls(), [])
+
     def test_engine_gap_is_tool_error_before_execution(self):
         set_mode(self.root, "no_xfade")
         doc = request(self.sources(), [{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}], [{"id": "x", "operation": "c", "path": "out/o.mp4"}])
@@ -343,7 +349,7 @@ class PreExecutionAndResponseTests(FakeEngineHarness):
         self.assertIsNone(srcs["NA"]["observation"]["data"]["audio"])
         self.assertEqual(srcs["logo"]["kind"], "image")
         self.assertEqual(ex["engine"]["id"], "ffmpeg-skill")
-        self.assertEqual(ex["engine"]["version"], "0.9.0")
+        self.assertEqual(ex["engine"]["version"], "0.11.0")
         self.assertEqual(ex["outputs"][0]["operation_id"], ex["operations"][0]["operation_id"])
         self.assertEqual(ex["outputs"][0]["container"], ".mp4")
         # the same request text hashes the same; a different one differently
@@ -443,6 +449,43 @@ class NormalizationEncodingAndPathsTests(FakeEngineHarness):
             rc, out = self.run_(doc, expect=0)
             rec = out["execution"]["operations"][0]
             self.assertEqual((rec["normalized"]["target_frame"], [rec["probe"]["video"]["width"], rec["probe"]["video"]["height"]]), (want, want), params)
+
+    def test_resize_height_end_to_end(self):
+        # docs/decisions.md ADR-010: RESIZE.height is the mirror of the existing width formula
+        doc = request(self.sources(), [{"id": "r", "type": "RESIZE", "input": "A", "params": {"height": 180}}],
+                      [{"id": "o", "operation": "r", "path": "out/o.mp4"}])
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual(rec["parameters"], {"height": 180})
+        self.assertEqual((rec["normalized"]["target_frame"], [rec["probe"]["video"]["width"], rec["probe"]["video"]["height"]]), ([320, 180], [320, 180]))
+
+    def test_crop_end_to_end(self):
+        # docs/decisions.md ADR-010: CROP maps straight to ffmpeg-skill/crop, delivers the exact rectangle
+        doc = request(self.sources(), [{"id": "c", "type": "CROP", "input": "A", "params": {"x": 10, "y": 20, "width": 300, "height": 200}}],
+                      [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual(rec["parameters"], {"x": 10, "y": 20, "width": 300, "height": 200})
+        self.assertEqual([rec["probe"]["video"]["width"], rec["probe"]["video"]["height"]], [300, 200])
+        self.assertEqual(rec["normalized"]["target_frame"], [300, 200])
+        # a rectangle that does not fit the source frame is refused before any tool runs
+        self.setUp()
+        big = request(self.sources(), [{"id": "c", "type": "CROP", "input": "A", "params": {"x": 500, "y": 0, "width": 200, "height": 200}}],
+                     [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
+        rc, out = self.run_(big, expect=EXIT_CODES["INVALID_INPUT"])
+        self.assertEqual(out["error"]["details"]["reason"], "crop_out_of_bounds")
+        self.assertEqual(self.calls(), [], "refused before any tool ran")
+
+    def test_image_insert_end_to_end(self):
+        # docs/decisions.md ADR-010: IMAGE_INSERT turns a still into a silent, timed clip via ffmpeg-skill/insert
+        doc = request(self.sources(), [{"id": "i", "type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 3, "width": 320, "height": 240}}],
+                      [{"id": "o", "operation": "i", "path": "out/o.mp4"}])
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([rec["probe"]["video"]["width"], rec["probe"]["video"]["height"]], [320, 240])
+        self.assertAlmostEqual(rec["probe"]["duration"], 3.0, places=2)
+        self.assertIsNone(rec["probe"]["audio"])
+        self.assertIs(rec["normalized"]["audio"], False)
 
     def test_unicode_and_space_paths_end_to_end(self):
         sub = os.path.join(self.ws, "素材 テスト", "sub dir")

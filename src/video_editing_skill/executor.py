@@ -139,6 +139,8 @@ class Executor:
             ins = [self.profile(r) for r in op.inputs]
             audios = [i["audio"] for i in ins]
             prof["audio"] = True if any(a is True for a in audios) else (False if all(a is False for a in audios) else None)
+        elif op.type == "IMAGE_INSERT":
+            prof["audio"] = False   # ffmpeg-skill insert.py always produces a silent clip
         frame = self.target_frame(ref)
         if frame is not None:
             prof["width"], prof["height"] = frame
@@ -169,9 +171,23 @@ class Executor:
                 return None
             return (w - (w % 2), h - (h % 2))
         if op.type == "RESIZE":
+            if "height" in p:
+                if sw and sh:
+                    return (even(p["height"] * sw / sh), even(p["height"]))
+                return (None, even(p["height"]))
             if sw and sh:
                 return (even(p["width"]), even(p["width"] * sh / sw))
             return (even(p["width"]), None)
+        if op.type == "CROP":
+            return (p["width"], p["height"])
+        if op.type == "IMAGE_INSERT":
+            if "width" in p and "height" in p:
+                return (even(p["width"]), even(p["height"]))
+            if "width" in p:
+                return (even(p["width"]), even(p["width"] * sh / sw)) if sw and sh else (even(p["width"]), None)
+            if "height" in p:
+                return (even(p["height"] * sw / sh), even(p["height"])) if sw and sh else (None, even(p["height"]))
+            return (even(sw), even(sh)) if sw and sh else None
         if op.type in ("FIT", "FILL"):
             aw, ah = (int(x) for x in p["aspect"].split(":"))
             ratio = aw / ah
@@ -188,6 +204,8 @@ class Executor:
         op = self.project.operations[ref]
         if "fps" in op.params:
             return float(op.params["fps"])
+        if op.type == "IMAGE_INSERT":
+            return 30.0   # ffmpeg-skill insert.py's own default when --fps is omitted
         return None
 
     def normalized(self, ref: str) -> Dict[str, Any]:
@@ -258,6 +276,17 @@ class Executor:
                 img = self.profile(op.inputs[-1])
                 if img["width"] is None:
                     raise EditError("INVALID_INPUT", f"operation {ref!r}: image {op.inputs[-1]!r} has no frame size", {"reason": "image_undecodable"})
+            if op.type == "IMAGE_INSERT":
+                img = self.profile(op.inputs[0])
+                if img["width"] is None:
+                    raise EditError("INVALID_INPUT", f"operation {ref!r}: image {op.inputs[0]!r} has no frame size", {"reason": "image_undecodable"})
+            if op.type == "CROP":
+                prof = self.profile(op.inputs[0])
+                if prof["width"] and prof["height"]:
+                    x, y, w, h = op.params["x"], op.params["y"], op.params["width"], op.params["height"]
+                    if x + w > prof["width"] or y + h > prof["height"]:
+                        raise EditError("INVALID_INPUT", f"operation {ref!r} (CROP): rectangle ({x},{y},{w}x{h}) exceeds the source frame ({prof['width']}x{prof['height']})",
+                                        {"operation": ref, "reason": "crop_out_of_bounds"})
 
     def _check_ranges(self) -> None:
         for ref in self.project.order:
@@ -551,6 +580,8 @@ class Executor:
         if op.type == "CONCAT":
             audios = [self.profile(r).get("audio") for r in op.inputs]
             return True if any(a is True for a in audios) else (False if all(a is False for a in audios) else None)
+        if op.type == "IMAGE_INSERT":
+            return False   # known for certain, never "unknown": ffmpeg-skill insert.py always produces a silent clip
         return self.profile(op.inputs[0]).get("audio")
 
     def _deliver(self) -> None:

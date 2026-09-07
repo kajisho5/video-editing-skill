@@ -74,26 +74,37 @@ pinning convention (`operations` and `request_shape` both changed) — `video-pr
 `SUPPORTED_SKILL_VERSIONS = ("0.1.",)` must widen before it accepts this contract; see ADR-009 for why this cost
 was accepted.
 
-## 0.3.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003)
+## 0.3.0 (shipped; docs/decisions.md ADR-010)
 
-`versioning.next["0.3.0"]` lists breaking-change candidates for a future version, none currently in progress:
-`CROP` and `IMAGE_INSERT` once ffmpeg-skill ships typed tools for them, and `RESIZE.height` — found, by live
-verification against ffmpeg-skill 0.10.0, to be blocked the same way as `CROP`/`IMAGE_INSERT` (`fit.py` has no
-`--height` flag), not the small addition it was first framed as. `FREEZE`, `REVERSE` and `POSITION` are not
-planned. Until one of these actually ships, 0.2.x grows only additively.
+`version` `0.2.0` → `0.3.0`, `contract_version` `"2.0"` → `"3.0"`: ffmpeg-skill 0.11.0 unblocked the three
+candidates ADR-002 / ADR-003 had identified as "clean typed model, blocked only on the engine". `RESIZE` gained
+`height` as the alternative to `width` (mapping `fit.py --height`); `CROP` (pixel rectangle, `ffmpeg-skill/crop`)
+and `IMAGE_INSERT` (still → timed clip, `ffmpeg-skill/insert`) are new operation types. All three are breaking by
+this repository's own pinning convention (`operations` changed) — `video-production-agent`'s
+`SUPPORTED_SKILL_VERSIONS` must widen before it accepts this contract; see ADR-010 for why this cost was accepted
+and why the other eight ffmpeg-skill 0.11.0 capabilities were deliberately left out of this release.
+
+## 0.4.0 (candidates, none scheduled; docs/decisions.md ADR-010)
+
+`versioning.next["0.4.0"]` lists undesigned-but-plausible candidates for a future version, none currently in
+progress: rotate / flip, chroma-key compositing, stabilization, image-sequence input, and a standalone
+generated-background operation, all with engine support in ffmpeg-skill 0.11.0 but no typed operation model
+designed here yet. `FREEZE`, `REVERSE` and `POSITION` are not planned regardless of engine support. Until one of
+these actually ships, 0.3.x grows only additively.
 
 ## `provides` (docs/decisions.md ADR-006)
 
-`provides` lists this Skill's eight operations by their cross-repository Capability id (`video.trim`, `video.cut`,
-`video.concat`, `video.speed`, `video.fit`, `video.fill`, `video.resize`, `video.overlay` — the same `capability`
-string `operations.OPERATIONS` and `tools[].capability` already carry), each with its `tool_id` and a `lifecycle`.
+`provides` lists this Skill's operations by their cross-repository Capability id (`video.trim`, `video.cut`,
+`video.concat`, `video.speed`, `video.fit`, `video.fill`, `video.resize`, `video.overlay`, `video.crop`,
+`video.image_insert` — the same `capability` string `operations.OPERATIONS` and `tools[].capability` already
+carry), each with its `tool_id` and a `lifecycle`.
 It exists for `kajisho5/AI-video-production-OS`'s `CapabilityContract.provides` (`docs/SPEC.md` there), so a
 registry can resolve "who provides `video.trim`" without hardcoding this repository. It is additive, not pinned,
 and derived from `OPERATIONS` — it cannot say anything `tools[]` doesn't already say, only index it differently.
 
 ## `dependencies` (docs/decisions.md ADR-008)
 
-`dependencies` is `[{"skill_id": "ffmpeg-skill", "version_range": ">=0.9.0,<1.0.0"}]` — the exact range
+`dependencies` is `[{"skill_id": "ffmpeg-skill", "version_range": ">=0.11.0,<1.0.0"}]` — the exact range
 `ffmpeg_skill.py`'s `version_supported()` already enforces at runtime, computed once
 (`contract.ffmpeg_skill_version_range()`) and shared with `engine.version_range` so the two never disagree. It adds
 no new guarantee over what `doctor --json` already reports; it makes an existing runtime fact readable from

@@ -317,6 +317,35 @@ class OperationE2ETests(unittest.TestCase):
         self.assertEqual(size(path), (320, 180))
         self.assertTrue(self.has_audio(streams))
 
+    def test_resize_height(self):
+        # docs/decisions.md ADR-010: RESIZE.height is the alternative to width (ffmpeg-skill fit.py --height, 0.11.0)
+        out = self.one({"type": "RESIZE", "input": "A", "params": {"height": 180}})
+        path, streams = self.facts(out, 6.0)
+        self.assertEqual(size(path), (320, 180))
+        self.assertTrue(self.has_audio(streams))
+
+    def test_crop(self):
+        # docs/decisions.md ADR-010: CROP is an explicit pixel rectangle, maps ffmpeg-skill/crop (0.11.0)
+        out = self.one({"type": "CROP", "input": "A", "params": {"x": 100, "y": 50, "width": 300, "height": 200}})
+        path, streams = self.facts(out, 6.0)
+        self.assertEqual(size(path), (300, 200))
+        self.assertTrue(self.has_audio(streams))
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out2 = self.one({"type": "CROP", "input": "A", "params": {"x": 0, "y": 0, "width": 1000, "height": 1000}}, expect=3)
+        self.assertEqual(out2["error"]["details"]["reason"], "crop_out_of_bounds")
+
+    def test_image_insert(self):
+        # docs/decisions.md ADR-010: IMAGE_INSERT turns a still into a silent, timed clip, maps ffmpeg-skill/insert (0.11.0)
+        out = self.one({"type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 2}})
+        path, streams = self.facts(out, 2.0)
+        self.assertEqual(size(path), (120, 40))   # the image's own (already even) size, no width/height given
+        self.assertFalse(self.has_audio(streams), "insert.py never produces an audio track")
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out2 = self.one({"type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 3, "width": 320, "height": 240, "zoom": "in", "zoom_amount": 1.5, "pan": "right"}})
+        path2, streams2 = self.facts(out2, 3.0)
+        self.assertEqual(size(path2), (320, 240))
+        self.assertFalse(self.has_audio(streams2))
+
     def test_fit(self):
         out = self.one({"type": "FIT", "input": "A", "params": {"aspect": "1:1", "width": 360, "pad_color": "white"}})
         path, streams = self.facts(out, 6.0)
@@ -403,7 +432,7 @@ class OperationE2ETests(unittest.TestCase):
     def test_doctor_reports_every_operation_available(self):
         rc, rep, err = cli(["doctor", "--json", "--workspace", self.ws], env=self.env)
         self.assertEqual(rc, 0, err)
-        self.assertEqual(sorted(rep["supported_operations"]), ["CONCAT", "CUT", "FILL", "FIT", "OVERLAY", "RESIZE", "SPEED", "TRIM"])
+        self.assertEqual(sorted(rep["supported_operations"]), ["CONCAT", "CROP", "CUT", "FILL", "FIT", "IMAGE_INSERT", "OVERLAY", "RESIZE", "SPEED", "TRIM"])
         self.assertTrue(rep["engine"]["capabilities_reported"])
         self.assertEqual(rep["engine"]["version"], FFMPEG_SKILL.version)
 

@@ -52,7 +52,7 @@ class OperationParamTests(unittest.TestCase):
         with self.assertRaises(EditError) as cm:
             operations.validate_params("EXPLODE", {}, "op")
         self.assertEqual(cm.exception.code, "UNSUPPORTED_OPERATION")
-        for t in ("CROP", "FREEZE", "REVERSE", "IMAGE_INSERT", "REORDER", "TRANSITION"):
+        for t in ("FREEZE", "REVERSE", "POSITION", "REORDER", "TRANSITION"):
             with self.assertRaises(EditError) as cm:
                 operations.validate_params(t, {}, "op")
             self.assertEqual(cm.exception.code, "UNSUPPORTED_OPERATION")
@@ -89,6 +89,39 @@ class OperationParamTests(unittest.TestCase):
             operations.validate_params("OVERLAY", {"image": "logo", "start": 2, "end": 1}, "op")
         with self.assertRaises(EditError):
             operations.validate_params("OVERLAY", {"image": "logo", "opacity": 0}, "op")
+
+    def test_resize_height(self):
+        # docs/decisions.md ADR-010: RESIZE.height is the alternative to width (ffmpeg-skill fit.py --height, 0.11.0)
+        p = operations.validate_params("RESIZE", {"height": 480}, "op")
+        self.assertEqual(p, {"height": 480})
+        p2 = operations.validate_params("RESIZE", {"width": 640}, "op")
+        self.assertEqual(p2, {"width": 640})
+        for bad in ({}, {"width": 640, "height": 480}, {"width": 641}, {"height": 481}):
+            with self.assertRaises(EditError):
+                operations.validate_params("RESIZE", bad, "op")
+
+    def test_crop(self):
+        # docs/decisions.md ADR-010: CROP is an explicit caller-given rectangle, maps ffmpeg-skill/crop (0.11.0)
+        p = operations.validate_params("CROP", {"x": 100, "y": 0, "width": 1080, "height": 1920}, "op")
+        self.assertEqual(p, {"x": 100, "y": 0, "width": 1080, "height": 1920})
+        for bad in ({"x": -1, "y": 0, "width": 2, "height": 2}, {"x": 0, "y": 0, "width": 3, "height": 2},
+                    {"x": 0, "y": 0, "width": 2}, {"x": 0, "y": 0, "width": 2, "height": 2, "extra": 1}):
+            with self.assertRaises(EditError):
+                operations.validate_params("CROP", bad, "op")
+
+    def test_image_insert(self):
+        # docs/decisions.md ADR-010: IMAGE_INSERT turns a still into a silent timed clip, maps ffmpeg-skill/insert (0.11.0)
+        p = operations.validate_params("IMAGE_INSERT", {"duration": 3}, "op")
+        self.assertEqual(p["duration"], Time.parse(3))
+        self.assertNotIn("width", p)
+        p2 = operations.validate_params("IMAGE_INSERT", {"duration": 5, "width": 1920, "height": 1080, "zoom": "in", "zoom_amount": 1.5, "pan": "right"}, "op")
+        self.assertEqual((p2["width"], p2["height"], p2["zoom"], p2["pan"]), (1920, 1080, "in", "right"))
+        self.assertEqual(p2["zoom_amount"], Fraction(3, 2))
+        for bad in ({}, {"duration": 0}, {"duration": -1}, {"duration": 3, "width": 641},
+                    {"duration": 3, "zoom_amount": 1.5}, {"duration": 3, "pan": "left"},
+                    {"duration": 3, "zoom": "in", "zoom_amount": 1.0}, {"duration": 3, "zoom": "sideways"}):
+            with self.assertRaises(EditError):
+                operations.validate_params("IMAGE_INSERT", bad, "op")
 
     def test_fill_anchor(self):
         # docs/decisions.md ADR-009: FILL.anchor maps to ffmpeg-skill fit.py's --crop-x/--crop-y (0.10.0)
@@ -177,6 +210,27 @@ class ProjectTests(unittest.TestCase):
                 parse_request(d, self.policy)
             self.assertEqual(cm.exception.code, code, cm.exception.message)
 
+    def test_image_insert_slot_rejects_video_and_operation_inputs(self):
+        # docs/decisions.md ADR-010: IMAGE_INSERT's input is an image slot, like OVERLAY's trailing image
+        d = request([{"id": "A", "path": "in/a.mp4"}, {"id": "logo", "path": "in/logo.png", "kind": "image"}],
+                   [{"id": "i", "type": "IMAGE_INSERT", "input": "A", "params": {"duration": 3}}],
+                   [{"id": "o", "operation": "i", "path": "out/o.mp4"}])
+        with self.assertRaises(EditError) as cm:
+            parse_request(d, self.policy)
+        self.assertEqual((cm.exception.code, cm.exception.details.get("reason")), ("DEPENDENCY_ERROR", "kind_mismatch"))
+        d2 = request([{"id": "A", "path": "in/a.mp4"}, {"id": "logo", "path": "in/logo.png", "kind": "image"}],
+                    [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}},
+                     {"id": "i", "type": "IMAGE_INSERT", "input": "t", "params": {"duration": 3}}],
+                    [{"id": "o", "operation": "i", "path": "out/o.mp4"}])
+        with self.assertRaises(EditError) as cm:
+            parse_request(d2, self.policy)
+        self.assertEqual((cm.exception.code, cm.exception.details.get("reason")), ("DEPENDENCY_ERROR", "kind_mismatch"))
+        d3 = request([{"id": "A", "path": "in/a.mp4"}, {"id": "logo", "path": "in/logo.png", "kind": "image"}],
+                    [{"id": "i", "type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 3}}],
+                    [{"id": "o", "operation": "i", "path": "out/o.mp4"}])
+        p = parse_request(d3, self.policy)   # an image feeding the image slot: fine
+        self.assertEqual(p.operations["i"].source_refs, ["logo"])
+
     def test_cycle(self):
         d = self.base()
         d["project"]["operations"][0]["input"] = "c"
@@ -199,7 +253,7 @@ class ProjectTests(unittest.TestCase):
             (lambda d: d["project"]["sources"][0].update(kind="audio"), "INVALID_REQUEST"),
             (lambda d: d.update(options={"timeout_seconds": 0}), "INVALID_REQUEST"),
             (lambda d: d.update(options={"workspace": "/"}), "INVALID_REQUEST"),
-            (lambda d: d["project"]["operations"][0].update(type="CROP", params={"x": 0, "y": 0, "width": 2, "height": 2}), "UNSUPPORTED_OPERATION"),
+            (lambda d: d["project"]["operations"][0].update(type="REVERSE", params={}), "UNSUPPORTED_OPERATION"),
             (lambda d: d["project"]["outputs"][0].update(path="out/final.avi"), "UNSUPPORTED_FORMAT"),
             (lambda d: d["project"]["sources"][0].update(path="in/missing.mp4"), "MISSING_INPUT"),
             (lambda d: d["project"]["outputs"][0].update(path="in/a.mp4"), "PATH_NOT_ALLOWED"),
@@ -261,6 +315,31 @@ class ProjectTests(unittest.TestCase):
         self.assertNotIn("--crop-x", argv2)
         self.assertNotIn("--crop-y", argv2)
 
+    def test_resize_height_compiles_to_fit_height_flag(self):
+        params = operations.validate_params("RESIZE", {"height": 480}, "op")
+        argv = compile_operation(EditOperation("r", "RESIZE", ["A"], params)).argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertEqual(argv[argv.index("--height") + 1], "480")
+        self.assertNotIn("--width", argv)
+
+    def test_crop_compiles_to_ffmpeg_skill_crop(self):
+        params = operations.validate_params("CROP", {"x": 10, "y": 20, "width": 100, "height": 200}, "op")
+        step = compile_operation(EditOperation("c", "CROP", ["A"], params))
+        self.assertEqual(step.tool, "ffmpeg-skill/crop")
+        argv = step.argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertEqual(argv, ["/x/a.mp4", "-o", "/x/o.mp4", "--x", "10", "--y", "20", "--width", "100", "--height", "200"])
+
+    def test_image_insert_compiles_to_ffmpeg_skill_insert(self):
+        params = operations.validate_params("IMAGE_INSERT", {"duration": 3}, "op")
+        step = compile_operation(EditOperation("i", "IMAGE_INSERT", ["logo"], params))
+        self.assertEqual(step.tool, "ffmpeg-skill/insert")
+        argv = step.argv_for(["/x/logo.png"], "/x/o.mp4")
+        self.assertEqual(argv, ["/x/logo.png", "-o", "/x/o.mp4", "--duration", "3.000000"])
+        zoom_params = operations.validate_params("IMAGE_INSERT", {"duration": 3, "zoom": "in", "zoom_amount": 1.5, "pan": "left"}, "op")
+        zoom_argv = compile_operation(EditOperation("i2", "IMAGE_INSERT", ["logo"], zoom_params)).argv_for(["/x/logo.png"], "/x/o.mp4")
+        self.assertEqual(zoom_argv[zoom_argv.index("--zoom") + 1], "in")
+        self.assertEqual(zoom_argv[zoom_argv.index("--zoom-amount") + 1], "1.500")
+        self.assertEqual(zoom_argv[zoom_argv.index("--pan") + 1], "left")
+
 
 class TimelineTests(unittest.TestCase):
     def setUp(self):
@@ -315,6 +394,21 @@ class TimelineTests(unittest.TestCase):
         self.assertFalse(d["duration_known"])
         self.assertIsNone(d["duration"])
         self.assertNotIn("timeline_range", d["tracks"][0]["segments"][0])
+
+    def test_image_insert_clip_has_no_source_time_extent(self):
+        # docs/decisions.md ADR-010: a still has no source time extent of its own
+        write_fake_media(os.path.join(self.ws, "in", "logo.png"))
+        p = parse_request(request([{"id": "A", "path": "in/a.mp4"}, {"id": "logo", "path": "in/logo.png", "kind": "image"}],
+                                  [{"id": "i", "type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 3}}],
+                                  [{"id": "o", "operation": "i", "path": "o.mp4"}]), self.policy)
+        clips = build_timelines(p, {"A": Time.parse(10)})
+        clip = clips["i"]
+        self.assertEqual(clip.duration.value, 3)
+        self.assertEqual(len(clip.segments), 1)
+        seg = clip.segments[0].to_dict()
+        self.assertEqual(seg["source"], "logo")
+        self.assertEqual(seg["source_range"], {"start": Time.parse(0).to_dict(), "end": Time.parse(0).to_dict()})
+        self.assertEqual(seg["timeline_range"], {"start": Time.parse(0).to_dict(), "end": Time.parse(3).to_dict()})
 
 
 class ContractTests(unittest.TestCase):
@@ -449,8 +543,8 @@ class MediaAndValidationTests(ExecutorHarness):
     def test_media_table_matches_operations_and_contract(self):
         self.assertEqual(set(operations.MEDIA), set(operations.OPERATIONS))
         for t, m in operations.MEDIA.items():
-            self.assertTrue(m["requires"]["video"], t)
-            self.assertEqual(m["requires"]["image"], t == "OVERLAY", t)
+            self.assertEqual(m["requires"]["video"], t != "IMAGE_INSERT", t)
+            self.assertEqual(m["requires"]["image"], t in ("OVERLAY", "IMAGE_INSERT"), t)
             self.assertEqual(m["requires"]["audio"], t == "OVERLAY", "only OVERLAY needs audio (ffmpeg-skill 0.9.x overlay hangs without it)")
         c = contract.skill_contract()
         self.assertEqual(c["media_compatibility"], operations.media_compatibility())
@@ -623,7 +717,7 @@ class DoctorAvailabilityTests(unittest.TestCase):
         from video_editing_skill.doctor import operation_availability
         from video_editing_skill.ffmpeg_skill import FfmpegSkill
         full = {"ffmpeg": "6", "ffprobe": "6", "ok": True, "missing": [], "available": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade"]}
-        skill = FfmpegSkill("/x", "0.9.0", ["probe", "cut", "join", "fit", "overlay"])
+        skill = FfmpegSkill("/x", "0.11.0", ["probe", "cut", "join", "fit", "overlay", "crop", "insert"])
         rows = {r["type"]: r for r in operation_availability(skill, full)}
         self.assertEqual(sorted(rows), sorted(operations.OPERATIONS))
         self.assertTrue(all(r["status"] == "AVAILABLE" and r["missing"] == [] for r in rows.values()), rows)
@@ -632,7 +726,7 @@ class DoctorAvailabilityTests(unittest.TestCase):
         rows = {r["type"]: r for r in operation_availability(skill, no_xfade)}
         self.assertEqual((rows["CONCAT"]["status"], rows["CONCAT"]["missing"]), ("MISSING", ["filter:xfade", "filter:acrossfade"]))
         self.assertEqual(rows["TRIM"]["status"], "AVAILABLE")
-        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.9.0", ["probe", "cut"]), full)}
+        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.11.0", ["probe", "cut", "crop", "insert"]), full)}
         self.assertEqual(rows["OVERLAY"]["missing"], ["tool:ffmpeg-skill/overlay"])
         rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "1.2.0", ["probe", "cut", "join", "fit", "overlay"]), full)}
         self.assertTrue(all(r["status"] == "MISSING" for r in rows.values()))
@@ -654,6 +748,9 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
             ({"type": "RESIZE", "params": {"width": 300}}, (1280, 720), (300, 170)),
             ({"type": "RESIZE", "params": {"width": 250}}, (640, 360), (250, 142)),
             ({"type": "RESIZE", "params": {"width": 320}}, (640, 360), (320, 180)),
+            ({"type": "RESIZE", "params": {"height": 180}}, (640, 360), (320, 180)),
+            ({"type": "RESIZE", "params": {"height": 170}}, (1280, 720), (302, 170)),
+            ({"type": "CROP", "params": {"x": 0, "y": 0, "width": 300, "height": 200}}, (1280, 720), (300, 200)),
             ({"type": "FIT", "params": {"aspect": "9:16"}}, (1280, 720), (1280, 2276)),
             ({"type": "FILL", "params": {"aspect": "1:1"}}, (640, 360), (640, 640)),
             ({"type": "FIT", "params": {"aspect": "21:9"}}, (640, 360), (840, 360)),
@@ -694,6 +791,41 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         sem = contract.skill_contract()["frame_semantics"]
         self.assertEqual(set(sem) - {"rules"}, {"RESIZE", "FIT", "FILL"})
         self.assertTrue(any("stretch" in r for r in sem["rules"]))
+
+    def test_image_insert_targets_follow_insert_py(self):
+        # docs/decisions.md ADR-010: IMAGE_INSERT's own width/height rule mirrors insert.py exactly
+        logo = {"duration": None, "video": {"width": 120, "height": 40}, "audio": None}
+        cases = [
+            ({}, (120, 40)),                                    # neither given: the image's own size, evened
+            ({"width": 300}, (300, 100)),                       # one given: the other by the image's aspect
+            ({"height": 60}, (180, 60)),
+            ({"width": 300, "height": 200}, (300, 200)),        # both given: used exactly
+        ]
+        for params, want in cases:
+            ex = self.executor([{"id": "x", "type": "IMAGE_INSERT", "input": "logo", "params": dict(params, duration=3)}],
+                               probes={"A": self.probe(), "B": self.probe(), "logo": logo})
+            self.assertEqual(ex.target_frame("x"), want, params)
+            self.assertEqual(ex.normalized("x")["target_frame"], list(want))
+
+    def test_crop_out_of_bounds_is_refused_before_execution(self):
+        ex = self.executor([{"id": "x", "type": "CROP", "input": "A", "params": {"x": 500, "y": 0, "width": 200, "height": 200}}])
+        with self.assertRaises(EditError) as cm:
+            ex._check_media()
+        self.assertEqual((cm.exception.code, cm.exception.details["reason"]), ("INVALID_INPUT", "crop_out_of_bounds"))
+        ex = self.executor([{"id": "x", "type": "CROP", "input": "A", "params": {"x": 0, "y": 0, "width": 200, "height": 200}}])
+        ex._check_media()   # inside the frame: not refused
+
+    def test_image_insert_undecodable_image_is_invalid_input(self):
+        ex = self.executor([{"id": "x", "type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 3}}],
+                           probes={"A": self.probe(), "B": self.probe(), "logo": {"duration": None, "video": None, "audio": None}})
+        with self.assertRaises(EditError) as cm:
+            ex._check_media()
+        self.assertEqual(cm.exception.code, "INVALID_INPUT")
+
+    def test_image_insert_audio_is_known_false_never_guessed(self):
+        ex = self.executor([{"id": "x", "type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 3}}])
+        self.assertIs(ex.profile_expected_audio(ex.project.operations["x"]), False)
+        self.assertIs(ex.profile("x")["audio"], False)
 
     def test_hdr_vfr_and_codec(self):
         hdr = self.probe()
@@ -759,19 +891,19 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         self.assertIn("video codec choice", c["encoding"]["not_configurable"])
         self.assertEqual(c["request_shape"], json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))["request_shape"])
 
-    def test_pinned_blocks_are_unchanged_since_0_2_0(self):
+    def test_pinned_blocks_are_unchanged_since_0_3_0(self):
         """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the golden copy.
 
-        Bumped from 0.1.0 to 0.2.0 deliberately (docs/decisions.md ADR-009: FILL.anchor, outputs[].encoding
-        formalized in request_shape) - a breaking contract_version change video-production-agent's
-        SUPPORTED_SKILL_VERSIONS = ("0.1.",) must widen before it accepts this release; this test only
-        guards against further *undocumented* drift from here, not against 0.2.0 itself."""
+        Bumped from 0.2.0 to 0.3.0 deliberately (docs/decisions.md ADR-010: RESIZE.height, CROP, IMAGE_INSERT)
+        - a breaking contract_version change video-production-agent's SUPPORTED_SKILL_VERSIONS must widen
+        before it accepts this release; this test only guards against further *undocumented* drift from here,
+        not against 0.3.0 itself."""
         c = contract.skill_contract()
         golden = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))
         for k in ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "capability_names", "schemas",
                   "engine", "response_shape", "request_shape", "formats"):
             self.assertEqual(c[k], golden[k], k)
-        self.assertEqual(c["version"], "0.2.0")
+        self.assertEqual(c["version"], "0.3.0")
         for t in c["tools"]:
             g = next(x for x in golden["tools"] if x["tool_id"] == t["tool_id"])
             for f in ("parameters", "required_capabilities", "inputs", "result_keys", "executed_by", "deterministic", "produces_output", "writes_media", "kind"):

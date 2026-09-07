@@ -27,13 +27,15 @@ audio stream; `CONCAT` conforms sizes / rates and adds audio when any input has 
 ffmpeg-skill tool, encoder or filter) are refused before execution as `TOOL_ERROR`.
 
 Operation types (the allowlist): `TRIM`, `CUT`, `CONCAT` (with `params.transition`), `SPEED`, `FIT`, `FILL`,
-`RESIZE`, `OVERLAY`. Anything else (`CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION` included) is refused
+`RESIZE`, `OVERLAY`, `CROP`, `IMAGE_INSERT`. Anything else (`FREEZE`, `REVERSE`, `POSITION` included) is refused
 with `UNSUPPORTED_OPERATION`; the contract's `unsupported` list says why.
 
 Times are exact: `"1:30"`, `"00:01:30.250"`, `{"frames": 300, "fps": "30000/1001"}` or a number of seconds.
 
-Frames are exact too: `RESIZE` keeps the aspect (`width` → `height = even(width × sh / sw)`), `FIT` pads to an aspect,
-`FILL` crops to it (optionally off-centre via `anchor: {x, y}`, each `0..1`); the target frame is reported before
+Frames are exact too: `RESIZE` keeps the aspect (exactly one of `width` / `height`; the other follows), `FIT` pads
+to an aspect, `FILL` crops to it (optionally off-centre via `anchor: {x, y}`, each `0..1`); `CROP` takes an
+explicit pixel rectangle `{x, y, width, height}`; `IMAGE_INSERT` turns a still into a silent clip of exactly
+`params.duration`, sized by `width`/`height` or the image's own size. The target frame is reported before
 execution (`normalized.target_frame`) and verified after.
 `outputs[].encoding` may set `crf` (14..28) and `preset` (x264 vocabulary); nothing else about encoding is
 configurable (`contract.encoding`).

@@ -35,6 +35,8 @@ def _sample_params(t: str) -> Dict[str, Any]:  # noqa: C901
         "FIT": {"aspect": "16:9", "width": 640, "pad_color": "black", "fps": Fraction(30)},
         "FILL": {"aspect": "1:1", "width": 360, "anchor": {"x": 0.25, "y": 0.5}},
         "RESIZE": {"width": 320},
+        "CROP": {"x": 10, "y": 20, "width": 320, "height": 240},
+        "IMAGE_INSERT": {"duration": two},
         "OVERLAY": {"image": "logo", "position": {"x": -10, "y": 10}, "margin": 24, "scale": 60, "opacity": Fraction(1, 2), "start": one, "end": two, "fade": Fraction(1, 2)},
     }
     return samples[t]
@@ -98,9 +100,11 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
     if set(MEDIA) != set(OPERATIONS):
         problems.append(f"operations.MEDIA {sorted(MEDIA)} != allowlist {sorted(OPERATIONS)}")
     for t, m in MEDIA.items():
-        if set(m) != {"inputs", "requires", "output", "refused_before_execution"} or set(m["requires"]) != {"video", "audio", "image"} or m["requires"]["video"] is not True:
+        if set(m) != {"inputs", "requires", "output", "refused_before_execution"} or set(m["requires"]) != {"video", "audio", "image"}:
             problems.append(f"MEDIA[{t}] is malformed")
-        if m["requires"]["image"] != (t == "OVERLAY"):
+        if m["requires"]["video"] is not True and t != "IMAGE_INSERT":
+            problems.append(f"MEDIA[{t}].requires.video disagrees with the operation's inputs")
+        if m["requires"]["image"] != (t in ("OVERLAY", "IMAGE_INSERT")):
             problems.append(f"MEDIA[{t}].requires.image disagrees with the operation's inputs")
     if c.get("media_compatibility") != media_compatibility():
         problems.append("contract.media_compatibility differs from operations.MEDIA")
@@ -130,15 +134,15 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
             problems.append(f"validate_encoding accepted {bad}")
         except Exception:  # noqa: BLE001
             pass
-    for script in ("cut", "join", "fit", "overlay"):
+    for script in ("cut", "join", "fit", "crop", "insert", "overlay"):
         if not {"crf", "preset"} <= set(ALLOWED_FLAGS[script]):
             problems.append(f"encoding flags are not allowlisted for ffmpeg-skill/{script}")
     if c.get("frame_semantics") != FRAME_SEMANTICS or set(FRAME_SEMANTICS) != {"RESIZE", "FIT", "FILL", "rules"}:
         problems.append("contract.frame_semantics differs from operations.FRAME_SEMANTICS")
     if c.get("media_policy") != MEDIA_POLICY or set(MEDIA_POLICY) != {"refused_before_execution", "normalized_by_skill", "delegated_to_engine", "by_stream"}:
         problems.append("contract.media_policy differs from operations.MEDIA_POLICY")
-    if "0.3.0" not in (ver.get("next") or {}):
-        problems.append("contract.versioning.next does not describe 0.3.0")
+    if "0.4.0" not in (ver.get("next") or {}):
+        problems.append("contract.versioning.next does not describe 0.4.0")
     problems += verify_docs(root)
     return problems
 
