@@ -8,18 +8,17 @@ caller (video-production-agent). See README.md.
 
 SKILL_ID = "video-editing"
 PACKAGE_NAME = "video-editing-skill"
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 # Two independent axes (docs/decisions.md ADR-007): VERSION is this package's own release
 # version and can move on any release, including one that adds nothing a dependent needs to
 # react to. CONTRACT_VERSION is the version of the *shape* the contract publishes (pinned
 # blocks: operations, capabilities, schemas, execution guarantees, ...) and changes only when
 # that shape changes in a breaking way - a dependent pins a range against CONTRACT_VERSION,
-# never VERSION. Bumped to "2.0" for 0.2.0 (docs/decisions.md ADR-009): FILL gained an
-# `anchor` parameter (a new key in the pinned `operations` block) and `outputs[].encoding`
-# was formalized in `request_shape` - both breaking by this repo's own pinning convention,
-# even though neither removes or narrows anything a 0.1.x caller relied on.
-CONTRACT_VERSION = "2.0"
+# never VERSION. Bumped to "3.0" for 0.3.0 (docs/decisions.md ADR-010): RESIZE gained a
+# `height` alternative to `width`, and CROP / IMAGE_INSERT are new operation types - all three
+# change the pinned `operations` block, breaking by this repo's own pinning convention.
+CONTRACT_VERSION = "3.0"
 
 REQUEST_SCHEMA = "video-editing/request@1"
 RESPONSE_SCHEMA = "video-editing/response@1"

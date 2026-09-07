@@ -17,7 +17,9 @@ ENCODING_FLAGS = ("crf", "preset")   # the typed encoding profile (operations.va
 ALLOWED_FLAGS: Dict[str, tuple] = {
     "cut": ("start", "end", "segments", "accurate") + ENCODING_FLAGS,
     "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color") + ENCODING_FLAGS,
-    "fit": ("duration", "method", "max_speed", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps") + ENCODING_FLAGS,
+    "fit": ("duration", "method", "max_speed", "aspect", "fit", "width", "height", "pad_color", "crop_x", "crop_y", "fps") + ENCODING_FLAGS,
+    "crop": ("x", "y", "width", "height", "fps") + ENCODING_FLAGS,
+    "insert": ("duration", "width", "height", "fps", "zoom", "zoom_amount", "pan") + ENCODING_FLAGS,
     "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
     "probe": (),
 }
@@ -123,10 +125,28 @@ def _compile(op: EditOperation) -> Step:
             args["fps"] = _fps_text(p["fps"])
         return Step(op, "ffmpeg-skill/fit", args, video_inputs)
     if op.type == "RESIZE":
-        args = {"width": p["width"]}
+        args = {"height": p["height"]} if "height" in p else {"width": p["width"]}
         if "fps" in p:
             args["fps"] = _fps_text(p["fps"])
         return Step(op, "ffmpeg-skill/fit", args, video_inputs)
+    if op.type == "CROP":
+        args = {"x": p["x"], "y": p["y"], "width": p["width"], "height": p["height"]}
+        if "fps" in p:
+            args["fps"] = _fps_text(p["fps"])
+        return Step(op, "ffmpeg-skill/crop", args, video_inputs)
+    if op.type == "IMAGE_INSERT":
+        args = {"duration": p["duration"].tool_arg()}
+        for k in ("width", "height"):
+            if k in p:
+                args[k] = p[k]
+        if "fps" in p:
+            args["fps"] = _fps_text(p["fps"])
+        if "zoom" in p:
+            args["zoom"] = p["zoom"]
+            args["zoom_amount"] = f"{float(p['zoom_amount']):.3f}"
+            if "pan" in p:
+                args["pan"] = p["pan"]
+        return Step(op, "ffmpeg-skill/insert", args, video_inputs)
     if op.type == "OVERLAY":
         pos = p["position"]
         args = {"position": pos if isinstance(pos, str) else f"{pos['x']},{pos['y']}", "margin": p["margin"]}

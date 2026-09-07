@@ -21,9 +21,10 @@ from typing import Any, Dict, List, Optional
 from .errors import EditError
 
 ENV_DIR = "VIDEO_EDITING_FFMPEG_SKILL_DIR"
-SUPPORTED_MIN = (0, 9, 0)
+# 0.11.0 is the floor: crop.py, insert.py and fit.py --height did not exist before it (docs/decisions.md ADR-010).
+SUPPORTED_MIN = (0, 11, 0)
 SUPPORTED_MAX_EXCLUSIVE = (1, 0, 0)
-REQUIRED_TOOLS = ("probe", "cut", "join", "fit", "overlay")
+REQUIRED_TOOLS = ("probe", "cut", "join", "fit", "overlay", "crop", "insert")
 _ENV_KEEP = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "TERM", "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT",
              "COMSPEC", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA")
 

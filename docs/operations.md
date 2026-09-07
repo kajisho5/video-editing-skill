@@ -14,8 +14,10 @@ name an execution escape hatch (`command`, `argv`, `shell`, `filter`, `env`, `ap
 | `SPEED` | `input` (video) | **factor** in [1/4, 4], not 1 | `ffmpeg-skill/fit` |
 | `FIT` | `input` (video) | **aspect** `W:H`, width, pad_color, fps | `ffmpeg-skill/fit` |
 | `FILL` | `input` (video) | **aspect** `W:H`, width, anchor `{x, y}` each 0..1, fps | `ffmpeg-skill/fit` |
-| `RESIZE` | `input` (video) | **width** (even), fps | `ffmpeg-skill/fit` |
+| `RESIZE` | `input` (video) | exactly one of **width** / **height** (even), fps | `ffmpeg-skill/fit` |
 | `OVERLAY` | `input` (video) + `params.image` (image source) | **image**, position (name or `{x, y}`), margin, scale, opacity, start, end, fade | `ffmpeg-skill/overlay` |
+| `CROP` | `input` (video) | **x**, **y** (≥ 0), **width**, **height** (even), fps | `ffmpeg-skill/crop` |
+| `IMAGE_INSERT` | `input` (image) | **duration**, width, height, fps, zoom `in` \| `out`, zoom_amount (> 1.0, needs zoom), pan `left`\|`right`\|`up`\|`down` (needs zoom) | `ffmpeg-skill/insert` |
 
 Values that reach a filter graph (colours, transition names, positions, aspects) are closed vocabularies or
 integers; times are exact rationals. See `contract.operations` for the documented forms.
@@ -24,14 +26,31 @@ integers; times are exact rationals. See `contract.operations` for the documente
 
 | Type | Changes | Keeps | Target frame |
 |---|---|---|---|
-| `RESIZE` | size | the source aspect; nothing padded, cropped or stretched | `width = params.width`; `height = even(width × sh / sw)` |
+| `RESIZE` | size | the source aspect; nothing padded, cropped or stretched | exactly one of `width` / `height` given; the other is `even(given × source_ratio)` or `even(given / source_ratio)` |
 | `FIT` | aspect | every source pixel (scaled to fit inside, padded with `pad_color`) | `width = params.width`, else `sw` if `aspect ≤ source_aspect` else `even(sh × aspect)`; `height = even(width / aspect)` |
 | `FILL` | aspect | the centre by default (scaled to cover, cropped); edges are lost | same rule as FIT |
+
+`RESIZE.height` (docs/decisions.md ADR-010, 0.3.0): the alternative to `width` (never both, never neither), mapped
+to `ffmpeg-skill fit.py --height` (0.11.0); the target is the mirror of the `width` case.
 
 `FILL.anchor` (docs/decisions.md ADR-009, 0.2.0): `{x, y}` each `0..1` picks which edge the crop keeps instead of
 always the centre (`0`=left/top, `0.5`=centre — the default when `anchor` is omitted, `1`=right/bottom); maps
 directly to `ffmpeg-skill fit.py`'s `--crop-x`/`--crop-y` (0.10.0). It changes *what part* of the frame survives,
 never the target frame size — the size rule above is unaffected.
+
+### CROP, IMAGE_INSERT (docs/decisions.md ADR-010, 0.3.0)
+
+`CROP` takes an explicit, caller-given pixel rectangle `{x, y, width, height}` in *source* pixels (`x`, `y ≥ 0`;
+`width`, `height` even and `> 0`), refused before execution when it does not fit inside the source frame
+(`INVALID_INPUT crop_out_of_bounds`) — mapped straight to `ffmpeg-skill/crop`. Unlike `FILL`, nothing is computed
+from an aspect ratio: the rectangle is exactly what was asked for, unaffected by the source frame's own parity.
+
+`IMAGE_INSERT` turns one image source into a silent, fixed-duration clip. `duration` is the only required
+parameter; `width` / `height` follow the same "give one, both, or neither" shape as `RESIZE` / `FIT` (neither → the
+image's own size, evened; one → the other by the image's aspect; both → exact frame, scaled to fill and
+centre-cropped, never distorted). An optional `zoom: in | out` (+ `zoom_amount > 1.0`, default `1.3`) and
+`pan: left | right | up | down` (needs `zoom`) expose `ffmpeg-skill/insert`'s Ken Burns effect. The output never has
+an audio stream (known for certain, never reported as an inference) and is unaffected by the image's own parity.
 
 `even(n) = round(n)`, +1 when odd (ffmpeg-skill fit.py). `CONCAT` (join.py): `params.width × params.height`; when
 only one is given the other follows the first input's aspect (rounded); when none is given the first input's frame;
@@ -87,8 +106,10 @@ image must decode to a frame. Per operation:
 | `SPEED` | video | frame size as the input; audio as the input (pitch preserved); duration = input / factor |
 | `FIT` | video | aspect as requested (width when given, padded); audio, fps as the input unless `fps` |
 | `FILL` | video | aspect as requested (width when given, centre-cropped); audio, fps as the input unless `fps` |
-| `RESIZE` | video | `width` as requested, height by the source aspect; audio, fps as the input unless `fps` |
+| `RESIZE` | video | `width` or `height` as requested (exactly one given), the other by the source aspect; audio, fps as the input unless `fps` |
 | `OVERLAY` | video **with an audio stream** + image | frame size, fps and audio as the input |
+| `CROP` | video | `width × height` exactly as requested; audio, fps as the input unless `fps` |
+| `IMAGE_INSERT` | image | `width`/`height` as requested or the image's native size; no audio; duration = `params.duration` exactly |
 
 `OVERLAY` requires audio because ffmpeg-skill 0.9.x's overlay (`-loop 1` image + `-shortest`) never terminates on a
 video without an audio stream; the skill refuses it (`INVALID_INPUT`, reason `audio_required`) instead of hanging
@@ -106,8 +127,10 @@ semantics, audio presence, fps, HDR); once an intermediate exists its probe (`OB
 | video source without a duration (still image / broken container as video) | refused: `INVALID_INPUT no_duration` |
 | image that does not decode | refused: `INVALID_INPUT image_undecodable` |
 | OVERLAY on a video input without audio | refused: `INVALID_INPUT audio_required` (ffmpeg-skill 0.9.x never terminates) |
-| TRIM / CUT / SPEED / OVERLAY on an input with an odd width or height | refused: `INVALID_INPUT odd_frame` (RESIZE / FIT / FILL / CONCAT normalize it) |
+| TRIM / CUT / SPEED / OVERLAY on an input with an odd width or height | refused: `INVALID_INPUT odd_frame` (RESIZE / FIT / FILL / CONCAT normalize it; CROP / IMAGE_INSERT are unaffected — their frame is always caller-given or native-image-derived, always evened) |
 | CONCAT of HDR and SDR inputs | refused: `INVALID_INPUT hdr_mismatch` |
+| CROP rectangle outside the source frame | refused: `INVALID_INPUT crop_out_of_bounds` |
+| IMAGE_INSERT duration ≤ 0 | refused: `INVALID_REQUEST` |
 | unsupported extension / container | refused: `UNSUPPORTED_FORMAT` |
 | ranges beyond the input, transition longer than half an input | refused: `INVALID_TIME_RANGE` |
 | engine tool / encoder / filter missing | refused: `TOOL_ERROR` (not retryable) |
@@ -145,7 +168,7 @@ with the same probe checks; a candidate that no longer validates is discarded an
 | `start ≥ end`, range beyond the input, transition too long, overlay start / end beyond the input | `INVALID_TIME_RANGE` |
 | unknown reference, cycle, orphan, conflicting outputs, image / video slot mismatch | `DEPENDENCY_ERROR` |
 | source without video stream / duration, image that does not decode, overlay input without audio, engine says the input is unusable | `INVALID_INPUT` |
-| type not in the allowlist (`CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION`, anything unknown) | `UNSUPPORTED_OPERATION` |
+| type not in the allowlist (`FREEZE`, `REVERSE`, `POSITION`, anything unknown) | `UNSUPPORTED_OPERATION` |
 | ffmpeg-skill missing / unsupported version / tool or capability missing (not retryable); ffmpeg failed (retryable) | `TOOL_ERROR` |
 | tool exited 0 but wrote nothing / empty / unreadable; output cannot be written | `OUTPUT_ERROR` |
 | output exists but is not what was requested (stream, duration, frame, aspect, fps, audio) | `VALIDATION_ERROR` |
@@ -154,10 +177,14 @@ with the same probe checks; a candidate that no longer validates is discarded an
 
 ## Engine versions and what the tests prove
 
-Verified against ffmpeg-skill 0.9.0 and 0.9.1 (`>=0.9.0,<1.0.0`) with ffmpeg 6.1.1. 0.9.1 adds audio-only cut /
-join modes and a three-state capability doctor (`available` / `missing` / `unknown`); this Skill uses none of the
-audio-only modes and treats a capability absent from `available` as missing (conservative: a detection failure
-refuses rather than guesses). The overlay behaviour on silent inputs is unchanged in 0.9.1.
+Verified against ffmpeg-skill 0.9.0, 0.9.1, 0.10.0 and 0.11.0 (`>=0.11.0,<1.0.0` as of 0.3.0; see
+docs/decisions.md ADR-010) with ffmpeg 6.1.1. 0.9.1 adds audio-only cut / join modes and a three-state capability
+doctor (`available` / `missing` / `unknown`); this Skill uses none of the audio-only modes and treats a capability
+absent from `available` as missing (conservative: a detection failure refuses rather than guesses). The overlay
+behaviour on silent inputs is unchanged in 0.9.1. 0.11.0 adds `fit.py --height`, a typed `crop.py`, and a typed
+`insert.py` — the tools `RESIZE.height`, `CROP` and `IMAGE_INSERT` compile to; it also adds rotate/flip on `fit.py`,
+video-layer and chroma-key compositing on `overlay.py`, `reverse.py`, `stabilize.py`, `sequence.py` and
+`background.py`, none of which this Skill wraps yet (`contract.versioning.next`, ADR-010).
 
 The HDR fixture in `tests/test_integration.py` is an SDR test pattern **flagged** as HDR (BT.2020 primaries, PQ
 transfer tags): it exercises the engine's HDR detection and HEVC path and this Skill's codec / mixing rules, not

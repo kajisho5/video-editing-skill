@@ -106,6 +106,8 @@ SCRIPT = textwrap.dedent('''
             return float(flag("--duration"))
         if name == "join":
             return sum(dur_of(p) for p in inputs) - float(flag("--duration", "0")) * (len(inputs) - 1)
+        if name == "insert":
+            return float(flag("--duration"))
         return dur_of(inputs[0])
     if name == "probe":
         emit(probe_doc(args[0])); sys.exit(0)
@@ -126,7 +128,7 @@ SCRIPT = textwrap.dedent('''
         sw, sh = first["width"], first["height"]
         if first.get("rotation") in (90, -90, 270, -270):
             sw, sh = sh, sw
-        width, height, fps = sw, sh, first["fps"]
+        width, height, fps = sw, sh, first.get("fps", 30.0)
         if flag("--fps"):
             fps = float(flag("--fps"))
         if name == "join":   # join.py rule
@@ -137,15 +139,29 @@ SCRIPT = textwrap.dedent('''
             elif flag("--height"):
                 height = int(flag("--height")); width = int(round(height * sw / sh))
             width, height = width - (width % 2), height - (height % 2)
-        if name == "fit" and (flag("--aspect") or flag("--width")):
+        if name == "fit" and (flag("--aspect") or flag("--width") or flag("--height")):
             src_ratio = sw / sh
             if flag("--aspect"):
                 aw, ah = (int(x) for x in flag("--aspect").split(":"))
                 ratio = aw / ah
             else:
                 ratio = src_ratio
-            width = even(int(flag("--width"))) if flag("--width") else even(sw if ratio <= src_ratio else sh * ratio)
-            height = even(width / ratio)
+            if flag("--height"):
+                height = even(int(flag("--height"))); width = even(height * sw / sh)
+            else:
+                width = even(int(flag("--width"))) if flag("--width") else even(sw if ratio <= src_ratio else sh * ratio)
+                height = even(width / ratio)
+        if name == "crop":   # crop.py: exact caller-given rectangle, already even
+            width, height = int(flag("--width")), int(flag("--height"))
+        if name == "insert":   # insert.py: width/height follow fit.py's own rule; neither given -> native image size
+            if flag("--width") and flag("--height"):
+                width, height = even(int(flag("--width"))), even(int(flag("--height")))
+            elif flag("--width"):
+                width = even(int(flag("--width"))); height = even(width * sh / sw)
+            elif flag("--height"):
+                height = even(int(flag("--height"))); width = even(height * sw / sh)
+            else:
+                width, height = even(sw), even(sh)
         encoding = {"crf": int(flag("--crf", 18)), "preset": flag("--preset", "medium")}
         with open(out, "wb") as fh:
             fh.write(b"FAKE" + json.dumps({"duration": expected_duration(), "tool": name, "args": args, "noaudio": noaudio,
@@ -171,10 +187,10 @@ DOCTOR = textwrap.dedent('''
 ''')
 
 
-def make_fake_skill(root: str, mode: str = "ok", version: str = "0.9.0") -> str:
+def make_fake_skill(root: str, mode: str = "ok", version: str = "0.11.0") -> str:
     scripts = os.path.join(root, "scripts")
     os.makedirs(scripts, exist_ok=True)
-    for name in ("probe", "cut", "join", "fit", "overlay"):
+    for name in ("probe", "cut", "join", "fit", "overlay", "crop", "insert"):
         with open(os.path.join(scripts, name + ".py"), "w", encoding="utf-8") as fh:
             fh.write(SCRIPT)
     with open(os.path.join(scripts, "_contract.py"), "w", encoding="utf-8") as fh:

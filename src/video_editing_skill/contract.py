@@ -23,6 +23,8 @@ TOOL_REQUIREMENTS = {
     "ffmpeg-skill/cut": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
     "ffmpeg-skill/join": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade"],
     "ffmpeg-skill/fit": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
+    "ffmpeg-skill/crop": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
+    "ffmpeg-skill/insert": ["ffmpeg", "ffprobe", "encoder:libx264"],
     "ffmpeg-skill/overlay": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
     "ffmpeg-skill/probe": ["ffprobe"],
 }
@@ -37,7 +39,11 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
     "FIT": {"aspect": "W:H", "width": "even int (optional)", "pad_color": "named colour or 0xRRGGBB", "fps": "optional"},
     "FILL": {"aspect": "W:H", "width": "even int (optional)",
              "anchor": "{x, y} each 0..1: which edge the crop keeps (0=left/top, 0.5=centre default, 1=right/bottom) (optional)", "fps": "optional"},
-    "RESIZE": {"width": "even int", "fps": "optional"},
+    "RESIZE": {"width": "even int (exactly one of width/height)", "height": "even int (exactly one of width/height)", "fps": "optional"},
+    "CROP": {"x": "int px >= 0", "y": "int px >= 0", "width": "even int px", "height": "even int px", "fps": "optional"},
+    "IMAGE_INSERT": {"duration": "time (> 0)", "width": "even int (optional)", "height": "even int (optional)",
+                      "fps": "optional (default 30)", "zoom": "in | out (optional, Ken Burns)",
+                      "zoom_amount": "number > 1.0 (optional, default 1.3, needs zoom)", "pan": "left|right|up|down (optional, needs zoom)"},
     "OVERLAY": {"image": "image source id", "position": "|".join(POSITIONS) + " or {x, y} px", "margin": "int px", "scale": "image width px (optional)",
                 "opacity": "(0, 1]", "start": "time (optional)", "end": "time (optional)", "fade": "seconds 0..10 (optional)"},
 }
@@ -179,10 +185,12 @@ def skill_contract() -> Dict[str, Any]:
                                "allowed within the same contract_version; the golden copy tests/contract/contract.json is regenerated deliberately in "
                                "the same change, and `contract --check` classifies every difference as breaking or additive",
                        "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
-                       "next": {"0.3.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
-                                         "(docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
-                                         "CROP (pixel rectangle) once ffmpeg-skill provides a typed crop tool", "IMAGE_INSERT (still -> timed clip) once ffmpeg-skill provides a typed tool",
-                                         "FREEZE / REVERSE / POSITION: not planned (see docs/decisions.md ADR-002)"]}},
+                       "next": {"0.4.0": ["ROTATE / FLIP once designed as typed operations (engine: `fit.py --rotate/--flip`, ffmpeg-skill 0.11.0)",
+                                         "chroma-key compositing once designed (engine: `overlay.py --chromakey`, ffmpeg-skill 0.11.0)",
+                                         "stabilization once designed as a typed operation (engine: `stabilize.py`, ffmpeg-skill 0.11.0)",
+                                         "image-sequence input once designed (engine: `sequence.py`, ffmpeg-skill 0.11.0)",
+                                         "a standalone generated-background operation once designed (engine: `background.py`, ffmpeg-skill 0.11.0)",
+                                         "FREEZE / REVERSE / POSITION: not planned (see docs/decisions.md ADR-002, ADR-010)"]}},
         # ---- 0.1.x additive blocks: encoding profile, frame semantics, media policy (docs/decisions.md ADR-003 .. ADR-005)
         "encoding": ENCODING,
         "frame_semantics": FRAME_SEMANTICS,

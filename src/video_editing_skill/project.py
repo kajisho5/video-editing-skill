@@ -246,14 +246,15 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
     # ---- references, cycles, order
     for op in ops.values():
         for j, r in enumerate(op.inputs):
-            is_image_slot = op.type == "OVERLAY" and j == len(op.inputs) - 1
+            is_image_slot = (op.type == "OVERLAY" and j == len(op.inputs) - 1) or op.type == "IMAGE_INSERT"
             if r in sources:
                 want = "image" if is_image_slot else "video"
                 if sources[r].kind != want:
                     raise EditError("DEPENDENCY_ERROR", f"operation {op.ref!r}: input {r!r} must be a {want} source", {"reason": "kind_mismatch"})
             elif r in ops:
                 if is_image_slot:
-                    raise EditError("DEPENDENCY_ERROR", f"operation {op.ref!r}: params.image must reference an image source, not an operation")
+                    raise EditError("DEPENDENCY_ERROR", f"operation {op.ref!r}: an image slot must reference an image source, not an operation "
+                                    "(no operation produces an image result)", {"reason": "kind_mismatch"})
                 if r == op.ref:
                     raise EditError("DEPENDENCY_ERROR", f"operation {op.ref!r} depends on itself", {"reason": "cycle"})
             else:

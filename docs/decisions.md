@@ -31,6 +31,12 @@ are the 0.2.0 candidates, each conditional on a typed ffmpeg-skill tool. `FREEZE
 planned. Adding a type changes the pinned `operations` / `unsupported` blocks, so 0.2.0 is a version bump with agent
 re-pinning (docs/contract.md). The contract's `versioning.next` lists the candidates.
 
+**Resolved in 0.3.0 (ADR-010).** ffmpeg-skill 0.11.0 shipped typed `crop.py` and `insert.py` tools, unblocking both
+`CROP` and `IMAGE_INSERT` exactly as designed in the table above. `FREEZE` is still not planned (still a composition
+of an extracted still frame + `IMAGE_INSERT`, not a type of its own). `REVERSE` and `POSITION` also gained engine
+support in 0.11.0 (`reverse.py`; `overlay.py --video`) but remain **not planned as operations in this Skill**, now
+for a scope reason rather than an engine-gap reason — see ADR-010's "why not the other eight" section.
+
 ## ADR-003 — RESIZE, FIT and FILL: three disjoint meanings, one normalization rule
 
 **Context.** `RESIZE` (width only), `FIT` and `FILL` (aspect, optional width) all end up in ffmpeg-skill's `fit.py`,
@@ -74,6 +80,12 @@ narrower aspect loses a subject held off-centre. This is a genuine, currently-un
 optional `FILL` parameter, e.g. `anchor: {x, y}` mapped straight to the existing engine flags — no new engine
 capability needed, unlike `RESIZE.height`) — not decided on or scheduled here; a future session or an explicit
 request should make that call.
+
+**`RESIZE.height` resolved in 0.3.0 (ADR-010).** ffmpeg-skill 0.11.0 added `fit.py --height`, removing the engine
+gap this correction identified. `RESIZE` now accepts exactly one of `width` / `height` (never both, never neither),
+the same "exactly one" shape the original 0.1.0 design used for `width` alone; the target-frame formula is the
+mirror of the `width` case (`height = params.height`, `width = even(height * sw / sh)`), reproduced in
+`operations.py` `validate_params` and `executor.py` `target_frame`.
 
 ## ADR-004 — Encoding profile: typed, closed, minimal
 
@@ -243,3 +255,64 @@ maintainers after the fact.
 **Not included.** `RESIZE.height` stays out (ADR-003: blocked on ffmpeg-skill, `fit.py` has no `--height` flag);
 `CROP`, `IMAGE_INSERT` stay out (ADR-002: blocked on ffmpeg-skill); `FREEZE`, `REVERSE`, `POSITION` remain not
 planned. `contract.py`'s `versioning.next` now lists these under `"0.3.0"`.
+
+## ADR-010 — 0.3.0: `RESIZE.height`, `CROP`, `IMAGE_INSERT` — the three engine-blocked candidates resolved
+
+**Context.** ffmpeg-skill 0.11.0 shipped eleven new capabilities in one release (rotate/flip on `fit.py`, `--height`
+on `fit.py`, a typed `crop.py`, a typed `insert.py`, video-layer/chroma-key on `overlay.py`, `reverse.py`,
+`stabilize.py`, `sequence.py`, `background.py`) — independently verified against a real, push-access checkout
+(`tests/test_all.py` 107 tests, `tests/test_contract.py` 40 tests, both green; the tagged `v0.11.0` re-verified the
+same way). Three of these are exactly the three items ADR-002 / ADR-003 identified as "clean typed model, blocked
+only on the engine": `RESIZE.height`, `CROP`, `IMAGE_INSERT`. This ADR ships those three and only those three.
+
+**Decision.** Release 0.3.0 (`version` `"0.2.0"` → `"0.3.0"`, `contract_version` `"2.0"` → `"3.0"`):
+
+- **Dependency floor raised to ffmpeg-skill 0.11.0** (`ffmpeg_skill.py` `SUPPORTED_MIN = (0, 11, 0)`;
+  `REQUIRED_TOOLS` gains `crop`, `insert`) — `crop.py` and `insert.py` did not exist before it, so anything older
+  cannot run this release's new operations at all, not just run them differently.
+- **`RESIZE` accepts `height` as an alternative to `width`** (exactly one of the two, never both, never neither —
+  the same "exactly one" invariant `width` alone already had). Maps to `fit.py --height`. Target frame:
+  `height = params.height`, `width = even(height * source_width / source_height)` — the mirror of the existing
+  `width` formula (ADR-003's correction, now resolved rather than withdrawn).
+- **`CROP` (new operation type):** `{x, y, width, height}`, an explicit pixel rectangle in *source* pixels (`x`,
+  `y` `>= 0`; `width`, `height` even and `> 0`), refused before execution when the rectangle does not fit inside the
+  source frame (`INVALID_INPUT crop_out_of_bounds`, mirroring `crop.py`'s own bounds check so the Skill fails the
+  same request the engine would, before spending a subprocess on it). Maps straight to `ffmpeg-skill/crop` — one
+  video in, one out, output frame exactly `{width, height}`. Deliberately distinct from `FILL`: `FILL` crops *to an
+  aspect ratio* the caller doesn't have to compute by hand; `CROP` crops to a rectangle the caller already knows
+  (a saved region, a face-detection box, a burnt-in-UI strip to remove) — ADR-002's disjointness argument, now
+  actually implemented.
+- **`IMAGE_INSERT` (new operation type):** turns one image source into a silent, fixed-duration clip — a title
+  card, an end slate, a holding frame. `{duration}` is the only required parameter; `width`/`height` follow the
+  same "give one, both, or neither" shape `insert.py` itself uses (neither → the image's native size, evened; one →
+  the other by the image's aspect; both → exact frame, scaled to fill and centre-cropped, never distorted); an
+  optional `zoom: in|out` (+ `zoom_amount > 1.0`, default `1.3`) and `pan: left|right|up|down` (requires `zoom`)
+  expose `insert.py`'s Ken Burns effect. This is the one operation in the contract whose primary input is an image,
+  not a video — `MEDIA["IMAGE_INSERT"].requires` is `{video: False, audio: False, image: True}`, the first
+  exception to "every operation requires video" the contract has ever had; `contract_check.py`'s implementation
+  checks were relaxed by name for this one type rather than loosened generally, so a future op accidentally getting
+  the same treatment without a matching relaxation here still fails loudly. `project.py`'s `is_image_slot` check
+  (previously only true for `OVERLAY`'s trailing input) now also recognizes `IMAGE_INSERT`'s single input as an
+  image slot, so a video or an upstream operation in that slot is refused the same way (`DEPENDENCY_ERROR
+  kind_mismatch`) `OVERLAY`'s image slot already was. The output audio expectation is reported as `False`, never
+  `None`/"unknown" — `insert.py` never produces an audio track, so this is a known fact, not an inference.
+
+**Why exactly these three, and not the other eight from the same ffmpeg-skill release.** `REVERSE` and `POSITION`
+are not planned regardless of engine support (ADR-002's verdicts stand: low value for this Skill's production /
+corporate delivery scope; `POSITION`, if ever added, extends `OVERLAY` rather than becoming its own type). Rotate /
+flip, chroma-key, stabilize, image-sequence, and Ken-Burns-as-a-standalone-background are real, undesigned
+candidates this ADR deliberately defers rather than rejects — each needs its own typed parameter model and its own
+`MEDIA` / `FRAME_SEMANTICS` entries, and bundling eight new operations into one release would make the diff harder
+to review and any one mistake harder to isolate than three already-fully-designed ones. `contract.py`'s
+`versioning.next` now lists them under `"0.4.0"` as undesigned-but-plausible, not as blocked.
+
+**The real cost, stated plainly.** As with 0.2.0 (ADR-009), this is a breaking release: `operations` (a new type
+changes its keys) and `contract_version` both move, so `video-production-agent`'s `check_contract()` will reject
+this contract until its own maintainers widen `SUPPORTED_SKILL_VERSIONS` past `("0.1.", "0.2.")` — the same kind of
+disclosed, accepted, out-of-repo consequence ADR-009 already established the pattern for, not a new kind of risk.
+
+**Verification.** Every claim above is checked, not asserted: offline unit / path / security / engine-contract
+suites with a fake engine; `contract --check` against the regenerated golden copy; real-media integration tests
+against the actual tagged ffmpeg-skill `v0.11.0` checkout proving `RESIZE.height`, `CROP`, and `IMAGE_INSERT`
+(including its zoom/pan variants) produce the exact frame size, duration, and audio-presence the contract promises
+— not merely that the compiled command exits zero.

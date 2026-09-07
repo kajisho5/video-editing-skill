@@ -12,7 +12,7 @@ video-editing-skill ≠ video-production-agent   (no decisions, no plan, no LLM,
 video-editing-skill ≠ ffmpeg-skill             (no ffmpeg command generation, no filter strings)
 ```
 
-Python ≥ 3.9, standard library only. Requires an ffmpeg-skill 0.9.x checkout and ffmpeg / ffprobe on `PATH`.
+Python ≥ 3.9, standard library only. Requires an ffmpeg-skill 0.11.x checkout and ffmpeg / ffprobe on `PATH`.
 
 ## Scope
 
@@ -28,8 +28,10 @@ Provided (capabilities are declared only where an implementation exists):
 | `video.speed` | `SPEED` constant factor 1/4 … 4, pitch-preserved audio | `ffmpeg-skill/fit` |
 | `video.fit` | `FIT` change the aspect, keep every pixel (letterbox / pillarbox with `pad_color`) | `ffmpeg-skill/fit` |
 | `video.fill` | `FILL` change the aspect, keep the centre by default or a chosen `anchor` (scale to cover, crop) | `ffmpeg-skill/fit` |
-| `video.resize` | `RESIZE` change the size, keep the aspect (`width`, height follows; nothing padded / cropped / stretched) | `ffmpeg-skill/fit` |
+| `video.resize` | `RESIZE` change the size, keep the aspect (exactly one of `width` / `height`; the other follows; nothing padded / cropped / stretched) | `ffmpeg-skill/fit` |
 | `video.overlay` | `OVERLAY` still image at a position for a time range | `ffmpeg-skill/overlay` |
+| `video.crop` | `CROP` exact pixel rectangle `{x, y, width, height}` in source pixels | `ffmpeg-skill/crop` |
+| `video.image_insert` | `IMAGE_INSERT` still image → silent, timed clip (title card, end slate, holding frame), optional Ken Burns `zoom`/`pan` | `ffmpeg-skill/insert` |
 
 Plus: timeline assembly (segments with source and timeline ranges, a second track for overlays), deterministic
 operation identity, dry run, reuse of identical earlier results, output validation, provenance, an optional typed
@@ -45,9 +47,12 @@ no ProductionPlan / Project IR / policy / preference / constraint model, no LLM,
 no scripting, no raw ffmpeg or filter interface. See "Explicit non-goals" in the contract (`not_provided`).
 
 **Not implemented in this version** (declared as gaps in `contract.unsupported`, refused with
-`UNSUPPORTED_OPERATION`): `CROP` (pixel rectangle), `FREEZE`, `REVERSE`, `IMAGE_INSERT` (still → clip),
-`POSITION` (free video-layer placement). ffmpeg-skill 0.9.x has no tool for them and this skill does not run
-ffmpeg itself. Multi-track assembly is limited to one video track plus image overlays.
+`UNSUPPORTED_OPERATION`): `FREEZE` (compose from `IMAGE_INSERT` once a still frame is extracted), `REVERSE`,
+`POSITION` (free video-layer placement) — the latter two now have an engine tool (ffmpeg-skill 0.11.0) but remain
+not planned as operations in this Skill (`docs/decisions.md` ADR-002, ADR-010). Rotate/flip, chroma-key
+compositing, stabilization, image-sequence input and a standalone generated-background operation are genuine,
+undesigned 0.4.0+ candidates (`contract.versioning.next`) — ffmpeg-skill 0.11.0 has engine support for all of them,
+but no typed operation exists here yet. Multi-track assembly is limited to one video track plus image overlays.
 
 ## Architecture
 
@@ -233,10 +238,11 @@ One request document on stdin (`-`) or a file, **exactly one** JSON document on 
 | `CANCELLED` | 130 | yes | SIGINT / SIGTERM or `timeout_seconds` |
 | `INTERNAL_ERROR` | 1 | no | a bug; still one JSON document, never a traceback on stdout |
 
-## RESIZE, FIT, FILL and the encoding profile
+## RESIZE, FIT, FILL, CROP, IMAGE_INSERT and the encoding profile
 
 The three frame operations never overlap (`contract.frame_semantics`, ADR-003): `RESIZE` changes the size and keeps
-the aspect (`width`, `height = even(width × sh / sw)`); `FIT` changes the aspect and keeps every pixel (padded);
+the aspect (exactly one of `width` / `height`; the other is `even(given × source_ratio)` or `even(given / source_ratio)`,
+`fit.py --width`/`--height`, ffmpeg-skill 0.11.0); `FIT` changes the aspect and keeps every pixel (padded);
 `FILL` changes the aspect and keeps the centre by default (cropped) — an optional `anchor: {x, y}` (each `0..1`,
 `0.5` default) picks a different edge to keep instead (0.2.0, ADR-009), mapped to ffmpeg-skill 0.10.0's
 `fit.py --crop-x/--crop-y`; it changes what survives the crop, never the target frame size below. FIT / FILL
@@ -244,6 +250,18 @@ without `width` keep the source width when the target aspect is not wider than t
 `even()` is ffmpeg-skill's rule (round, then up to even). The target frame is computed from the probed source
 *before* execution, reported as `normalized.target_frame` in plan steps and operation records, and the output must
 match it exactly. Rotation metadata (a display matrix) is honoured; nothing is ever stretched.
+
+`CROP` (0.3.0, ADR-010) takes an explicit, caller-given pixel rectangle `{x, y, width, height}` (`x`, `y >= 0`;
+`width`, `height` even and `> 0`), refused before execution when it does not fit inside the source frame
+(`INVALID_INPUT crop_out_of_bounds`) — mapped straight to `ffmpeg-skill/crop`. Unlike `FILL`, nothing is computed
+from an aspect ratio: the caller already knows the rectangle (a saved region, a face-detection box, a burnt-in-UI
+strip to remove).
+
+`IMAGE_INSERT` (0.3.0, ADR-010) turns one image source into a silent, fixed-duration clip (a title card, an end
+slate, a holding frame) — the only operation whose primary input is an image, not a video. `duration` is required;
+`width` / `height` follow the same "give one, both, or neither" shape as `RESIZE` (neither → the image's own size,
+evened); an optional `zoom: in|out` (+ `zoom_amount > 1.0`, default `1.3`) and `pan: left|right|up|down` (needs
+`zoom`) expose `ffmpeg-skill/insert`'s Ken Burns effect. The output never has an audio stream.
 
 `outputs[].encoding` is the whole encoding surface: `crf` (14..28) and `preset` (x264 vocabulary minus placebo),
 typed and closed, part of the operation's identity, refused where a stream copy would ignore it. Codec (h264, or hevc
@@ -395,14 +413,15 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 
 ## Current limitations
 
-- Operations beyond ffmpeg-skill 0.9.x: `CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION` are not implemented.
+- `FREEZE`, `REVERSE`, `POSITION` are not implemented as operations (ADR-002, ADR-010); rotate/flip, chroma-key,
+  stabilization, image-sequence input and a standalone background operation are undesigned 0.4.0+ candidates.
 - `OVERLAY` needs a video input with an audio stream (ffmpeg-skill 0.9.x limitation, refused up front).
 - The encoding surface is `crf` + `preset`; codec, bitrate modes, audio and pixel format are the engine's.
 - `TRIM` / `CUT` / `SPEED` / `OVERLAY` refuse an input whose frame has an odd width or height (`odd_frame`); the
   frame-changing operations normalize it to even first.
 - The integration HDR fixture is an SDR pattern flagged as HDR (colour tags); real HDR10 / HLG content and tone
-  mapping are not covered. Verified against ffmpeg-skill 0.9.0, 0.9.1, and 0.10.0 (full real-media integration
-  matrix, 43/43, against a live 0.10.0 checkout).
+  mapping are not covered. Verified against ffmpeg-skill 0.9.0, 0.9.1, 0.10.0 and 0.11.0 (full real-media
+  integration matrix against a live 0.11.0 checkout).
 - Real rotation metadata (a display matrix) is honoured; a legacy `rotate` tag is ignored by ffmpeg ≥ 5 and therefore
   by this Skill's probe-based normalization (the frame is then the stored one).
 - One video track plus image overlays; no picture-in-picture of video, no audio-only sources, no per-track audio.
@@ -418,13 +437,18 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 ## Future extensions
 
 **Shipped in 0.2.0** (ADR-009): `FILL.anchor` (which edge the crop keeps, mapping ffmpeg-skill 0.10.0's
-`fit.py --crop-x/--crop-y`) and `outputs[].encoding` named directly in `request_shape`. Both are breaking by this
-repository's own pinning convention; `video-production-agent` must widen `SUPPORTED_SKILL_VERSIONS` before it
-accepts this contract (a known, accepted, disclosed cost — not an oversight).
+`fit.py --crop-x/--crop-y`) and `outputs[].encoding` named directly in `request_shape`.
 
-Contract 0.3.0 candidates, none scheduled (ADR-002 / ADR-003, `contract.versioning.next`): `CROP` (pixel rectangle),
-`IMAGE_INSERT` (still → timed clip), and `RESIZE.height` all wait on ffmpeg-skill shipping a typed tool/flag they
-need — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be blocked this way too
-(`fit.py` has no `--height` flag), not the small addition ADR-003 first described. Not planned: `FREEZE`
-(compose from IMAGE_INSERT), `REVERSE`, `POSITION` (would extend OVERLAY with a video layer).
+**Shipped in 0.3.0** (ADR-010): `RESIZE.height` (the alternative to `width`, `fit.py --height`), `CROP` (a pixel
+rectangle, `ffmpeg-skill/crop`), and `IMAGE_INSERT` (still → timed clip, `ffmpeg-skill/insert`, with optional Ken
+Burns `zoom`/`pan`) — all three unblocked by ffmpeg-skill 0.11.0. Each release is breaking by this repository's own
+pinning convention; `video-production-agent` must widen `SUPPORTED_SKILL_VERSIONS` before it accepts either
+contract (a known, accepted, disclosed cost — not an oversight).
+
+Contract 0.4.0 candidates, none scheduled (ADR-010, `contract.versioning.next`): rotate / flip (`fit.py
+--rotate/--flip`), chroma-key compositing (`overlay.py --chromakey`), stabilization (`stabilize.py`),
+image-sequence input (`sequence.py`), and a standalone generated-background operation (`background.py`) all have
+engine support (ffmpeg-skill 0.11.0) but no typed operation designed here yet. Not planned: `FREEZE`
+(compose from `IMAGE_INSERT`), `REVERSE`, `POSITION` (would extend `OVERLAY` with a video layer) — engine support
+exists for the latter two (`reverse.py`, `overlay.py --video`) but they remain out of this Skill's scope.
 Also: an `OVERLAY` that tolerates silent inputs once ffmpeg-skill's overlay terminates on them.

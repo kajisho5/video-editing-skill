@@ -52,7 +52,7 @@ ENCODING = {
 # exactly (even(n) = round(n), +1 when odd), so the frame is normalized before execution and verified afterwards.
 FRAME_SEMANTICS = {
     "RESIZE": {"changes": "frame size", "keeps": "the source aspect ratio; nothing is padded, cropped or stretched",
-               "target": "width = params.width (even); height = even(width * source_height / source_width)",
+               "target": "exactly one of params.width / params.height (even); the other is even(given * source_ratio) or even(given / source_ratio)",
                "when": "the picture must become smaller / larger and keep its shape"},
     "FIT": {"changes": "frame aspect ratio", "keeps": "every source pixel (scaled to fit inside, letterboxed / pillarboxed with pad_color)",
             "target": "width = params.width, else source_width when aspect <= source_aspect, else even(source_height * aspect); height = even(width / aspect)",
@@ -63,6 +63,8 @@ FRAME_SEMANTICS = {
               "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)",
               "CONCAT (ffmpeg-skill join.py): params.width x params.height; only one given -> the other from the first input's aspect (round); none -> the first input's frame; then floored to even",
               "TRIM / CUT / SPEED / OVERLAY keep the input frame; an input with an odd width or height is refused before execution (INVALID_INPUT odd_frame) because the engine's encoders need even sizes",
+              "CROP takes an explicit, caller-given even rectangle (validated at parse time) and is unaffected by the source frame's own parity -- only that the rectangle fits inside it",
+              "IMAGE_INSERT has no input frame to keep or normalize: its output frame is params.width/height (evened) or the image's own size, never odd",
               "no operation stretches (distorts) the picture; anamorphic output is not provided",
               "the normalized target frame is reported in plan.steps[].normalized and execution.operations[].normalized and verified on the output exactly"],
 }
@@ -76,11 +78,13 @@ MEDIA_POLICY = {
         "OVERLAY on a video input without an audio stream: INVALID_INPUT audio_required (ffmpeg-skill 0.9.x overlay never terminates on it)",
         "TRIM / CUT / SPEED / OVERLAY on an input whose frame has an odd width or height: INVALID_INPUT odd_frame (the encoder needs even sizes; RESIZE / FIT / FILL / CONCAT normalize to even)",
         "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
+        "CROP rectangle outside the source frame: INVALID_INPUT crop_out_of_bounds",
+        "IMAGE_INSERT duration <= 0: INVALID_REQUEST",
         "unsupported input extension / output container: UNSUPPORTED_FORMAT", "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
         "engine tool / encoder / filter missing: TOOL_ERROR (not retryable)",
     ],
     "normalized_by_skill": [
-        "times in any accepted form -> exact rational seconds", "target frame of RESIZE / FIT / FILL / CONCAT (frame_semantics)",
+        "times in any accepted form -> exact rational seconds", "target frame of RESIZE / FIT / FILL / CONCAT / IMAGE_INSERT (frame_semantics)",
         "target duration of SPEED (input duration / factor)", "encoding profile -> typed engine flags (crf, preset)", "audio expectation per operation (kept / added / none)",
     ],
     "delegated_to_engine": [
@@ -89,17 +93,17 @@ MEDIA_POLICY = {
         "audio codec / bitrate / sample rate (AAC 192 kb/s)", "keyframe snapping for precision keyframe TRIM / CUT",
     ],
     "by_stream": {
-        "video_only": "TRIM / CUT / SPEED / FIT / FILL / RESIZE / CONCAT: allowed; the output has no audio stream (validated). OVERLAY: refused (audio_required)",
-        "video_and_audio": "all operations; the audio stream is kept (validated)",
+        "video_only": "TRIM / CUT / SPEED / FIT / FILL / RESIZE / CROP / CONCAT: allowed; the output has no audio stream (validated). OVERLAY: refused (audio_required)",
+        "video_and_audio": "all video-input operations; the audio stream is kept (validated)",
         "audio_only": "refused as a source (no_video_stream); audio-only editing is not provided",
-        "image": "OVERLAY.params.image only (png / jpg, alpha respected); an image in a video slot is DEPENDENCY_ERROR kind_mismatch",
+        "image": "OVERLAY.params.image and IMAGE_INSERT.input (png / jpg, alpha respected for OVERLAY); an image in a video slot, or a video/operation in IMAGE_INSERT's slot, is DEPENDENCY_ERROR kind_mismatch",
         "mixed_audio_presence_in_concat": "allowed; the engine inserts silence for the inputs without audio and the output has audio (validated)",
         "different_resolution_in_concat": "allowed; conformed by params.mode to the normalized frame",
         "different_frame_rate_in_concat": "allowed; conformed to params.fps or the first input's rate",
         "variable_frame_rate": "allowed; conformed to constant fps by the engine (warning)",
         "hdr": "allowed alone (output hevc, warning); not mixed with SDR in CONCAT",
         "rotation_metadata": "honoured (a display matrix): the frame is measured as displayed; a legacy `rotate` tag is ignored by ffmpeg >= 5 and therefore by the probe",
-        "odd_frame": "RESIZE / FIT / FILL / CONCAT normalize to even sizes; TRIM / CUT / SPEED / OVERLAY refuse it up front (odd_frame)",
+        "odd_frame": "RESIZE / FIT / FILL / CONCAT normalize to even sizes; TRIM / CUT / SPEED / OVERLAY refuse it up front (odd_frame); CROP / IMAGE_INSERT are unaffected (their own output frame is always caller-given or native-image-derived, always evened)",
     },
 }
 
@@ -122,9 +126,13 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "FILL": {"arity": "one", "tool": "ffmpeg-skill/fit", "capability": "video.fill",
              "summary": "centre-crop into an aspect ratio (edges are lost)"},
     "RESIZE": {"arity": "one", "tool": "ffmpeg-skill/fit", "capability": "video.resize",
-               "summary": "scale to a width keeping the aspect ratio"},
+               "summary": "scale to a width or height keeping the aspect ratio"},
     "OVERLAY": {"arity": "one", "tool": "ffmpeg-skill/overlay", "capability": "video.overlay",
                 "summary": "composite a still image (logo, lower-third PNG) at a named position for a time range"},
+    "CROP": {"arity": "one", "tool": "ffmpeg-skill/crop", "capability": "video.crop",
+             "summary": "crop to an exact pixel rectangle {x, y, width, height} in source pixels"},
+    "IMAGE_INSERT": {"arity": "one", "tool": "ffmpeg-skill/insert", "capability": "video.image_insert",
+                      "summary": "turn a still image into a silent, timed video clip (title card, end slate, holding frame)"},
 }
 
 # Media compatibility per operation: what every input must be, what the output keeps, and which mismatches are
@@ -152,23 +160,28 @@ MEDIA: Dict[str, Dict[str, Any]] = {
              "output": {"frame_size": "params.aspect (params.width when given; centre-cropped)", "audio": "as input", "fps": "params.fps or as input"},
              "refused_before_execution": ["source without a video stream or duration"]},
     "RESIZE": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
-               "output": {"frame_size": "params.width, height by the input aspect (even)", "audio": "as input", "fps": "params.fps or as input"},
+               "output": {"frame_size": "params.width or params.height (exactly one given); the other by the input aspect (even)", "audio": "as input", "fps": "params.fps or as input"},
                "refused_before_execution": ["source without a video stream or duration"]},
     "OVERLAY": {"inputs": "one video plus one image source (png / jpg; alpha respected)", "requires": {"video": True, "audio": True, "image": True},
                 "output": {"frame_size": "as input", "audio": "as input", "fps": "as input"},
                 "refused_before_execution": ["source without a video stream or duration", "image that does not decode",
                                              "video input without an audio stream: ffmpeg-skill 0.9.x overlay (-loop 1 image, -shortest) never terminates on it",
                                              "start / end beyond the input duration", "input frame with an odd width or height (odd_frame)"]},
+    "CROP": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+             "output": {"frame_size": "params.width x params.height (exact, even)", "audio": "as input", "fps": "params.fps or as input"},
+             "refused_before_execution": ["source without a video stream or duration", "crop rectangle outside the source frame (crop_out_of_bounds)"]},
+    "IMAGE_INSERT": {"inputs": "one image source (png / jpg)", "requires": {"video": False, "audio": False, "image": True},
+                      "output": {"frame_size": "params.width and/or params.height, else the image's native size (even)", "audio": "none (silent clip)",
+                                 "fps": "params.fps or 30", "duration": "params.duration exactly"},
+                      "refused_before_execution": ["image that does not decode", "duration <= 0"]},
 }
 
 # capabilities that video editing normally has but ffmpeg-skill 0.9.x has no tool for: declared as gaps,
 # never as capabilities.
 UNSUPPORTED: Dict[str, Dict[str, str]] = {
-    "CROP": {"capability": "video.crop", "reason": "ffmpeg-skill has no pixel-rectangle crop tool (fit.py only crops to an aspect ratio); use FILL for aspect-ratio crops"},
-    "FREEZE": {"capability": "video.freeze", "reason": "ffmpeg-skill has no freeze-frame tool"},
-    "REVERSE": {"capability": "video.reverse", "reason": "ffmpeg-skill has no reverse tool"},
-    "IMAGE_INSERT": {"capability": "video.image_insert", "reason": "ffmpeg-skill has no still-image-to-clip tool (join.py needs video inputs)"},
-    "POSITION": {"capability": "video.position", "reason": "free placement of a video layer is not provided (overlay.py composites images only)"},
+    "FREEZE": {"capability": "video.freeze", "reason": "ffmpeg-skill has no freeze-frame tool; compose from IMAGE_INSERT once a still frame is extracted"},
+    "REVERSE": {"capability": "video.reverse", "reason": "not planned: ffmpeg-skill has a reverse tool (0.11.0) but reverse playback has low value for this Skill's production/corporate use case (docs/decisions.md ADR-002)"},
+    "POSITION": {"capability": "video.position", "reason": "not planned: ffmpeg-skill can composite a video-on-video layer (overlay.py --video, 0.11.0) but this is not yet designed as a typed operation here (docs/decisions.md ADR-002)"},
     "REORDER": {"capability": "video.reorder", "reason": "not a separate type: give CONCAT its inputs in the wanted order, or CUT its keep ranges in the wanted order"},
     "TRANSITION": {"capability": "video.transition", "reason": "not a separate type: set CONCAT params.transition"},
 }
@@ -309,8 +322,41 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
             p["anchor"] = {"x": _unit_float(a["x"], what + ".anchor.x"), "y": _unit_float(a["y"], what + ".anchor.y")}
         _frame(params, what, p)
     elif op_type == "RESIZE":
-        _keys(params, what, ("width", "fps"), ("width",))
+        _keys(params, what, ("width", "height", "fps"))
+        if ("width" in params) == ("height" in params):
+            raise EditError("INVALID_REQUEST", f"{what}: give exactly one of width or height")
+        if "width" in params:
+            p["width"] = _even(params["width"], what + ".width")
+        else:
+            p["height"] = _even(params["height"], what + ".height")
+        _frame(params, what, p)
+    elif op_type == "CROP":
+        _keys(params, what, ("x", "y", "width", "height", "fps"), ("x", "y", "width", "height"))
+        p["x"] = _int(params["x"], what + ".x", 0, MAX_DIMENSION)
+        p["y"] = _int(params["y"], what + ".y", 0, MAX_DIMENSION)
         p["width"] = _even(params["width"], what + ".width")
+        p["height"] = _even(params["height"], what + ".height")
+        _frame(params, what, p)
+    elif op_type == "IMAGE_INSERT":
+        _keys(params, what, ("duration", "width", "height", "fps", "zoom", "zoom_amount", "pan"), ("duration",))
+        d = Time.parse(params["duration"], what + ".duration")
+        if not d.value > 0:
+            raise EditError("INVALID_REQUEST", f"{what}.duration: must be > 0")
+        p["duration"] = d
+        if "width" in params:
+            p["width"] = _even(params["width"], what + ".width")
+        if "height" in params:
+            p["height"] = _even(params["height"], what + ".height")
+        if "zoom" in params:
+            p["zoom"] = _enum(params["zoom"], what + ".zoom", ("in", "out"))
+            za = params.get("zoom_amount", 1.3)
+            if isinstance(za, bool) or not isinstance(za, (int, float)) or not za > 1.0:
+                raise EditError("INVALID_REQUEST", f"{what}.zoom_amount: must be a number > 1.0")
+            p["zoom_amount"] = Fraction(repr(float(za))).limit_denominator(1000)
+            if "pan" in params:
+                p["pan"] = _enum(params["pan"], what + ".pan", ("left", "right", "up", "down"))
+        elif "zoom_amount" in params or "pan" in params:
+            raise EditError("INVALID_REQUEST", f"{what}: zoom_amount / pan need zoom")
         _frame(params, what, p)
     elif op_type == "OVERLAY":
         _keys(params, what, ("image", "position", "margin", "scale", "opacity", "start", "end", "fade"), ("image",))
