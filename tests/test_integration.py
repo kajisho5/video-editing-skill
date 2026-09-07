@@ -339,6 +339,20 @@ class OperationE2ETests(unittest.TestCase):
         path, streams = self.facts(out, 6.0)
         self.assertEqual(size(path), (360, 360))
 
+    def test_fill_anchor(self):
+        # docs/decisions.md ADR-009: anchor -> ffmpeg-skill fit.py --crop-x/--crop-y (0.10.0); testsrc2 has
+        # distinguishable content across the frame, so a real anchor change must change the delivered bytes
+        left = self.one({"type": "FILL", "input": "A", "params": {"aspect": "1:1", "width": 200, "anchor": {"x": 0, "y": 0.5}}})
+        lpath, _ = self.facts(left, 6.0)
+        self.assertEqual(size(lpath), (200, 200))
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        right = self.one({"type": "FILL", "input": "A", "params": {"aspect": "1:1", "width": 200, "anchor": {"x": 1, "y": 0.5}}})
+        rpath, _ = self.facts(right, 6.0)
+        self.assertEqual(size(rpath), (200, 200))
+        self.assertNotEqual(sha256_file(lpath), sha256_file(rpath), "a different anchor must crop a different region")
+        self.assertEqual(left["execution"]["operations"][0]["parameters"]["crop_x"], "0.000")
+        self.assertEqual(right["execution"]["operations"][0]["parameters"]["crop_x"], "1.000")
+
     def test_overlay(self):
         out = self.one({"type": "OVERLAY", "input": "A", "params": {"image": "logo", "position": "bottom-left", "start": 1, "end": 3, "fade": 0.25, "opacity": 0.8}})
         path, streams = self.facts(out, 6.0)

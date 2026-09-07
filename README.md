@@ -27,7 +27,7 @@ Provided (capabilities are declared only where an implementation exists):
 | `video.reorder` | order of `CONCAT.inputs` / `CUT.keep` | — |
 | `video.speed` | `SPEED` constant factor 1/4 … 4, pitch-preserved audio | `ffmpeg-skill/fit` |
 | `video.fit` | `FIT` change the aspect, keep every pixel (letterbox / pillarbox with `pad_color`) | `ffmpeg-skill/fit` |
-| `video.fill` | `FILL` change the aspect, keep the centre (scale to cover, centre-crop) | `ffmpeg-skill/fit` |
+| `video.fill` | `FILL` change the aspect, keep the centre by default or a chosen `anchor` (scale to cover, crop) | `ffmpeg-skill/fit` |
 | `video.resize` | `RESIZE` change the size, keep the aspect (`width`, height follows; nothing padded / cropped / stretched) | `ffmpeg-skill/fit` |
 | `video.overlay` | `OVERLAY` still image at a position for a time range | `ffmpeg-skill/overlay` |
 
@@ -237,11 +237,13 @@ One request document on stdin (`-`) or a file, **exactly one** JSON document on 
 
 The three frame operations never overlap (`contract.frame_semantics`, ADR-003): `RESIZE` changes the size and keeps
 the aspect (`width`, `height = even(width × sh / sw)`); `FIT` changes the aspect and keeps every pixel (padded);
-`FILL` changes the aspect and keeps the centre (cropped). FIT / FILL without `width` keep the source width when the
-target aspect is not wider than the source, else `even(sh × aspect)`; `even()` is ffmpeg-skill's rule (round, then up
-to even). The target frame is computed from the probed source *before* execution, reported as
-`normalized.target_frame` in plan steps and operation records, and the output must match it exactly. Rotation
-metadata (a display matrix) is honoured; nothing is ever stretched.
+`FILL` changes the aspect and keeps the centre by default (cropped) — an optional `anchor: {x, y}` (each `0..1`,
+`0.5` default) picks a different edge to keep instead (0.2.0, ADR-009), mapped to ffmpeg-skill 0.10.0's
+`fit.py --crop-x/--crop-y`; it changes what survives the crop, never the target frame size below. FIT / FILL
+without `width` keep the source width when the target aspect is not wider than the source, else `even(sh × aspect)`;
+`even()` is ffmpeg-skill's rule (round, then up to even). The target frame is computed from the probed source
+*before* execution, reported as `normalized.target_frame` in plan steps and operation records, and the output must
+match it exactly. Rotation metadata (a display matrix) is honoured; nothing is ever stretched.
 
 `outputs[].encoding` is the whole encoding surface: `crf` (14..28) and `preset` (x264 vocabulary minus placebo),
 typed and closed, part of the operation's identity, refused where a stream copy would ignore it. Codec (h264, or hevc
@@ -397,7 +399,8 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 - `TRIM` / `CUT` / `SPEED` / `OVERLAY` refuse an input whose frame has an odd width or height (`odd_frame`); the
   frame-changing operations normalize it to even first.
 - The integration HDR fixture is an SDR pattern flagged as HDR (colour tags); real HDR10 / HLG content and tone
-  mapping are not covered. Verified against ffmpeg-skill 0.9.0, 0.9.1 and 0.10.0.
+  mapping are not covered. Verified against ffmpeg-skill 0.9.0, 0.9.1, and 0.10.0 (full real-media integration
+  matrix, 43/43, against a live 0.10.0 checkout).
 - Real rotation metadata (a display matrix) is honoured; a legacy `rotate` tag is ignored by ffmpeg ≥ 5 and therefore
   by this Skill's probe-based normalization (the frame is then the stored one).
 - One video track plus image overlays; no picture-in-picture of video, no audio-only sources, no per-track audio.
@@ -412,7 +415,14 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 
 ## Future extensions
 
-Contract 0.2.0 (ADR-002, `contract.versioning.next`): `CROP` (pixel rectangle) and `IMAGE_INSERT` (still → timed
-clip) once ffmpeg-skill provides typed tools; `RESIZE.height`; `outputs[].encoding` folded into `request_shape`.
-Not planned: `FREEZE` (compose from IMAGE_INSERT), `REVERSE`, `POSITION` (would extend OVERLAY with a video layer).
+**Shipped in 0.2.0** (ADR-009): `FILL.anchor` (which edge the crop keeps, mapping ffmpeg-skill 0.10.0's
+`fit.py --crop-x/--crop-y`) and `outputs[].encoding` named directly in `request_shape`. Both are breaking by this
+repository's own pinning convention; `video-production-agent` must widen `SUPPORTED_SKILL_VERSIONS` before it
+accepts this contract (a known, accepted, disclosed cost — not an oversight).
+
+Contract 0.3.0 candidates, none scheduled (ADR-002 / ADR-003, `contract.versioning.next`): `CROP` (pixel rectangle),
+`IMAGE_INSERT` (still → timed clip), and `RESIZE.height` all wait on ffmpeg-skill shipping a typed tool/flag they
+need — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be blocked this way too
+(`fit.py` has no `--height` flag), not the small addition ADR-003 first described. Not planned: `FREEZE`
+(compose from IMAGE_INSERT), `REVERSE`, `POSITION` (would extend OVERLAY with a video layer).
 Also: an `OVERLAY` that tolerates silent inputs once ffmpeg-skill's overlay terminates on them.

@@ -47,12 +47,33 @@ whose frame computation was implicit. An execution Skill must promise the frame 
   `operations.even`.
 - A source with rotation metadata (±90 / 270, a real display matrix) is measured as displayed (`sw, sh` swapped),
   as the engine does.
-- No operation stretches / distorts. A `height` for `RESIZE` (exactly one of width / height) is a 0.2.0 candidate:
-  it changes the pinned `operations` block.
+- No operation stretches / distorts.
 
 **Consequences.** The target frame is computed before execution (`plan.steps[].normalized.target_frame`,
 `execution.operations[].normalized`) and the output must match it exactly (`VALIDATION_ERROR frame_size`
 otherwise); "the engine picks" no longer exists in the contract (`frame_semantics`).
+
+**Correction (found by live verification against a real ffmpeg-skill 0.10.0 checkout, not assumed): `RESIZE.height`
+is engine-blocked, not a small addition.** This ADR originally listed a `height` alternative to `RESIZE.width`
+(exactly one of the two) as a straightforward 0.2.0 candidate. Re-verifying `fit.py` directly (ffmpeg-skill 0.10.0,
+the only single-video geometry tool in the skill; `--width` is its sole size flag, `height` "follows the aspect")
+shows there is no engine-side way to request a specific output height: this Skill would have to invert the
+width→height formula itself and search for an integer `width` whose fit.py-computed height matches the request
+exactly, which is not guaranteed to exist for an arbitrary source aspect ratio, and unwinding it via computed
+approximation would break the "the target frame is computed before execution and the output must match it exactly"
+guarantee this ADR itself established above. `RESIZE.height` is therefore the same shape of gap as `CROP` /
+`IMAGE_INSERT` (ADR-002): blocked on ffmpeg-skill adding a typed `--height` flag to `fit.py`, not implementable here
+without building the geometry math ADR-001 assigns to the engine boundary. `contract.py`'s `versioning.next` has
+been corrected to say so; it is not withdrawn as a future 0.2.0 item, only reclassified from "ready" to "blocked."
+
+**New 0.2.0 candidate from the same verification pass: `FILL`'s crop anchor.** ffmpeg-skill 0.10.0 added
+`--crop-x` / `--crop-y` to `fit.py` (0=left/top, 0.5=centre default, 1=right/bottom, range-checked engine-side) so
+`--fit crop` no longer always crops from the centre — relevant because `FILL` (this Skill's crop-to-aspect
+operation) currently has no way to say "keep the left third" / "keep the top" when cropping a wide shot to a
+narrower aspect loses a subject held off-centre. This is a genuine, currently-unclaimed 0.2.0 candidate (a new
+optional `FILL` parameter, e.g. `anchor: {x, y}` mapped straight to the existing engine flags — no new engine
+capability needed, unlike `RESIZE.height`) — not decided on or scheduled here; a future session or an explicit
+request should make that call.
 
 ## ADR-004 — Encoding profile: typed, closed, minimal
 
@@ -187,7 +208,43 @@ compare against `ffmpeg-skill`'s `contract_version` instead would be a real, sep
 what is real today, not what the two-axis ideal would eventually look like; this ADR says so explicitly rather
 than let the field imply a compatibility guarantee it does not carry yet.
 
-## ADR-009 — OVERLAY no longer requires audio: `SUPPORTED_MIN` bumped to ffmpeg-skill 0.10.0
+## ADR-009 — 0.2.0: `FILL.anchor` and `outputs[].encoding` formalized in `request_shape`
+
+**Decision.** Release 0.2.0 (`version` `"0.1.0"` → `"0.2.0"`, `contract_version` `"1.0"` → `"2.0"`) ships exactly
+two changes, both already fully designed in ADR-003 / ADR-004 and both verified against real ffmpeg-skill 0.10.0
+and the one known consumer before merging:
+
+- **`FILL` gains an optional `anchor: {x, y}`** (each `0..1`; `0`=left/top, `0.5`=centre — unchanged default when
+  omitted, `1`=right/bottom), mapped straight onto `ffmpeg-skill fit.py`'s `--crop-x`/`--crop-y` (added in 0.10.0;
+  see ADR-003's correction). No new ffmpeg-skill capability is required — `crop_x`/`crop_y` parametrize the same
+  `crop` filter `--fit crop` already used, so `TOOL_REQUIREMENTS["ffmpeg-skill/fit"]` is unchanged. Verified against
+  a real ffmpeg-skill 0.10.0 checkout end-to-end: two `FILL` requests differing only in `anchor` (`x: 0` vs `x: 1`)
+  on a source with distinguishable left/right content produced different delivered bytes (`tests/test_integration.py`
+  `test_fill_anchor`), not just different compiled flags.
+- **`outputs[].encoding` is now named directly in `request_shape`** (`contract.py`'s `request_shape.project.outputs[]`),
+  not only in the separate `contract.encoding.request_field` pointer ADR-004 used as a stopgap. No behavior changes:
+  the key has been accepted since 0.1.0.
+
+**Why both in one release, and why now.** Neither is urgent alone — `anchor` is a genuine new capability but a
+small one; the `encoding` move is purely representational. Bundling them pays the one-time cost of a breaking
+release (below) once for both, rather than twice.
+
+**The real cost, stated plainly, not glossed over.** Both changes touch blocks this repository's own tooling treats
+as pinned (`operations` is a formal `PINNED_BLOCKS` member; `request_shape` is `also_pinned_by_agents`), so
+`contract_check.check_saved()` classifies this release as breaking, not additive — correctly. Concretely, this
+means `video-production-agent`'s adapter (`SUPPORTED_SKILL_VERSIONS = ("0.1.",)` in
+`src/video_agent/tools/video_editing/adapter.py`) will reject this Skill's `0.2.0` contract via `check_contract()`
+until that repository's own maintainers widen the accepted range — a real, external, out-of-repo action this
+release depends on and cannot itself perform (ADR-001: never edit `video-production-agent` from here). This is the
+anticipated, accepted consequence of a deliberate breaking version bump (docs/contract.md), not an oversight; it
+was disclosed and explicitly authorized before this release was cut, rather than discovered by the agent's
+maintainers after the fact.
+
+**Not included.** `RESIZE.height` stays out (ADR-003: blocked on ffmpeg-skill, `fit.py` has no `--height` flag);
+`CROP`, `IMAGE_INSERT` stay out (ADR-002: blocked on ffmpeg-skill); `FREEZE`, `REVERSE`, `POSITION` remain not
+planned. `contract.py`'s `versioning.next` now lists these under `"0.3.0"`.
+
+## ADR-010 — OVERLAY no longer requires audio: `SUPPORTED_MIN` bumped to ffmpeg-skill 0.10.0
 
 **Decision.** `ffmpeg_skill.py`'s `SUPPORTED_MIN` moves from `(0, 9, 0)` to `(0, 10, 0)`. `OVERLAY`'s
 `MEDIA["OVERLAY"]["requires"]["audio"]` moves from `True` to `False`: an audio-less video input is no longer refused
