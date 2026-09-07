@@ -214,8 +214,8 @@ if __name__ == "__main__":
 class OperationE2ETests(unittest.TestCase):
     """Real ffmpeg-skill + real media, one operation at a time: every delivered file exists, is non-empty, hashes as
     reported, has the expected duration, streams and frame, and the timeline says where it came from. Every document
-    passes the response self-check. Plus the media-compatibility refusals that protect the engine (an overlay on a
-    video without audio would never terminate in ffmpeg-skill 0.9.x; a corrupt image would too)."""
+    passes the response self-check. Plus the media-compatibility refusals that protect the engine (a corrupt image
+    would never terminate)."""
 
     @classmethod
     def setUpClass(cls):
@@ -363,14 +363,14 @@ class OperationE2ETests(unittest.TestCase):
         srcs = {s["id"]: s for s in out["execution"]["sources"]}
         self.assertEqual(srcs["logo"]["observation"]["data"]["video"]["width"], 120)
 
-    def test_overlay_without_audio_is_refused_before_the_engine(self):
+    def test_overlay_on_audio_less_input_terminates_and_is_bounded(self):
+        """ffmpeg-skill >=0.10.0's overlay.py bounds the looped-image composite with an explicit -t instead of
+        -shortest, so this must complete promptly and land at the source's own duration (ADR-009)."""
         t0 = time.monotonic()
-        out = self.one({"type": "OVERLAY", "input": "NA", "params": {"image": "logo"}}, expect=3)
-        self.assertEqual((out["error"]["code"], out["error"]["details"]["reason"]), ("INVALID_INPUT", "audio_required"))
-        self.assertLess(time.monotonic() - t0, 30, "refused up front, not after a hung ffmpeg")
-        self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
-        work = os.path.join(self.ws, ".video-editing", "work")
-        self.assertFalse(os.path.isdir(work) and any(os.scandir(work)), "no tool ran")
+        out = self.one({"type": "OVERLAY", "input": "NA", "params": {"image": "logo", "position": "bottom-left", "start": 1, "end": 3, "fade": 0.25}})
+        self.assertLess(time.monotonic() - t0, 30, "an explicit -t bounds it; this must not run anywhere near a hang-shaped timeout")
+        path, streams = self.facts(out, 4.0)
+        self.assertFalse(self.has_audio(streams), "NA has no audio stream; OVERLAY keeps the input's audio profile (none)")
 
     def test_corrupt_image_is_refused_before_the_engine(self):
         out = self.one({"type": "OVERLAY", "input": "A", "params": {"image": "bad"}}, expect=3, sources=self.sources(bad=True))

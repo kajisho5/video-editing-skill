@@ -93,7 +93,7 @@ and derived from `OPERATIONS` — it cannot say anything `tools[]` doesn't alrea
 
 ## `dependencies` (docs/decisions.md ADR-008)
 
-`dependencies` is `[{"skill_id": "ffmpeg-skill", "version_range": ">=0.9.0,<1.0.0"}]` — the exact range
+`dependencies` is `[{"skill_id": "ffmpeg-skill", "version_range": ">=0.10.0,<1.0.0"}]` (ADR-009) — the exact range
 `ffmpeg_skill.py`'s `version_supported()` already enforces at runtime, computed once
 (`contract.ffmpeg_skill_version_range()`) and shared with `engine.version_range` so the two never disagree. It adds
 no new guarantee over what `doctor --json` already reports; it makes an existing runtime fact readable from

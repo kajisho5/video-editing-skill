@@ -90,7 +90,7 @@ class FakeEngineTests(unittest.TestCase):
         self.assertEqual(out["status"], "completed")
         rec = out["execution"]["operations"][0]
         self.assertEqual(rec["status"], "completed")
-        self.assertEqual(rec["tool_versions"], {"ffmpeg-skill": "0.9.0", "ffmpeg": "fake-6.0", "ffprobe": "fake-6.0"})
+        self.assertEqual(rec["tool_versions"], {"ffmpeg-skill": "0.10.0", "ffmpeg": "fake-6.0", "ffprobe": "fake-6.0"})
         self.assertTrue(os.path.isfile(out["execution"]["outputs"][0]["path"]))
         self.assertTrue(out["execution"]["outputs"][0]["delivered"])
         # the engine flags are the compiled ones, nothing more
@@ -251,17 +251,13 @@ class PreExecutionAndResponseTests(FakeEngineHarness):
     candidate is re-validated and re-run, a failure marks the operations after it as skipped, and every document the
     CLI prints passes the response self-check (contract shape)."""
 
-    def test_overlay_without_audio_refused_before_any_tool_runs(self):
+    def test_overlay_on_audio_less_input_runs(self):
+        """ffmpeg-skill >=0.10.0's overlay.py bounds a looped-image overlay with an explicit -t instead of
+        -shortest, so OVERLAY no longer requires audio up front (ADR-009)."""
         doc = request(self.sources(), [{"id": "o", "type": "OVERLAY", "input": "NA", "params": {"image": "logo"}}], [{"id": "x", "operation": "o", "path": "out/o.mp4"}])
-        rc, out = self.run_(doc, expect=EXIT_CODES["INVALID_INPUT"])
-        self.assertEqual((out["error"]["code"], out["error"]["details"]["reason"], out["error"]["retryable"]), ("INVALID_INPUT", "audio_required", False))
-        self.assertEqual(self.calls(), [], "nothing ran")
-        rc, out = self.run_(doc, "plan", expect=EXIT_CODES["INVALID_INPUT"])
-        # the same request on a source with audio works, and a CONCAT that brings audio in satisfies the overlay
-        ok = request(self.sources(), [{"id": "c", "type": "CONCAT", "inputs": ["NA", "A"], "params": {}}, {"id": "o", "type": "OVERLAY", "input": "c", "params": {"image": "logo"}}],
-                     [{"id": "x", "operation": "o", "path": "out/o.mp4"}])
-        rc, out = self.run_(ok, expect=0)
+        rc, out = self.run_(doc, expect=0)
         self.assertEqual(out["status"], "completed")
+        self.assertNotEqual(self.calls(), [], "the overlay tool ran")
 
     def test_undecodable_image_is_invalid_input(self):
         doc = request(self.sources(bad=True), [{"id": "o", "type": "OVERLAY", "input": "A", "params": {"image": "bad"}}], [{"id": "x", "operation": "o", "path": "out/o.mp4"}])
@@ -343,7 +339,7 @@ class PreExecutionAndResponseTests(FakeEngineHarness):
         self.assertIsNone(srcs["NA"]["observation"]["data"]["audio"])
         self.assertEqual(srcs["logo"]["kind"], "image")
         self.assertEqual(ex["engine"]["id"], "ffmpeg-skill")
-        self.assertEqual(ex["engine"]["version"], "0.9.0")
+        self.assertEqual(ex["engine"]["version"], "0.10.0")
         self.assertEqual(ex["outputs"][0]["operation_id"], ex["operations"][0]["operation_id"])
         self.assertEqual(ex["outputs"][0]["container"], ".mp4")
         # the same request text hashes the same; a different one differently

@@ -243,3 +243,38 @@ maintainers after the fact.
 **Not included.** `RESIZE.height` stays out (ADR-003: blocked on ffmpeg-skill, `fit.py` has no `--height` flag);
 `CROP`, `IMAGE_INSERT` stay out (ADR-002: blocked on ffmpeg-skill); `FREEZE`, `REVERSE`, `POSITION` remain not
 planned. `contract.py`'s `versioning.next` now lists these under `"0.3.0"`.
+
+## ADR-010 — OVERLAY no longer requires audio: `SUPPORTED_MIN` bumped to ffmpeg-skill 0.10.0
+
+**Decision.** `ffmpeg_skill.py`'s `SUPPORTED_MIN` moves from `(0, 9, 0)` to `(0, 10, 0)`. `OVERLAY`'s
+`MEDIA["OVERLAY"]["requires"]["audio"]` moves from `True` to `False`: an audio-less video input is no longer refused
+before execution (`INVALID_INPUT audio_required`, ADR-005's canonical example of the refuse-before-a-hang policy).
+
+**Why.** ADR-005 refused `OVERLAY` on audio-less inputs because ffmpeg-skill 0.9.x's `overlay.py --image` composites
+a looped still (`-loop 1`) with `-shortest`, and `-shortest` cannot bound that looped stream's end without an audio
+stream in the mix to help the muxer decide when to stop — the documented failure mode was not merely a few seconds
+too long (ffmpeg-skill's own CHANGELOG 0.10.0 entry, "`overlay.py --image` length on FFmpeg 7+", describes exactly
+that milder symptom) but an unbounded run. ffmpeg-skill 0.10.0 already fixed the milder case by adding an explicit
+`-t <video duration>` after the filter graph — a bound that does not depend on audio being present at all.
+
+Verified directly, not assumed: OVERLAY was run through ffmpeg-skill's own `overlay.py` (0.10.0, unmodified) against
+one of the user's real, audio-less 1080p60 H.264 clips (no synthetic fixture) composited with a real photo, at the
+actual position/fade/enable-window parameters `video-production-agent` generates, with a generous timeout — it
+completed in ~41 s (not a hang) with the output landing at the source's exact duration. A first pass at this
+investigation mistook a too-short 40 s timeout for a hang on the same command (the process was still transcoding a
+1080p60 frame with a fade filter, not stuck); re-running with a longer timeout was what caught the false positive
+before a needless code change shipped — a reminder that "didn't finish by my timeout" and "will never finish" are
+different claims, and only ffmpeg's own exit code (or a timeout long enough to be conclusive) tells them apart.
+`ffmpeg-skill/tests/test_all.py` gained `test_overlay_on_audio_less_video_terminates` to close the coverage gap
+(every prior overlay test used a source with audio); this repository's own `tests/test_unit.py`,
+`tests/test_integration.py` and `tests/test_engine_contract.py` overlay-without-audio tests were rewritten from
+"refused" to "runs and is bounded" for the same reason.
+
+**Consequences.** `engine.version_range` and `dependencies[0].version_range` (ADR-008) move from `>=0.9.0,<1.0.0` to
+`>=0.10.0,<1.0.0` — an additive contract change (`engine`/`dependencies` are explicitly non-pinned blocks), but one
+that a consumer comparing against a vendored contract snapshot will see as drift on the `engine` key specifically
+(`video-production-agent`'s `contract_drift()` lists `engine` in `DRIFT_KEYS`). `video-production-agent`'s vendored
+`contract_0.1.0.json` was updated in the same change so its drift check does not start reporting `video-editing` as
+MISSING the moment this lands. Anyone still running ffmpeg-skill 0.9.x now fails `version_supported()` outright
+(previously they could run every operation except `OVERLAY` on audio-less input); this is intentional — 0.9.x's
+`overlay.py` carries the unbounded-run defect for exactly the input shape this ADR now allows through.

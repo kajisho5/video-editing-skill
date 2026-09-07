@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-009). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-010). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -64,7 +64,8 @@ sandboxed session. `.github/workflows/tests.yml` runs both, matrixed across OS/P
 ## Ecosystem relationships (verify live, never assume — these repos evolve independently)
 
 - **`ffmpeg-skill`** (dependency) — the only FFmpeg boundary. Version range pinned in
-  `ffmpeg_skill.py` (`SUPPORTED_MIN` / `SUPPORTED_MAX_EXCLUSIVE`, currently `>=0.9.0,<1.0.0`).
+  `ffmpeg_skill.py` (`SUPPORTED_MIN` / `SUPPORTED_MAX_EXCLUSIVE`, currently `>=0.10.0,<1.0.0`,
+  bumped from `>=0.9.0` in ADR-010).
   Verified against 0.9.0, 0.9.1, and 0.10.0 as of this writing (full real-media integration
   matrix green against a live 0.10.0 checkout); re-verify `fit.py` / `join.py` / `overlay.py`
   geometry and behavior before raising the ceiling. **Known real gap, found by live
@@ -74,13 +75,17 @@ sandboxed session. `.github/workflows/tests.yml` runs both, matrixed across OS/P
   how ADR-003 originally framed it; still blocked, next candidate is `contract.versioning.next["0.3.0"]`.
   0.10.0's `fit.py --crop-x`/`--crop-y` (which edge `FILL`'s crop keeps) was mapped into `FILL.anchor`
   in 0.2.0 (ADR-009) — verified end-to-end against a real 0.10.0 checkout (different anchors produce
-  different delivered bytes, `tests/test_integration.py::test_fill_anchor`).
+  different delivered bytes, `tests/test_integration.py::test_fill_anchor`). ADR-010 separately
+  verified 0.10.0's `overlay.py` bounds a looped-image composite with an explicit `-t` instead of
+  `-shortest`, so `OVERLAY` no longer refuses an audio-less video input up front.
 - **`video-production-agent`** (consumer) — the only known caller. Its adapter
   (`src/video_agent/tools/video_editing/adapter.py`, `check_contract()`) range-checks `version`
-  against `("0.1.",)` and validates the pinned blocks; it does not (yet) read `contract_version`.
-  **This means it will reject this Skill's 0.2.0 contract until its own maintainers widen that
-  range** — a known, accepted, disclosed consequence of the ADR-009 breaking release, not a bug to
-  fix from here. Never edit that repo from here — verify compatibility by reading its adapter code
+  and validates the pinned blocks; it does not (yet) read `contract_version`.
+  **0.2.0 was a breaking release** (`SUPPORTED_SKILL_VERSIONS` there needed widening from `("0.1.",)`
+  to include `"0.2."` before it would accept this contract) — a known, accepted, disclosed
+  consequence of the ADR-009 breaking release, not a bug to fix from here; ADR-010's engine-version
+  bump is additive on top and only affects `contract_drift()`'s `engine` key, not `check_contract()`.
+  Never edit that repo from here — verify compatibility by reading its adapter code
   and, ideally, running its `check_contract()` against this repo's live `skill_contract()` before
   merging a contract change (see PR #3's description for the pattern).
 - **`AI-video-production-OS`** (parent architecture repo) — defines the cross-repository
@@ -122,6 +127,12 @@ exception to ADR-001.
   Breaking by this repo's own convention: `version` 0.1.0 → 0.2.0, `contract_version` "1.0" → "2.0".
   `video-production-agent` needs its own follow-up to widen `SUPPORTED_SKILL_VERSIONS` before it
   accepts this contract — a known, disclosed, explicitly-authorized consequence, not an oversight.
+- PR #9 (ADR-010) — `OVERLAY` no longer requires audio: ffmpeg-skill 0.10.0 bounds its looped-image
+  composite with an explicit `-t` instead of the audio-dependent `-shortest`, verified against real,
+  audio-less footage. `SUPPORTED_MIN` moves to `>=0.10.0,<1.0.0` (additive: `engine`/`dependencies`
+  are non-pinned blocks, but `video-production-agent`'s `contract_drift()` still lists `engine`, so
+  its vendored snapshot needs the same one-field refresh PR #5/#28/#29 established the pattern for
+  — done in the same change, alongside the `SUPPORTED_SKILL_VERSIONS` widening PR #8 already needed).
 
 ## Picking the next task
 
