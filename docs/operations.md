@@ -11,7 +11,7 @@ name an execution escape hatch (`command`, `argv`, `shell`, `filter`, `env`, `ap
 | `TRIM` | `input` (video) | **start**, **end**, precision `frame` \| `keyframe` | `ffmpeg-skill/cut` |
 | `CUT` | `input` (video) | **keep** `[{start, end}, …]` (output order), precision | `ffmpeg-skill/cut` |
 | `CONCAT` | `inputs` (2..100 videos) | transition `{type, duration}`, width, height, fps, mode `pad` \| `crop`, pad_color | `ffmpeg-skill/join` |
-| `SPEED` | `input` (video) | **factor** in [1/4, 4], not 1 | `ffmpeg-skill/fit` |
+| `SPEED` | `input` (video) | **factor** in [1/4, 4], not 1; smooth `blend \| interpolate` (optional) | `ffmpeg-skill/fit` |
 | `FIT` | `input` (video) | **aspect** `W:H`, width, pad_color, fps | `ffmpeg-skill/fit` |
 | `FILL` | `input` (video) | **aspect** `W:H`, width, anchor `{x, y}` each 0..1, fps | `ffmpeg-skill/fit` |
 | `RESIZE` | `input` (video) | **width** (even), fps | `ffmpeg-skill/fit` |
@@ -34,6 +34,15 @@ integers; times are exact rationals. See `contract.operations` for the documente
 always the centre (`0`=left/top, `0.5`=centre — the default when `anchor` is omitted, `1`=right/bottom); maps
 directly to `ffmpeg-skill fit.py`'s `--crop-x`/`--crop-y` (0.10.0). It changes *what part* of the frame survives,
 never the target frame size — the size rule above is unaffected.
+
+`SPEED.smooth` (docs/decisions.md ADR-012, 0.4.0): optional `blend | interpolate`, mapped directly to `ffmpeg-skill
+fit.py`'s pre-existing `--smooth` flag (`--smooth none` is `fit.py`'s own default and is never emitted; omitting
+`smooth` compiles to the exact argv it always did). `fit.py` only applies it when the computed speed factor is a
+slow-down (`factor < 1`, i.e. `SPEED.factor < 1`, a wider `setpts`) — `blend` frame-blends, `interpolate`
+motion-interpolates (slower to encode, more fluid); for a speed-up (`factor > 1`) `fit.py` accepts the flag but its
+effect is a no-op, exactly as passing it to `fit.py` directly would be. This Skill does not add its own refusal for
+that combination: it reproduces `fit.py`'s own behaviour rather than inventing a stricter rule the engine itself
+does not enforce.
 
 `ROTATE` (docs/decisions.md ADR-011, 0.3.0): `{degrees?: 90 | 180 | 270, flip?: h | v}`, at least one of the two
 required, mapped directly to `ffmpeg-skill fit.py`'s pre-existing `--rotate`/`--flip` flags (rotate applied before

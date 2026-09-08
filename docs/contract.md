@@ -82,18 +82,29 @@ was accepted.
 convention (`operations` and `capabilities` both gained a key) — `video-production-agent`'s
 `SUPPORTED_SKILL_VERSIONS = ("0.1.",)` must widen before it accepts this contract, the same disclosed cost as 0.2.0
 (ADR-009). `kajisho5/video-editing-skill#11` items 2 (`OVERLAY` video-layer / chroma-key) and 3 (`stabilize` /
-`sequence` / `background` ownership) are deliberately **not** part of this release; see `versioning.next["0.4.0"]`.
+`sequence` / `background` ownership) are deliberately **not** part of this release; see `versioning.next["0.4.0"]`
+(now shipped as 0.4.0, superseded by `versioning.next["0.5.0"]` below).
 
-## 0.4.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011, `kajisho5/video-editing-skill#11`)
+## 0.4.0 (shipped; docs/decisions.md ADR-012)
 
-`versioning.next["0.4.0"]` lists breaking-change candidates for a future version, none currently in progress:
+`version` `0.3.0` → `0.4.0`, `contract_version` `"3.0"` → `"4.0"`: `SPEED` gained an optional `smooth: blend |
+interpolate` parameter, mapped straight onto `ffmpeg-skill fit.py`'s pre-existing `--smooth` flag — no new
+ffmpeg-skill capability needed. Breaking by this repository's own pinning convention (`operations.SPEED.parameters`
+gained a key, the same shape of change ADR-009's `FILL.anchor` was) — `video-production-agent`'s
+`SUPPORTED_SKILL_VERSIONS = ("0.1.",)` must widen before it accepts this contract, the same disclosed cost as 0.2.0
+/ 0.3.0. Purely additive at the request level: a `SPEED` request that omits `smooth` compiles to the exact `argv`
+it always did (`--smooth` is only emitted when given).
+
+## 0.5.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011, `kajisho5/video-editing-skill#11`)
+
+`versioning.next["0.5.0"]` lists breaking-change candidates for a future version, none currently in progress:
 `CROP` and `IMAGE_INSERT` once ffmpeg-skill ships typed tools for them, and `RESIZE.height` — found, by live
 verification against ffmpeg-skill 0.10.0, to be blocked the same way as `CROP`/`IMAGE_INSERT` (`fit.py` has no
 `--height` flag), not the small addition it was first framed as; `OVERLAY` video-layer + chroma-key parameters
 (`overlay.py --video`/`--chromakey`), per ADR-002's own "extend OVERLAY rather than add a type" prescription —
 flagged by issue #11 item 2, not decided or scheduled; and capability ownership for `stabilize` / `sequence` /
 `background` (issue #11 item 3) — undecided whether they belong here, elsewhere, or nowhere. `FREEZE`, `REVERSE`
-and `POSITION` are not planned. Until one of these actually ships, 0.3.x grows only additively.
+and `POSITION` are not planned. Until one of these actually ships, 0.4.x grows only additively.
 
 ## `provides` (docs/decisions.md ADR-006)
 

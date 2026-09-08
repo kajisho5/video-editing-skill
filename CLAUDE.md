@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-011). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-012). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -29,8 +29,8 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 Two independent version axes, both on `skill_contract()`:
 
-- **`version`** (currently `"0.3.0"`) — this package's release version. Free to move on any release.
-- **`contract_version`** (currently `"3.0"`) — the version of the *pinned shape*
+- **`version`** (currently `"0.4.0"`) — this package's release version. Free to move on any release.
+- **`contract_version`** (currently `"4.0"`) — the version of the *pinned shape*
   (`PINNED_BLOCKS` in `contract.py`). Bumps only when a pinned block changes in a breaking way.
   A dependent pins a range against `contract_version`, never `version`.
 
@@ -83,14 +83,19 @@ sandboxed session. `.github/workflows/tests.yml` runs both, matrixed across OS/P
   ffmpeg-skill tools (`probe`, `cut`, `join`, `fit`, `overlay`) — `ROTATE` is a new *type* on the
   already-used `fit` tool, not a new engine tool. ffmpeg-skill 0.11.0 also shipped a video-layer +
   chroma-key `overlay.py` extension and `stabilize.py` / `sequence.py` / `background.py`, none of
-  which are decided here yet — see `kajisho5/video-editing-skill#11` items 2 and 3.
+  which are decided here yet — see `kajisho5/video-editing-skill#11` items 2 and 3. `fit.py`'s
+  `--smooth {none,blend,interpolate}` flag (also pre-existing, verified directly against the real
+  checkout) was mapped into an optional `SPEED.smooth` parameter in 0.4.0 (ADR-012) — again the
+  already-used `fit` tool, not a new one; it only affects `fit.py`'s own slow-down branch
+  (`factor < 1.0`), a no-op on a speed-up, exactly as passing it to `fit.py` directly would be.
 - **`video-production-agent`** (consumer) — the only known caller. Its adapter
   (`src/video_agent/tools/video_editing/adapter.py`, `check_contract()`) range-checks `version`
   and validates the pinned blocks; it does not (yet) read `contract_version`.
-  **0.2.0 and 0.3.0 were both breaking releases** (`SUPPORTED_SKILL_VERSIONS` there needed widening
-  from `("0.1.",)` to include `"0.2."`, then `"0.3."`, before it would accept these contracts) — a
-  known, accepted, disclosed consequence of the ADR-009 / ADR-011 breaking releases, not a bug to
-  fix from here; ADR-010's engine-version bump is additive on top and only affects
+  **0.2.0, 0.3.0 and 0.4.0 were all breaking releases** (`SUPPORTED_SKILL_VERSIONS` there needed
+  widening from `("0.1.",)` to include `"0.2."`, then `"0.3."`, then `"0.4."`, before it would accept
+  these contracts) — a known, accepted, disclosed consequence of the ADR-009 / ADR-011 / ADR-012
+  breaking releases, not a bug to fix from here; ADR-010's engine-version bump is additive on top and
+  only affects
   `contract_drift()`'s `engine` key, not `check_contract()`.
   Never edit that repo from here — verify compatibility by reading its adapter code
   and, ideally, running its `check_contract()` against this repo's live `skill_contract()` before
@@ -146,7 +151,7 @@ exception to ADR-001.
   case as of this entry — verify its actual state on GitHub before assuming either way). Not
   addressed by this entry; if it later merges, whichever of it and the entry below lands second
   needs a version-number rebase, the same situation ADR-010 already had with PR #9.
-- (this change, 0.3.0, ADR-011; issue `kajisho5/video-editing-skill#11` item 1 only — items 2 and 3
+- PR #12 (merged, 0.3.0, ADR-011; issue `kajisho5/video-editing-skill#11` item 1 only — items 2 and 3
   are explicitly out of scope) — a new typed `ROTATE` operation (`{degrees?: 90 | 180 | 270,
   flip?: h | v}`, at least one required), mapped straight onto `ffmpeg-skill fit.py`'s pre-existing
   `--rotate`/`--flip` flags (predates ADR-002 entirely; never evaluated until now). Groups with
@@ -156,11 +161,24 @@ exception to ADR-001.
   `operations` and `capabilities` both gained a key) — `video-production-agent` needs the same
   `SUPPORTED_SKILL_VERSIONS` widening ADR-009 already required. Real-media integration test added
   (`tests/test_integration.py::OperationE2ETests::test_rotate`); golden contract regenerated.
+- (this change, 0.4.0, ADR-012; issue `kajisho5/video-editing-skill#13`) — `SPEED` gains an optional
+  `smooth: blend | interpolate` parameter, mapped straight onto `ffmpeg-skill fit.py`'s pre-existing
+  `--smooth` flag (verified directly against the real checkout: applies only inside `fit.py`'s own
+  `factor < 1.0` slow-down branch, a no-op for a speed-up, no interaction with `--method`/
+  `--max-speed`). No new operation type, no new engine tool — `SPEED.factor`'s existing behaviour and
+  validation are unchanged, and omitting `smooth` compiles to byte-identical `argv` to before this
+  change. `version` 0.3.0 → 0.4.0, `contract_version` "3.0" → "4.0" (breaking by this repo's own
+  convention: `operations.SPEED.parameters` gained a key, the same shape of change ADR-009's
+  `FILL.anchor` was) — `video-production-agent` needs the same `SUPPORTED_SKILL_VERSIONS` widening
+  ADR-009 / ADR-011 already required. Real-media integration test added
+  (`tests/test_integration.py`: `SPEED` with `smooth="blend"` and `smooth="interpolate"` against a
+  slow-down factor, asserting distinct output bytes from each other and from the no-`smooth`
+  baseline); golden contract regenerated.
 
 ## Picking the next task
 
 There is no standing task queue; the next gap is found, not assigned. To find it: re-read this
-file and `docs/decisions.md` for anything marked planned-but-undone (e.g. `contract.versioning.next["0.4.0"]`
+file and `docs/decisions.md` for anything marked planned-but-undone (e.g. `contract.versioning.next["0.5.0"]`
 and `kajisho5/video-editing-skill#11` items 2 and 3), re-check `AI-video-production-OS`'s
 `docs/ROADMAP.md` / `docs/ECOSYSTEM_CHANGELOG.md` for
 this Skill's outstanding per-repo items, and re-run `contract --check` and the test suite to make

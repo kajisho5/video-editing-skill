@@ -17,7 +17,7 @@ ENCODING_FLAGS = ("crf", "preset")   # the typed encoding profile (operations.va
 ALLOWED_FLAGS: Dict[str, tuple] = {
     "cut": ("start", "end", "segments", "accurate") + ENCODING_FLAGS,
     "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color") + ENCODING_FLAGS,
-    "fit": ("duration", "method", "max_speed", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps", "rotate", "flip") + ENCODING_FLAGS,
+    "fit": ("duration", "method", "max_speed", "smooth", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps", "rotate", "flip") + ENCODING_FLAGS,
     "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
     "probe": (),
 }
@@ -109,6 +109,8 @@ def _compile(op: EditOperation) -> Step:
         return Step(op, "ffmpeg-skill/join", args, video_inputs)
     if op.type == "SPEED":
         args = {"_factor": fraction_text(p["factor"]), "method": "speed", "max_speed": "4"}
+        if "smooth" in p:
+            args["smooth"] = p["smooth"]
         return Step(op, "ffmpeg-skill/fit", args, video_inputs, needs_input_duration=True)
     if op.type in ("FIT", "FILL"):
         args = {"aspect": p["aspect"], "fit": "pad" if op.type == "FIT" else "crop"}

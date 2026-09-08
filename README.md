@@ -25,7 +25,7 @@ Provided (capabilities are declared only where an implementation exists):
 | `video.concat` | `CONCAT` join ≥ 2 inputs in order, conform size / fps | `ffmpeg-skill/join` |
 | `video.transition` | `CONCAT` with `params.transition` (xfade family) | `ffmpeg-skill/join` |
 | `video.reorder` | order of `CONCAT.inputs` / `CUT.keep` | — |
-| `video.speed` | `SPEED` constant factor 1/4 … 4, pitch-preserved audio | `ffmpeg-skill/fit` |
+| `video.speed` | `SPEED` constant factor 1/4 … 4, pitch-preserved audio, optional slow-motion `smooth` (blend / interpolate) | `ffmpeg-skill/fit` |
 | `video.fit` | `FIT` change the aspect, keep every pixel (letterbox / pillarbox with `pad_color`) | `ffmpeg-skill/fit` |
 | `video.fill` | `FILL` change the aspect, keep the centre by default or a chosen `anchor` (scale to cover, crop) | `ffmpeg-skill/fit` |
 | `video.resize` | `RESIZE` change the size, keep the aspect (`width`, height follows; nothing padded / cropped / stretched) | `ffmpeg-skill/fit` |
@@ -413,6 +413,8 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
   A `keyframe` precision `TRIM` / `CUT` may stream-copy and land on a keyframe (tolerance 1.5 s in validation).
 - Source durations come from the container; ranges are checked against them with 0.1 s slack.
 - `SPEED` computes its target duration from the timeline; the tool retimes to that duration (audio via `atempo`).
+  Optional `smooth: blend | interpolate` (0.4.0, ADR-012) maps to `fit.py`'s own `--smooth` flag and only affects a
+  slow-down (`factor < 1`); `fit.py` itself ignores it for a speed-up, and this Skill does not add a stricter rule.
 - Reuse records are trusted on key + hash; the work directory is not pruned automatically.
 - Windows: reserved names, short (8.3) names, case-insensitive spellings and drive letters are handled and tested
   on CI's Windows runner (unit suites); real-media execution on Windows / macOS is not part of CI (ffmpeg is
@@ -430,7 +432,12 @@ required), mapping straight onto ffmpeg-skill `fit.py`'s pre-existing `--rotate`
 capability needed. Breaking by the same pinning convention as 0.2.0 (`operations` and `capabilities` both gained a
 key); `video-production-agent` must widen `SUPPORTED_SKILL_VERSIONS` again.
 
-Contract 0.4.0 candidates, none scheduled (ADR-002 / ADR-003, `contract.versioning.next`, `kajisho5/video-editing-skill#11`):
+**Shipped in 0.4.0** (ADR-012): `SPEED` gained an optional `smooth: blend | interpolate`, mapping straight onto
+ffmpeg-skill `fit.py`'s pre-existing `--smooth` flag — no new engine capability needed. Breaking by the same pinning
+convention as 0.2.0 / 0.3.0 (`operations.SPEED.parameters` gained a key); `video-production-agent` must widen
+`SUPPORTED_SKILL_VERSIONS` again. Omitting `smooth` compiles to the exact `argv` a `SPEED` request always produced.
+
+Contract 0.5.0 candidates, none scheduled (ADR-002 / ADR-003, `contract.versioning.next`, `kajisho5/video-editing-skill#11`):
 `CROP` (pixel rectangle), `IMAGE_INSERT` (still → timed clip), and `RESIZE.height` all wait on ffmpeg-skill shipping
 a typed tool/flag they need — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be
 blocked this way too (`fit.py` has no `--height` flag), not the small addition ADR-003 first described. Flagged but

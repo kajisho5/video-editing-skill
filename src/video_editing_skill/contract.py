@@ -33,7 +33,8 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
     "CONCAT": {"transition": "{type: " + "|".join(TRANSITIONS) + ", duration: time 0.01..10} (optional)",
                "width": "even int (optional)", "height": "even int (optional)", "fps": "number or N/D (optional)",
                "mode": "pad | crop (how inputs of another aspect reach the frame)", "pad_color": "named colour or 0xRRGGBB"},
-    "SPEED": {"factor": "number or N/D in [1/4, 4], not 1"},
+    "SPEED": {"factor": "number or N/D in [1/4, 4], not 1",
+              "smooth": "blend | interpolate (optional; slow-motion quality when factor < 1 -- ffmpeg-skill fit.py ignores it when speeding up)"},
     "FIT": {"aspect": "W:H", "width": "even int (optional)", "pad_color": "named colour or 0xRRGGBB", "fps": "optional"},
     "FILL": {"aspect": "W:H", "width": "even int (optional)",
              "anchor": "{x, y} each 0..1: which edge the crop keeps (0=left/top, 0.5=centre default, 1=right/bottom) (optional)", "fps": "optional"},
@@ -180,7 +181,7 @@ def skill_contract() -> Dict[str, Any]:
                                "allowed within the same contract_version; the golden copy tests/contract/contract.json is regenerated deliberately in "
                                "the same change, and `contract --check` classifies every difference as breaking or additive",
                        "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
-                       "next": {"0.4.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
+                       "next": {"0.5.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
                                          "(docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
                                          "CROP (pixel rectangle) once ffmpeg-skill provides a typed crop tool", "IMAGE_INSERT (still -> timed clip) once ffmpeg-skill provides a typed tool",
                                          "OVERLAY video-layer + chroma-key params (ffmpeg-skill overlay.py --video/--chromakey), per ADR-002's own \"extend OVERLAY rather than add a "

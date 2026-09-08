@@ -344,3 +344,54 @@ accepted for `FILL.anchor`; `video-production-agent`'s `SUPPORTED_SKILL_VERSIONS
 again. `contract.versioning.next` renames its `"0.3.0"` key to `"0.4.0"` and gains explicit, undecided entries for
 issue #11 items 2 and 3, alongside the still-blocked `RESIZE.height` / `CROP` / `IMAGE_INSERT` candidates ADR-002 /
 ADR-003 already named. `tests/contract/contract.json` is regenerated in the same change.
+
+## ADR-012 — 0.4.0: `SPEED.smooth`, a new optional parameter on an existing operation (`fit.py --smooth`)
+
+**Context.** `kajisho5/video-editing-skill#13` asks for `SPEED` to surface `fit.py`'s slow-motion quality control.
+Read directly from the real ffmpeg-skill checkout (`ffmpeg-skill/scripts/fit.py`, the same discipline ADR-011
+followed for `--rotate`/`--flip`), not assumed from the issue text: `--smooth {none,blend,interpolate}` (default
+`none`) lives in the `duration` argument group, next to `--method` and `--max-speed`. It is applied inside the
+`--method speed` branch only, and only on the slow-down leg of it: after `setpts=1/factor*PTS` is appended to the
+video filter chain, `fit.py` checks `factor < 1.0` (a slow-down — `factor` there is `src_duration / target`, the
+same direction this Skill's own `SPEED.factor` already uses, verified against `compiler.py`'s existing `_compile`
+branch: `args["duration"] = input_duration.scale(1 / factor)`) before appending either
+`minterpolate=fps=<src_fps>:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1` (`interpolate`) or
+`fps=<src_fps>,tblend=all_mode=average` (`blend`) to `vf`. For a speed-*up* (`factor > 1`, or `factor == 1` with no
+retiming at all) `fit.py` accepts `--smooth` without complaint but the flag has zero effect — the branch that reads
+`args.smooth` is guarded by `factor < 1.0` and nothing else. `--smooth` has no argparse-level `requires=`/mutual
+exclusion with `--method`, `--max-speed`, or anything else `SPEED` already sends; `--method trim` simply never
+reaches the code path that reads it, the same "accepted, silently inert" shape as the speed-up case.
+
+**Decision — thread `smooth` straight onto `SPEED`, no new operation type, no cross-field refusal added here.**
+Unlike `ROTATE` (ADR-011), this is not a new orthogonal transform: `smooth` only changes *how* the existing
+`SPEED.factor` retime is filtered, never what frame or duration comes out, so it belongs on `SPEED` itself, the
+same way `FILL.anchor` (ADR-009) was added to `FILL` rather than becoming a new type. `operations.py` gains
+`SMOOTH_MODES = ("blend", "interpolate")` and validates `SPEED.params.smooth` with the same `_enum()` helper
+`ROTATE.flip` and `FILL.anchor`'s vocabulary checks already use; `"none"` is deliberately not part of the accepted
+vocabulary here — omitting `smooth` already means `fit.py`'s own default, so this Skill's typed model has one way
+to say "default", not two. `compiler.py` emits `--smooth <value>` on the `ffmpeg-skill/fit` call only when
+`"smooth" in p`; an all-default `SPEED` request (no `smooth` key) compiles to byte-identical `argv` to what it
+produced before this change (`tests/test_unit.py`'s compiler test asserts this explicitly). This Skill does **not**
+add a validation-time refusal for `smooth` given alongside a `factor >= 1` (a combination that is accepted but has
+no effect): `fit.py` itself makes no such distinction — it is a legitimate, if inert, request the same way asking
+`fit.py` directly for `--smooth blend --duration <shorter>` is, and ADR-001 assigns the engine's own filter-graph
+judgement calls to ffmpeg-skill, not to invented stricter rules here.
+
+**Why a version bump, not an additive change.** `operations.py`'s `PARAM_DOCS["SPEED"]` gains a `smooth` key, which
+`contract.py`'s `tool_specs()` and `operations` block both surface — `operations` is a formal `PINNED_BLOCKS`
+member, so `contract_check.check_saved()` classifies this as breaking, exactly the precedent ADR-009 set for
+`FILL.anchor` (also an optional parameter added to an already-shipped operation type, also only a pinned-block
+`parameters` key change with no removal or narrowing for an existing caller). `version` moves `0.3.0` → `0.4.0`,
+`contract_version` `"3.0"` → `"4.0"`. `video-production-agent`'s `SUPPORTED_SKILL_VERSIONS` needs the same kind of
+widening ADR-009 / ADR-011 already required — a known, disclosed, accepted cost, not an oversight.
+`contract.versioning.next` renames its `"0.4.0"` key to `"0.5.0"` (`RESIZE.height` / `CROP` / `IMAGE_INSERT` /
+issue #11 items 2 and 3 remain exactly as undecided as ADR-011 left them). `tests/contract/contract.json` is
+regenerated in the same change.
+
+**Verified directly, not assumed:** `fit.py`'s `--smooth` argparse definition and help text, the `factor < 1.0`
+guard, the exact `minterpolate` / `tblend` filter strings, and the absence of any `--smooth` interaction with
+`--method`/`--max-speed` were all read from the real ffmpeg-skill checkout (`ffmpeg-skill/scripts/fit.py`) before
+this ADR was written. A real-media integration test (`tests/test_integration.py`) runs `SPEED` with a slow-down
+factor and both `smooth` values against a real ffmpeg-skill checkout and asserts the two outputs' bytes differ from
+each other and from the no-`smooth` baseline — the same "prove different flags produce different delivered bytes,
+not just different compiled argv" rigor `test_fill_anchor` established for ADR-009.
