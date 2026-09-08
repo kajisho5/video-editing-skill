@@ -82,6 +82,24 @@ class OperationParamTests(unittest.TestCase):
             with self.assertRaises(EditError):
                 operations.validate_params("SPEED", {"factor": bad}, "op")
 
+    def test_speed_smooth(self):
+        # kajisho5/video-editing-skill#13, docs/decisions.md ADR-012: SPEED.smooth -> fit.py --smooth
+        p = operations.validate_params("SPEED", {"factor": "1/2", "smooth": "blend"}, "op")
+        self.assertEqual(p, {"factor": Fraction(1, 2), "smooth": "blend"})
+        p2 = operations.validate_params("SPEED", {"factor": "1/2", "smooth": "interpolate"}, "op")
+        self.assertEqual(p2["smooth"], "interpolate")
+        p3 = operations.validate_params("SPEED", {"factor": "1/2"}, "op")
+        self.assertNotIn("smooth", p3)   # optional: absent means fit.py's own "none" default, unchanged behaviour
+        for bad in ("none", "fast", 1, True, "Blend", ""):
+            with self.assertRaises(EditError, msg=repr(bad)):
+                operations.validate_params("SPEED", {"factor": "1/2", "smooth": bad}, "op")
+        with self.assertRaises(EditError):   # unknown key still refused with smooth present
+            operations.validate_params("SPEED", {"factor": "1/2", "smooth": "blend", "x": 1}, "op")
+        # smooth is accepted (not rejected) alongside a speed-up factor too: fit.py itself only
+        # ignores it there, it does not refuse it -- this Skill reproduces that, not a stricter rule
+        p4 = operations.validate_params("SPEED", {"factor": "2", "smooth": "blend"}, "op")
+        self.assertEqual(p4["smooth"], "blend")
+
     def test_overlay(self):
         p = operations.validate_params("OVERLAY", {"image": "logo", "position": {"x": -10, "y": 5}, "opacity": 0.5, "start": 0, "end": 2}, "op")
         self.assertEqual(p["position"], {"x": -10, "y": 5})
@@ -291,6 +309,27 @@ class ProjectTests(unittest.TestCase):
         argv2 = compile_operation(EditOperation("f2", "FILL", ["A"], no_anchor)).argv_for(["/x/a.mp4"], "/x/o.mp4")
         self.assertNotIn("--crop-x", argv2)
         self.assertNotIn("--crop-y", argv2)
+
+    def test_speed_smooth_compiles_to_ffmpeg_skill_smooth_flag(self):
+        # kajisho5/video-editing-skill#13, docs/decisions.md ADR-012: SPEED.smooth -> fit.py --smooth
+        from video_editing_skill.timebase import Time
+        params = operations.validate_params("SPEED", {"factor": "1/2", "smooth": "blend"}, "op")
+        step = compile_operation(EditOperation("s", "SPEED", ["A"], params))
+        self.assertEqual(step.tool, "ffmpeg-skill/fit")
+        argv = step.argv_for(["/x/a.mp4"], "/x/o.mp4", None, Time.parse(10))
+        self.assertIn("--smooth", argv)
+        self.assertEqual(argv[argv.index("--smooth") + 1], "blend")
+
+        params2 = operations.validate_params("SPEED", {"factor": "1/2", "smooth": "interpolate"}, "op")
+        argv2 = compile_operation(EditOperation("s2", "SPEED", ["A"], params2)).argv_for(["/x/a.mp4"], "/x/o.mp4", None, Time.parse(10))
+        self.assertEqual(argv2[argv2.index("--smooth") + 1], "interpolate")
+
+        # the constraint under test: an all-default SPEED (no smooth) must compile to the exact
+        # argv it always did -- --smooth is never emitted, not even with a default-ish value
+        no_smooth = operations.validate_params("SPEED", {"factor": "1/2"}, "op")
+        argv3 = compile_operation(EditOperation("s3", "SPEED", ["A"], no_smooth)).argv_for(["/x/a.mp4"], "/x/o.mp4", None, Time.parse(10))
+        self.assertNotIn("--smooth", argv3)
+        self.assertEqual(argv3, ["/x/a.mp4", "-o", "/x/o.mp4", "--method", "speed", "--max-speed", "4", "--duration", "20.000000"])
 
 
 class TimelineTests(unittest.TestCase):
@@ -791,13 +830,13 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         self.assertIn("video codec choice", c["encoding"]["not_configurable"])
         self.assertEqual(c["request_shape"], json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))["request_shape"])
 
-    def test_pinned_blocks_are_unchanged_since_0_3_0(self):
+    def test_pinned_blocks_are_unchanged_since_0_4_0(self):
         """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the golden copy.
 
-        Bumped from 0.2.0 to 0.3.0 deliberately (docs/decisions.md ADR-011: a new `ROTATE` operation type) - a
-        breaking contract_version change video-production-agent's SUPPORTED_SKILL_VERSIONS = ("0.1.",) must widen
-        before it accepts this release, same as 0.2.0 (ADR-009); this test only guards against further
-        *undocumented* drift from here, not against 0.3.0 itself.
+        Bumped from 0.3.0 to 0.4.0 deliberately (docs/decisions.md ADR-012: SPEED gained an optional `smooth`
+        parameter) - a breaking contract_version change video-production-agent's SUPPORTED_SKILL_VERSIONS =
+        ("0.1.",) must widen before it accepts this release, same as 0.2.0 / 0.3.0 (ADR-009 / ADR-011); this test
+        only guards against further *undocumented* drift from here, not against 0.4.0 itself.
 
         `engine` is deliberately excluded from the fields compared below: it is an additive block
         (docs/decisions.md ADR-008), free to drift as the ffmpeg-skill version range this Skill enforces changes
@@ -807,7 +846,7 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         for k in ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "capability_names", "schemas",
                   "response_shape", "request_shape", "formats"):
             self.assertEqual(c[k], golden[k], k)
-        self.assertEqual(c["version"], "0.3.0")
+        self.assertEqual(c["version"], "0.4.0")
         for t in c["tools"]:
             g = next(x for x in golden["tools"] if x["tool_id"] == t["tool_id"])
             for f in ("parameters", "required_capabilities", "inputs", "result_keys", "executed_by", "deterministic", "produces_output", "writes_media", "kind"):

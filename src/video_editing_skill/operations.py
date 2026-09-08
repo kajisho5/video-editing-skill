@@ -18,6 +18,7 @@ POSITIONS = ("top-left", "top", "top-right", "left", "center", "right", "bottom-
 PRECISIONS = ("frame", "keyframe")
 ROTATIONS = (90, 180, 270)
 FLIPS = ("h", "v")
+SMOOTH_MODES = ("blend", "interpolate")
 _COLOR = re.compile(r"^(black|white|gray|grey|red|green|blue|yellow|0x[0-9A-Fa-f]{6})$")
 _ASPECT = re.compile(r"^([1-9]\d{0,3}):([1-9]\d{0,3})$")
 
@@ -305,13 +306,15 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
         p["pad_color"] = _color(params.get("pad_color", "black"), what + ".pad_color")
         _frame(params, what, p)
     elif op_type == "SPEED":
-        _keys(params, what, ("factor",), ("factor",))
+        _keys(params, what, ("factor", "smooth"), ("factor",))
         f = parse_fraction(params["factor"], what + ".factor")
         if not (MIN_SPEED <= f <= MAX_SPEED):
             raise EditError("INVALID_REQUEST", f"{what}.factor: must be between {fraction_text(MIN_SPEED)} and {fraction_text(MAX_SPEED)}")
         if f == 1:
             raise EditError("INVALID_REQUEST", f"{what}.factor: 1 changes nothing; drop the operation")
         p["factor"] = f
+        if "smooth" in params:
+            p["smooth"] = _enum(params["smooth"], what + ".smooth", SMOOTH_MODES)
     elif op_type in ("FIT", "FILL"):
         _keys(params, what, ("aspect", "width", "fps") + (("pad_color",) if op_type == "FIT" else ("anchor",)), ("aspect",))
         p["aspect"] = _aspect(params["aspect"], what + ".aspect")

@@ -311,6 +311,40 @@ class OperationE2ETests(unittest.TestCase):
         seg = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"][0]
         self.assertEqual((seg["speed"], seg["source_range"]["end"]["rational"], seg["timeline_range"]["end"]["rational"]), ("2/1", "6/1", "3/1"))
 
+    def test_speed_smooth(self):
+        # kajisho5/video-editing-skill#13, docs/decisions.md ADR-012: SPEED.smooth -> fit.py --smooth,
+        # which only takes effect on the slow-down leg (factor < 1) -- testsrc2 has real motion, so a
+        # real difference in the frame-blend/interpolation filter must change the delivered bytes.
+        none_out = self.one({"type": "SPEED", "input": "A", "params": {"factor": 0.5}})
+        none_path, none_streams = self.facts(none_out, 12.0)
+        self.assertEqual(size(none_path), (640, 360))
+        self.assertTrue(self.has_audio(none_streams))
+
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        blend_out = self.one({"type": "SPEED", "input": "A", "params": {"factor": 0.5, "smooth": "blend"}})
+        blend_path, blend_streams = self.facts(blend_out, 12.0)
+        self.assertEqual(size(blend_path), (640, 360))
+        self.assertTrue(self.has_audio(blend_streams))
+
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        interp_out = self.one({"type": "SPEED", "input": "A", "params": {"factor": 0.5, "smooth": "interpolate"}})
+        interp_path, interp_streams = self.facts(interp_out, 12.0)
+        self.assertEqual(size(interp_path), (640, 360))
+        self.assertTrue(self.has_audio(interp_streams))
+
+        none_hash, blend_hash, interp_hash = sha256_file(none_path), sha256_file(blend_path), sha256_file(interp_path)
+        self.assertNotEqual(none_hash, blend_hash, "blend must change the delivered bytes versus no smoothing")
+        self.assertNotEqual(none_hash, interp_hash, "interpolate must change the delivered bytes versus no smoothing")
+        self.assertNotEqual(blend_hash, interp_hash, "blend and interpolate are different filters, different bytes")
+
+        # a speed-up (factor > 1) accepts smooth without complaint, exactly as fit.py itself does, but
+        # fit.py's own factor < 1.0 guard makes it a no-op there -- verified against real ffmpeg-skill,
+        # not assumed: this must not fail and must produce the same duration/frame as the plain speed-up.
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        speedup_out = self.one({"type": "SPEED", "input": "A", "params": {"factor": 2, "smooth": "blend"}})
+        speedup_path, _ = self.facts(speedup_out, 3.0)
+        self.assertEqual(size(speedup_path), (640, 360))
+
     def test_resize(self):
         out = self.one({"type": "RESIZE", "input": "A", "params": {"width": 320}})
         path, streams = self.facts(out, 6.0)
