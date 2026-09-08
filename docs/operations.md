@@ -16,22 +16,31 @@ name an execution escape hatch (`command`, `argv`, `shell`, `filter`, `env`, `ap
 | `FILL` | `input` (video) | **aspect** `W:H`, width, anchor `{x, y}` each 0..1, fps | `ffmpeg-skill/fit` |
 | `RESIZE` | `input` (video) | **width** (even), fps | `ffmpeg-skill/fit` |
 | `OVERLAY` | `input` (video) + `params.image` (image source) | **image**, position (name or `{x, y}`), margin, scale, opacity, start, end, fade | `ffmpeg-skill/overlay` |
+| `ROTATE` | `input` (video) | degrees `90 \| 180 \| 270`, flip `h \| v` (at least one required) | `ffmpeg-skill/fit` |
 
 Values that reach a filter graph (colours, transition names, positions, aspects) are closed vocabularies or
 integers; times are exact rationals. See `contract.operations` for the documented forms.
 
-### RESIZE, FIT, FILL (contract.frame_semantics, ADR-003)
+### RESIZE, FIT, FILL, ROTATE (contract.frame_semantics, ADR-003 / ADR-011)
 
 | Type | Changes | Keeps | Target frame |
 |---|---|---|---|
 | `RESIZE` | size | the source aspect; nothing padded, cropped or stretched | `width = params.width`; `height = even(width × sh / sw)` |
 | `FIT` | aspect | every source pixel (scaled to fit inside, padded with `pad_color`) | `width = params.width`, else `sw` if `aspect ≤ source_aspect` else `even(sh × aspect)`; `height = even(width / aspect)` |
 | `FILL` | aspect | the centre by default (scaled to cover, cropped); edges are lost | same rule as FIT |
+| `ROTATE` | orientation only (no scaling, padding or cropping) | every source pixel losslessly | `width, height = sw, sh`; swapped when `params.degrees` is 90 or 270 |
 
 `FILL.anchor` (docs/decisions.md ADR-009, 0.2.0): `{x, y}` each `0..1` picks which edge the crop keeps instead of
 always the centre (`0`=left/top, `0.5`=centre — the default when `anchor` is omitted, `1`=right/bottom); maps
 directly to `ffmpeg-skill fit.py`'s `--crop-x`/`--crop-y` (0.10.0). It changes *what part* of the frame survives,
 never the target frame size — the size rule above is unaffected.
+
+`ROTATE` (docs/decisions.md ADR-011, 0.3.0): `{degrees?: 90 | 180 | 270, flip?: h | v}`, at least one of the two
+required, mapped directly to `ffmpeg-skill fit.py`'s pre-existing `--rotate`/`--flip` flags (rotate applied before
+flip, ffmpeg-skill's own convention). Unlike `RESIZE` / `FIT` / `FILL` it changes no pixel's colour, only its
+position — a turn and/or a mirror, never a scale, pad or crop — so it groups with `TRIM` / `CUT` / `SPEED` /
+`OVERLAY` for the odd-frame refusal below even though its *target frame* can differ from the input's (the
+width×height swap a 90/270 turn implies).
 
 `even(n) = round(n)`, +1 when odd (ffmpeg-skill fit.py). `CONCAT` (join.py): `params.width × params.height`; when
 only one is given the other follows the first input's aspect (rounded); when none is given the first input's frame;
@@ -40,11 +49,12 @@ legacy `rotate` tag is ignored by ffmpeg ≥ 5 and therefore by the probe. No op
 target is reported in `plan.steps[].normalized` and `execution.operations[].normalized` and verified on the output
 exactly. Examples: 1280×720 → `RESIZE 300` = 300×170; 640×360 → `FILL 1:1` = 640×640; 1280×720 → `FIT 9:16` =
 1280×2276; 640×360 → `FIT 21:9` = 840×360; 641×361 → `FIT 1:1` = 642×642; `CONCAT width 300` of a 640×360 first
-input = 300×168.
+input = 300×168; 640×360 → `ROTATE degrees:90` = 360×640; 640×360 → `ROTATE degrees:180` (or `flip:h`) = 640×360.
 
 An input whose frame has an odd width or height (some screen recordings) is refused up front by `TRIM`, `CUT`,
-`SPEED` and `OVERLAY` (`INVALID_INPUT odd_frame`): they keep the input frame and the engine's encoders (libx264 /
-libx265, yuv420p) need even sizes. `RESIZE`, `FIT`, `FILL` and `CONCAT` normalize such a source to an even frame.
+`SPEED`, `OVERLAY` and `ROTATE` (`INVALID_INPUT odd_frame`): they keep the input frame (`ROTATE` only swaps its
+two dimensions for a 90/270 turn) and the engine's encoders (libx264 / libx265, yuv420p) need even sizes. `RESIZE`,
+`FIT`, `FILL` and `CONCAT` normalize such a source to an even frame.
 
 ### Encoding profile (contract.encoding, ADR-004)
 
@@ -89,6 +99,7 @@ image must decode to a frame. Per operation:
 | `FILL` | video | aspect as requested (width when given, centre-cropped); audio, fps as the input unless `fps` |
 | `RESIZE` | video | `width` as requested, height by the source aspect; audio, fps as the input unless `fps` |
 | `OVERLAY` | video + image | frame size, fps and audio as the input |
+| `ROTATE` | video | frame size as the input, width/height swapped for a 90/270 `degrees`; audio, fps as the input |
 
 `OVERLAY` no longer requires audio (ADR-009): ffmpeg-skill 0.9.x's overlay (`-loop 1` image + `-shortest`) could run
 unbounded on a video without an audio stream, but ffmpeg-skill >=0.10.0 bounds it with an explicit `-t <video
@@ -104,7 +115,7 @@ semantics, audio presence, fps, HDR); once an intermediate exists its probe (`OB
 | no video stream (audio-only file, corrupt container) | refused: `INVALID_INPUT no_video_stream` |
 | video source without a duration (still image / broken container as video) | refused: `INVALID_INPUT no_duration` |
 | image that does not decode | refused: `INVALID_INPUT image_undecodable` |
-| TRIM / CUT / SPEED / OVERLAY on an input with an odd width or height | refused: `INVALID_INPUT odd_frame` (RESIZE / FIT / FILL / CONCAT normalize it) |
+| TRIM / CUT / SPEED / OVERLAY / ROTATE on an input with an odd width or height | refused: `INVALID_INPUT odd_frame` (RESIZE / FIT / FILL / CONCAT normalize it) |
 | CONCAT of HDR and SDR inputs | refused: `INVALID_INPUT hdr_mismatch` |
 | unsupported extension / container | refused: `UNSUPPORTED_FORMAT` |
 | ranges beyond the input, transition longer than half an input | refused: `INVALID_TIME_RANGE` |
@@ -126,8 +137,8 @@ tools and capabilities (ffmpeg-skill doctor; a gap is `TOOL_ERROR`, not retryabl
 
 After each operation (`executor._validate`): the file exists, is non-empty and readable; the probe reports a video
 stream, a duration and a frame size; the duration is within tolerance of the timeline (0.35 s, 1.5 s for
-`keyframe` precision); the frame equals the normalized target exactly (RESIZE / FIT / FILL / CONCAT by the rules
-above, the input's frame for TRIM / CUT / SPEED / OVERLAY); the video codec is the engine's for the source (h264,
+`keyframe` precision); the frame equals the normalized target exactly (RESIZE / FIT / FILL / CONCAT / ROTATE by the
+rules above, the input's frame for TRIM / CUT / SPEED / OVERLAY); the video codec is the engine's for the source (h264,
 hevc for HDR) when the operation re-encodes; the frame rate is the requested one (± 0.02) when `fps` was given; an
 audio stream is present when the input(s) had one. Any failure is `VALIDATION_ERROR` with `details.reason`
 (`frame_size`, `aspect`, `codec`, `fps`, `audio_lost`, or the duration details); the partial file is deleted.

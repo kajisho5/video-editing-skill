@@ -432,6 +432,22 @@ class NormalizationEncodingAndPathsTests(FakeEngineHarness):
         self.assertEqual(out["error"]["details"]["reason"], "hdr_mismatch")
         self.assertEqual(self.calls(), [], "refused before any tool ran")
 
+    def test_rotate_swaps_frame_for_90_and_270_not_180_or_flip(self):
+        # kajisho5/video-editing-skill#11 item 1: ROTATE -> fit.py --rotate / --flip
+        doc = request(self.sources(), [{"id": "r90", "type": "ROTATE", "input": "A", "params": {"degrees": 90}},
+                                       {"id": "r180", "type": "ROTATE", "input": "B", "params": {"degrees": 180}},
+                                       {"id": "rf", "type": "ROTATE", "input": "A", "params": {"flip": "h"}}],
+                      [{"id": "o1", "operation": "r90", "path": "out/r90.mp4"}, {"id": "o2", "operation": "r180", "path": "out/r180.mp4"},
+                       {"id": "o3", "operation": "rf", "path": "out/rf.mp4"}])
+        rc, out = self.run_(doc, expect=0)
+        recs = {r["operation"]: r for r in out["execution"]["operations"]}
+        self.assertEqual((recs["r90"]["normalized"]["source_frame"], recs["r90"]["normalized"]["target_frame"]), ([640, 360], [360, 640]))
+        self.assertEqual(recs["r180"]["normalized"]["target_frame"], [640, 360])
+        self.assertEqual(recs["rf"]["normalized"]["target_frame"], [640, 360])
+        self.assertEqual(recs["r90"]["parameters"], {"rotate": 90})
+        self.assertEqual(recs["rf"]["parameters"], {"flip": "h"})
+        self.assertEqual([o["delivered"] for o in out["execution"]["outputs"]], [True, True, True])
+
     def test_concat_single_dimension_follows_join_py(self):
         for params, want in (({"width": 300}, [300, 168]), ({"height": 250}, [444, 250]), ({"width": 300, "height": 250}, [300, 250]), ({}, [640, 360])):
             self.setUp()

@@ -353,6 +353,29 @@ class OperationE2ETests(unittest.TestCase):
         self.assertEqual(left["execution"]["operations"][0]["parameters"]["crop_x"], "0.000")
         self.assertEqual(right["execution"]["operations"][0]["parameters"]["crop_x"], "1.000")
 
+    def test_rotate(self):
+        # kajisho5/video-editing-skill#11 item 1: ROTATE -> fit.py --rotate / --flip
+        out = self.one({"type": "ROTATE", "input": "A", "params": {"degrees": 90}})
+        path90, streams = self.facts(out, 6.0)
+        self.assertEqual(size(path90), (360, 640), "a 90 degree turn swaps width and height")
+        self.assertTrue(self.has_audio(streams))
+        self.assertEqual(out["execution"]["operations"][0]["parameters"], {"rotate": 90})
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out = self.one({"type": "ROTATE", "input": "A", "params": {"degrees": 180}})
+        path180, streams = self.facts(out, 6.0)
+        self.assertEqual(size(path180), (640, 360), "180 degrees keeps the frame")
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out = self.one({"type": "ROTATE", "input": "A", "params": {"flip": "h"}})
+        pathflip, streams = self.facts(out, 6.0)
+        self.assertEqual(size(pathflip), (640, 360), "a flip alone keeps the frame size")
+        self.assertNotEqual(sha256_file(path180), sha256_file(pathflip), "a 180 degree turn and a horizontal flip are different transforms")
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out = self.one({"type": "ROTATE", "input": "A", "params": {"degrees": 270, "flip": "v"}})
+        path270, streams = self.facts(out, 6.0)
+        self.assertEqual(size(path270), (360, 640), "270 also swaps width and height")
+        self.assertEqual(out["execution"]["operations"][0]["parameters"], {"rotate": 270, "flip": "v"})
+        self.assertNotEqual(sha256_file(path90), sha256_file(path270), "different rotate/flip combinations are different transforms")
+
     def test_overlay(self):
         out = self.one({"type": "OVERLAY", "input": "A", "params": {"image": "logo", "position": "bottom-left", "start": 1, "end": 3, "fade": 0.25, "opacity": 0.8}})
         path, streams = self.facts(out, 6.0)
@@ -403,7 +426,7 @@ class OperationE2ETests(unittest.TestCase):
     def test_doctor_reports_every_operation_available(self):
         rc, rep, err = cli(["doctor", "--json", "--workspace", self.ws], env=self.env)
         self.assertEqual(rc, 0, err)
-        self.assertEqual(sorted(rep["supported_operations"]), ["CONCAT", "CUT", "FILL", "FIT", "OVERLAY", "RESIZE", "SPEED", "TRIM"])
+        self.assertEqual(sorted(rep["supported_operations"]), ["CONCAT", "CUT", "FILL", "FIT", "OVERLAY", "RESIZE", "ROTATE", "SPEED", "TRIM"])
         self.assertTrue(rep["engine"]["capabilities_reported"])
         self.assertEqual(rep["engine"]["version"], FFMPEG_SKILL.version)
 

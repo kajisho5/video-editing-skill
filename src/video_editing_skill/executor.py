@@ -150,12 +150,16 @@ class Executor:
     # ------------------------------------------------------------ normalization (frame_semantics)
     def target_frame(self, ref: str) -> Optional[tuple]:
         """The frame an operation must deliver, computed before execution from its parameters and the (measured or expected)
-        input frame with ffmpeg-skill's own rule; None when it is the input's frame (TRIM / CUT / SPEED / OVERLAY) and that is
-        not known yet."""
+        input frame with ffmpeg-skill's own rule; None when it is the input's frame (TRIM / CUT / SPEED / OVERLAY / ROTATE) and
+        that is not known yet."""
         op = self.project.operations[ref]
         p = op.params
         first = self.profile(op.inputs[0])
         sw, sh = first["width"], first["height"]
+        if op.type == "ROTATE":
+            if p.get("degrees") in (90, 270) and sw and sh:
+                return (sh, sw)
+            return (sw, sh) if sw and sh else None
         if op.type == "CONCAT":   # join.py: both given -> as given; one given -> the other from the first input's aspect (round); none -> the first input; floored to even
             if "width" in p and "height" in p:
                 w, h = p["width"], p["height"]
@@ -242,7 +246,7 @@ class Executor:
                 if any(h is True for h in hdrs.values()) and any(h is False for h in hdrs.values()):
                     raise EditError("INVALID_INPUT", f"operation {ref!r} (CONCAT): HDR and SDR inputs cannot be joined (the engine encodes from the first input's colour system)",
                                     {"operation": ref, "inputs": hdrs, "reason": "hdr_mismatch"})
-            if op.type in ("TRIM", "CUT", "SPEED", "OVERLAY"):   # these keep the input frame; the engine's encoders need even sizes
+            if op.type in ("TRIM", "CUT", "SPEED", "OVERLAY", "ROTATE"):   # these keep the input frame; the engine's encoders need even sizes
                 prof = self.profile(video_inputs[0])
                 if prof["width"] and prof["height"] and (prof["width"] % 2 or prof["height"] % 2):
                     raise EditError("INVALID_INPUT", f"operation {ref!r} ({op.type}): input {video_inputs[0]!r} frame {prof['width']}x{prof['height']} has an odd dimension; "
