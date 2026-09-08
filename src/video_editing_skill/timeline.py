@@ -1,8 +1,8 @@
 """EditTimeline: where every piece of an output comes from.
 
 Each operation yields a Clip: its duration (exact when every upstream duration is known) and a list of
-segments mapping a source time range onto a timeline time range. FIT / FILL / RESIZE / OVERLAY keep
-the mapping; SPEED scales timeline ranges; CONCAT offsets them (a transition overlaps neighbours by
+segments mapping a source time range onto a timeline time range. FIT / FILL / RESIZE / ROTATE / OVERLAY
+keep the mapping; SPEED scales timeline ranges; CONCAT offsets them (a transition overlaps neighbours by
 its duration). OVERLAY adds a second track holding the image for its visible range.
 
 Durations of untrimmed sources come from a probe when one is available; otherwise the clip is marked
@@ -90,7 +90,7 @@ def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[
             segs.append(Segment(s.source, s.source_start, s.source_end, ts, te, s.speed * f))
         dur = src.duration.scale(1 / f) if src.duration is not None else None
         return Clip(dur, segs, list(src.overlays))
-    if op.type in ("FIT", "FILL", "RESIZE"):
+    if op.type in ("FIT", "FILL", "RESIZE", "ROTATE"):
         src = inputs[0]
         return Clip(src.duration, list(src.segments), list(src.overlays))
     if op.type == "OVERLAY":

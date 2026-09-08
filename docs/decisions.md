@@ -278,3 +278,69 @@ that a consumer comparing against a vendored contract snapshot will see as drift
 MISSING the moment this lands. Anyone still running ffmpeg-skill 0.9.x now fails `version_supported()` outright
 (previously they could run every operation except `OVERLAY` on audio-less input); this is intentional — 0.9.x's
 `overlay.py` carries the unbounded-run defect for exactly the input shape this ADR now allows through.
+
+## ADR-011 — 0.3.0: a typed `ROTATE` operation (`fit.py --rotate`/`--flip`)
+
+**Context.** `kajisho5/video-editing-skill#11` is a three-item ecosystem-wide gap inventory against ffmpeg-skill
+0.11.0/0.12.2's real current capabilities. Item 1 is `fit.py`'s `--rotate 90/180/270` (clockwise) and `--flip h/v`
+flags: unlike `CROP`/`IMAGE_INSERT`/`RESIZE.height` (ADR-002/ADR-003), these predate this Skill's ADR process
+entirely — `fit.py` already had them when ADR-002 evaluated `fit.py`'s other flags, but rotate/flip themselves were
+never put through the same five questions (generic? safe at the boundary? typed model? fits the graph? disjoint
+from existing operations?) until now. Items 2 (`OVERLAY` video-layer + chroma-key, `overlay.py --video`/
+`--chromakey`) and 3 (capability ownership for `stabilize.py`/`sequence.py`/`background.py`) are explicitly **not**
+addressed by this ADR — they are separate, larger decisions (item 2 touches an existing operation's media model;
+item 3 is a cross-repository ownership question, the same shape as `AI-video-production-OS#33`/`#34`) left for a
+future session or an explicit request, exactly as ADR-003's `FILL.anchor` note and ADR-002's `POSITION` verdict
+were once left open rather than decided speculatively.
+
+**The five questions, applied to rotate/flip.**
+
+| Question | Answer |
+|---|---|
+| Generic? | Yes: correcting a wrongly-tagged orientation, or mirroring a shot, is ordinary production editing, not a specialised effect. |
+| Safe at the ffmpeg-skill boundary? | Yes: `fit.py --rotate {90,180,270} --flip {h,v}` already exists (verified directly against `ffmpeg-skill/scripts/fit.py`) — no new engine tool, no raw filter string. `--rotate` compiles to `transpose=1`/`transpose=2`/`transpose=2,transpose=2`; `--flip` to `hflip`/`vflip`; rotate is applied before flip when both are given. |
+| Typed model? | Yes, and a small one: `{degrees?: 90 \| 180 \| 270, flip?: h \| v}`, at least one of the two required (the same "nothing to do" refusal `fit.py` itself raises when neither `--rotate` nor `--flip` nor any other flag is given). |
+| Fits the operation graph? | Yes: one video in, one out, like `SPEED`/`FIT`/`FILL`/`RESIZE` — all four already share `ffmpeg-skill/fit` as their engine tool without colliding, because each owns a disjoint parameter set. |
+| Disjoint from the eight existing operations? | Yes: `RESIZE`/`FIT`/`FILL` all change the frame's *aspect or size*; `ROTATE` changes only *orientation* (a turn and/or a mirror) and touches no pixel's colour or the frame's aspect ratio on its own terms. |
+
+**Decision — a new operation type, `ROTATE`, not new parameters on `FIT`.** Both were open per the issue text; a
+new type was chosen because:
+
+- `FIT`'s entire typed model (`aspect`, `pad_color`, `width`) exists to answer "what should the delivery aspect be
+  and what happens to pixels that don't fit it" — a question `ROTATE` does not ask at all. Bolting `rotate`/`flip`
+  onto `FIT` would force every rotate-only request to also supply (or default) an aspect it does not want, and
+  would make `FIT`'s contract entry document two unrelated concerns under one name.
+- The existing precedent in this codebase is one type per orthogonal transform sharing one engine tool: `SPEED`
+  (retime), `FIT` (pad-to-aspect), `FILL` (crop-to-aspect) and `RESIZE` (resize-keep-aspect) all compile to
+  `ffmpeg-skill/fit` already, each with its own disjoint parameter set and its own row in `contract.operations` /
+  `operations.MEDIA` / `FRAME_SEMANTICS`. `ROTATE` extends that established one-type-per-concern pattern rather
+  than starting a new "modifier parameters on an unrelated type" convention this codebase has never used.
+- Degrees and flip are combined into **one** type rather than two (`ROTATE` + `FLIP`) because `fit.py` runs them as
+  one filter chain in one tool invocation (rotate before flip) — splitting them into two typed operations would
+  force two full re-encodes for a caller who wants both, for no engine-side benefit; the issue's own title groups
+  them as a single unit for exactly this reason ("A typed `ROTATE`/`FLIP` operation").
+
+**Media compatibility and frame semantics — the new nuance ADR-003's frame-keeping group didn't need before this
+operation existed.** `ROTATE` keeps every source pixel losslessly, like `TRIM`/`CUT`/`SPEED`/`OVERLAY` (no scaling,
+padding or cropping, unlike `RESIZE`/`FIT`/`FILL`) — so it joins that group for the `odd_frame` pre-execution
+refusal (`fit.py`'s rotate/flip path does not evenize an odd frame the way its aspect/width path does; an odd input
+would only fail once inside the engine's encoder, which ADR-005 refuses up front instead). But unlike the other
+four frame-keeping operations, `ROTATE`'s **output frame is not always identical to the input's**: a 90 or 270
+degree turn swaps width and height (verified directly against `fit.py`: `if args.rotate in (90, 270): sw, sh =
+sh, sw`, computed from the *displayed* size — rotation metadata already swapped, same as every other operation in
+this Skill). 180 degrees and a flip alone keep the frame exactly as it is. `operations.FRAME_SEMANTICS["ROTATE"]`
+and `executor.target_frame()` state and compute this explicitly; the output is verified against it exactly, the
+same "promise the frame, verify the frame" discipline ADR-003 established for `RESIZE`/`FIT`/`FILL`.
+
+**Verified directly, not assumed:** `/ffmpeg-skill/scripts/fit.py`'s `--rotate`/`--flip` argument definitions,
+their filter compilation (the `transpose`/`hflip`/`vflip` chain, rotate-before-flip ordering), and the width/height
+swap for 90/270 were all read from the actual current ffmpeg-skill checkout before this ADR was written, not
+inferred from the CHANGELOG or the issue text.
+
+**Decision.** `ROTATE` ships as a ninth operation type, `capability: "video.rotate"`, `tool: "ffmpeg-skill/fit"`,
+`arity: "one"`. `version` `0.2.0` → `0.3.0`, `contract_version` `"2.0"` → `"3.0"` — breaking by this repository's own
+convention (a new key in the pinned `operations` and `capabilities` blocks), the same disclosed cost ADR-009
+accepted for `FILL.anchor`; `video-production-agent`'s `SUPPORTED_SKILL_VERSIONS` needs the same kind of widening
+again. `contract.versioning.next` renames its `"0.3.0"` key to `"0.4.0"` and gains explicit, undecided entries for
+issue #11 items 2 and 3, alongside the still-blocked `RESIZE.height` / `CROP` / `IMAGE_INSERT` candidates ADR-002 /
+ADR-003 already named. `tests/contract/contract.json` is regenerated in the same change.

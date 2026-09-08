@@ -74,19 +74,32 @@ pinning convention (`operations` and `request_shape` both changed) — `video-pr
 `SUPPORTED_SKILL_VERSIONS = ("0.1.",)` must widen before it accepts this contract; see ADR-009 for why this cost
 was accepted.
 
-## 0.3.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003)
+## 0.3.0 (shipped; docs/decisions.md ADR-011)
 
-`versioning.next["0.3.0"]` lists breaking-change candidates for a future version, none currently in progress:
+`version` `0.2.0` → `0.3.0`, `contract_version` `"2.0"` → `"3.0"`: a new `ROTATE` operation type (`{degrees?: 90 |
+180 | 270, flip?: h | v}`, at least one required), mapped straight onto `ffmpeg-skill fit.py`'s pre-existing
+`--rotate`/`--flip` flags — no new ffmpeg-skill capability needed. Breaking by this repository's own pinning
+convention (`operations` and `capabilities` both gained a key) — `video-production-agent`'s
+`SUPPORTED_SKILL_VERSIONS = ("0.1.",)` must widen before it accepts this contract, the same disclosed cost as 0.2.0
+(ADR-009). `kajisho5/video-editing-skill#11` items 2 (`OVERLAY` video-layer / chroma-key) and 3 (`stabilize` /
+`sequence` / `background` ownership) are deliberately **not** part of this release; see `versioning.next["0.4.0"]`.
+
+## 0.4.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011, `kajisho5/video-editing-skill#11`)
+
+`versioning.next["0.4.0"]` lists breaking-change candidates for a future version, none currently in progress:
 `CROP` and `IMAGE_INSERT` once ffmpeg-skill ships typed tools for them, and `RESIZE.height` — found, by live
 verification against ffmpeg-skill 0.10.0, to be blocked the same way as `CROP`/`IMAGE_INSERT` (`fit.py` has no
-`--height` flag), not the small addition it was first framed as. `FREEZE`, `REVERSE` and `POSITION` are not
-planned. Until one of these actually ships, 0.2.x grows only additively.
+`--height` flag), not the small addition it was first framed as; `OVERLAY` video-layer + chroma-key parameters
+(`overlay.py --video`/`--chromakey`), per ADR-002's own "extend OVERLAY rather than add a type" prescription —
+flagged by issue #11 item 2, not decided or scheduled; and capability ownership for `stabilize` / `sequence` /
+`background` (issue #11 item 3) — undecided whether they belong here, elsewhere, or nowhere. `FREEZE`, `REVERSE`
+and `POSITION` are not planned. Until one of these actually ships, 0.3.x grows only additively.
 
 ## `provides` (docs/decisions.md ADR-006)
 
-`provides` lists this Skill's eight operations by their cross-repository Capability id (`video.trim`, `video.cut`,
-`video.concat`, `video.speed`, `video.fit`, `video.fill`, `video.resize`, `video.overlay` — the same `capability`
-string `operations.OPERATIONS` and `tools[].capability` already carry), each with its `tool_id` and a `lifecycle`.
+`provides` lists this Skill's nine operations by their cross-repository Capability id (`video.trim`, `video.cut`,
+`video.concat`, `video.speed`, `video.fit`, `video.fill`, `video.resize`, `video.overlay`, `video.rotate` — the same
+`capability` string `operations.OPERATIONS` and `tools[].capability` already carry), each with its `tool_id` and a `lifecycle`.
 It exists for `kajisho5/AI-video-production-OS`'s `CapabilityContract.provides` (`docs/SPEC.md` there), so a
 registry can resolve "who provides `video.trim`" without hardcoding this repository. It is additive, not pinned,
 and derived from `OPERATIONS` — it cannot say anything `tools[]` doesn't already say, only index it differently.

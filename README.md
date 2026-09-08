@@ -30,6 +30,7 @@ Provided (capabilities are declared only where an implementation exists):
 | `video.fill` | `FILL` change the aspect, keep the centre by default or a chosen `anchor` (scale to cover, crop) | `ffmpeg-skill/fit` |
 | `video.resize` | `RESIZE` change the size, keep the aspect (`width`, height follows; nothing padded / cropped / stretched) | `ffmpeg-skill/fit` |
 | `video.overlay` | `OVERLAY` still image at a position for a time range | `ffmpeg-skill/overlay` |
+| `video.rotate` | `ROTATE` turn 90/180/270 clockwise and/or mirror horizontal/vertical (no scaling, padding or cropping) | `ffmpeg-skill/fit` |
 
 Plus: timeline assembly (segments with source and timeline ranges, a second track for overlays), deterministic
 operation identity, dry run, reuse of identical earlier results, output validation, provenance, an optional typed
@@ -233,17 +234,21 @@ One request document on stdin (`-`) or a file, **exactly one** JSON document on 
 | `CANCELLED` | 130 | yes | SIGINT / SIGTERM or `timeout_seconds` |
 | `INTERNAL_ERROR` | 1 | no | a bug; still one JSON document, never a traceback on stdout |
 
-## RESIZE, FIT, FILL and the encoding profile
+## RESIZE, FIT, FILL, ROTATE and the encoding profile
 
-The three frame operations never overlap (`contract.frame_semantics`, ADR-003): `RESIZE` changes the size and keeps
-the aspect (`width`, `height = even(width × sh / sw)`); `FIT` changes the aspect and keeps every pixel (padded);
-`FILL` changes the aspect and keeps the centre by default (cropped) — an optional `anchor: {x, y}` (each `0..1`,
-`0.5` default) picks a different edge to keep instead (0.2.0, ADR-009), mapped to ffmpeg-skill 0.10.0's
+The frame operations never overlap (`contract.frame_semantics`, ADR-003 / ADR-011): `RESIZE` changes the size and
+keeps the aspect (`width`, `height = even(width × sh / sw)`); `FIT` changes the aspect and keeps every pixel
+(padded); `FILL` changes the aspect and keeps the centre by default (cropped) — an optional `anchor: {x, y}` (each
+`0..1`, `0.5` default) picks a different edge to keep instead (0.2.0, ADR-009), mapped to ffmpeg-skill 0.10.0's
 `fit.py --crop-x/--crop-y`; it changes what survives the crop, never the target frame size below. FIT / FILL
 without `width` keep the source width when the target aspect is not wider than the source, else `even(sh × aspect)`;
-`even()` is ffmpeg-skill's rule (round, then up to even). The target frame is computed from the probed source
-*before* execution, reported as `normalized.target_frame` in plan steps and operation records, and the output must
-match it exactly. Rotation metadata (a display matrix) is honoured; nothing is ever stretched.
+`even()` is ffmpeg-skill's rule (round, then up to even). `ROTATE` changes neither size nor aspect on its own terms
+— it turns the picture `degrees` clockwise (`90 | 180 | 270`) and/or mirrors it (`flip: h | v`; at least one of the
+two is required), mapped straight onto `fit.py --rotate`/`--flip` (0.3.0, ADR-011); a 90/270 turn swaps width and
+height (every source pixel kept losslessly, like `TRIM`/`CUT`/`SPEED`/`OVERLAY` — no scaling, padding or cropping,
+unlike `RESIZE`/`FIT`/`FILL`), 180 and a flip alone keep the frame as it is. The target frame is computed from the
+probed source *before* execution, reported as `normalized.target_frame` in plan steps and operation records, and
+the output must match it exactly. Rotation metadata (a display matrix) is honoured; nothing is ever stretched.
 
 `outputs[].encoding` is the whole encoding surface: `crf` (14..28) and `preset` (x264 vocabulary minus placebo),
 typed and closed, part of the operation's identity, refused where a stream copy would ignore it. Codec (h264, or hevc
@@ -356,8 +361,8 @@ VIDEO_EDITING_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill python -m unittest -v test_
   transition + reorder, fill / resize / fit, speed + overlay, the full pipeline (trim → fill → second source →
   concat → validation, plan before run, reuse, chained invalidation), range beyond duration, transition too
   long, corrupt input, still image as video, timeout → `CANCELLED`, doctor; and one real-media E2E per operation
-  (`CUT`, `CONCAT`, `CONCAT` with a silent input, `SPEED`, `RESIZE`, `FIT`, `FILL`, `OVERLAY`) asserting file
-  existence, size, sha256, duration, streams, frame and timeline, the overlay-without-audio and corrupt-image
+  (`CUT`, `CONCAT`, `CONCAT` with a silent input, `SPEED`, `RESIZE`, `FIT`, `FILL`, `ROTATE`, `OVERLAY`) asserting
+  file existence, size, sha256, duration, streams, frame and timeline, the overlay-without-audio and corrupt-image
   refusals, a cut → speed → resize → overlay chain with two outputs and full reuse, and doctor availability; and the
   media matrix (A video-only through every single-input operation, B video + audio, C mixed audio in both orders,
   D different resolutions, E different frame rates, F a 0.5 s clip, G a 30 s clip with an encoding profile and
@@ -396,8 +401,8 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 
 - Operations beyond ffmpeg-skill's tools: `CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION` are not implemented.
 - The encoding surface is `crf` + `preset`; codec, bitrate modes, audio and pixel format are the engine's.
-- `TRIM` / `CUT` / `SPEED` / `OVERLAY` refuse an input whose frame has an odd width or height (`odd_frame`); the
-  frame-changing operations normalize it to even first.
+- `TRIM` / `CUT` / `SPEED` / `OVERLAY` / `ROTATE` refuse an input whose frame has an odd width or height
+  (`odd_frame`); the frame-changing operations normalize it to even first.
 - The integration HDR fixture is an SDR pattern flagged as HDR (colour tags); real HDR10 / HLG content and tone
   mapping are not covered. Verified against ffmpeg-skill 0.9.0, 0.9.1, and 0.10.0 (full real-media integration
   matrix, 43/43, against a live 0.10.0 checkout).
@@ -420,9 +425,17 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 repository's own pinning convention; `video-production-agent` must widen `SUPPORTED_SKILL_VERSIONS` before it
 accepts this contract (a known, accepted, disclosed cost — not an oversight).
 
-Contract 0.3.0 candidates, none scheduled (ADR-002 / ADR-003, `contract.versioning.next`): `CROP` (pixel rectangle),
-`IMAGE_INSERT` (still → timed clip), and `RESIZE.height` all wait on ffmpeg-skill shipping a typed tool/flag they
-need — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be blocked this way too
-(`fit.py` has no `--height` flag), not the small addition ADR-003 first described. Not planned: `FREEZE`
-(compose from IMAGE_INSERT), `REVERSE`, `POSITION` (would extend OVERLAY with a video layer).
+**Shipped in 0.3.0** (ADR-011): a new `ROTATE` operation (`degrees: 90 | 180 | 270`, `flip: h | v`, at least one
+required), mapping straight onto ffmpeg-skill `fit.py`'s pre-existing `--rotate`/`--flip` flags — no new engine
+capability needed. Breaking by the same pinning convention as 0.2.0 (`operations` and `capabilities` both gained a
+key); `video-production-agent` must widen `SUPPORTED_SKILL_VERSIONS` again.
+
+Contract 0.4.0 candidates, none scheduled (ADR-002 / ADR-003, `contract.versioning.next`, `kajisho5/video-editing-skill#11`):
+`CROP` (pixel rectangle), `IMAGE_INSERT` (still → timed clip), and `RESIZE.height` all wait on ffmpeg-skill shipping
+a typed tool/flag they need — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be
+blocked this way too (`fit.py` has no `--height` flag), not the small addition ADR-003 first described. Flagged but
+not decided or scheduled (issue #11 items 2 and 3): `OVERLAY` video-layer + chroma-key parameters
+(`overlay.py --video`/`--chromakey`, per ADR-002's own "extend OVERLAY rather than add a type" prescription), and
+capability ownership for `stabilize` / `sequence` / `background` (here, elsewhere, or nowhere — no decision yet).
+Not planned: `FREEZE` (compose from IMAGE_INSERT), `REVERSE`, `POSITION` (would extend OVERLAY with a video layer).
 Also: an `OVERLAY` that tolerates silent inputs once ffmpeg-skill's overlay terminates on them.

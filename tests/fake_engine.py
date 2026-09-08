@@ -146,6 +146,8 @@ SCRIPT = textwrap.dedent('''
                 ratio = src_ratio
             width = even(int(flag("--width"))) if flag("--width") else even(sw if ratio <= src_ratio else sh * ratio)
             height = even(width / ratio)
+        if name == "fit" and flag("--rotate") in ("90", "270"):   # fit.py: a 90/270 turn swaps the displayed frame
+            width, height = height, width
         encoding = {"crf": int(flag("--crf", 18)), "preset": flag("--preset", "medium")}
         with open(out, "wb") as fh:
             fh.write(b"FAKE" + json.dumps({"duration": expected_duration(), "tool": name, "args": args, "noaudio": noaudio,

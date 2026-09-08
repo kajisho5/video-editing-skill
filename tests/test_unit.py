@@ -104,6 +104,23 @@ class OperationParamTests(unittest.TestCase):
         with self.assertRaises(EditError):   # FIT never crops: anchor is FILL-only
             operations.validate_params("FIT", {"aspect": "9:16", "anchor": {"x": 0, "y": 0}}, "op")
 
+    def test_rotate(self):
+        # kajisho5/video-editing-skill#11 item 1: ROTATE maps to ffmpeg-skill fit.py's --rotate / --flip
+        self.assertEqual(operations.validate_params("ROTATE", {"degrees": 90}, "op"), {"degrees": 90})
+        self.assertEqual(operations.validate_params("ROTATE", {"flip": "v"}, "op"), {"flip": "v"})
+        self.assertEqual(operations.validate_params("ROTATE", {"degrees": 270, "flip": "h"}, "op"), {"degrees": 270, "flip": "h"})
+        with self.assertRaises(EditError) as cm:   # nothing to do: fit.py itself dies the same way
+            operations.validate_params("ROTATE", {}, "op")
+        self.assertEqual(cm.exception.code, "INVALID_REQUEST")
+        for bad in ({"degrees": 45}, {"degrees": "90"}, {"degrees": True}, {"degrees": 90.0}):
+            with self.assertRaises(EditError, msg=repr(bad)):
+                operations.validate_params("ROTATE", bad, "op")
+        for bad in ({"flip": "horizontal"}, {"flip": 1}, {"flip": "H"}):
+            with self.assertRaises(EditError, msg=repr(bad)):
+                operations.validate_params("ROTATE", bad, "op")
+        with self.assertRaises(EditError):   # unknown key
+            operations.validate_params("ROTATE", {"degrees": 90, "width": 100}, "op")
+
 
 class ProjectTests(unittest.TestCase):
     def setUp(self):
@@ -246,6 +263,20 @@ class ProjectTests(unittest.TestCase):
         self.assertNotIn("--json", argv)
         t = steps["t1"].argv_for(["/x/1.mp4"], "/x/o.mp4")
         self.assertEqual(t, ["/x/1.mp4", "-o", "/x/o.mp4", "--start", "1.000000", "--end", "3.000000", "--accurate"])
+
+    def test_rotate_compiles_to_ffmpeg_skill_fit_flags(self):
+        # kajisho5/video-editing-skill#11 item 1: ROTATE -> fit.py --rotate / --flip
+        params = operations.validate_params("ROTATE", {"degrees": 90, "flip": "h"}, "op")
+        step = compile_operation(EditOperation("r", "ROTATE", ["A"], params))
+        self.assertEqual(step.tool, "ffmpeg-skill/fit")
+        argv = step.argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertEqual(argv, ["/x/a.mp4", "-o", "/x/o.mp4", "--rotate", "90", "--flip", "h"])
+        degrees_only = operations.validate_params("ROTATE", {"degrees": 180}, "op")
+        argv2 = compile_operation(EditOperation("r2", "ROTATE", ["A"], degrees_only)).argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertEqual(argv2, ["/x/a.mp4", "-o", "/x/o.mp4", "--rotate", "180"])
+        flip_only = operations.validate_params("ROTATE", {"flip": "v"}, "op")
+        argv3 = compile_operation(EditOperation("r3", "ROTATE", ["A"], flip_only)).argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertEqual(argv3, ["/x/a.mp4", "-o", "/x/o.mp4", "--flip", "v"])
 
     def test_fill_anchor_compiles_to_ffmpeg_skill_crop_flags(self):
         # docs/decisions.md ADR-009: FILL.anchor -> fit.py --crop-x/--crop-y (ffmpeg-skill 0.10.0)
@@ -676,7 +707,7 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
             self.assertEqual(ex.target_frame("c"), want, (params, first))
         # an odd input frame: normalized to even by RESIZE / FIT / FILL / CONCAT, refused up front by the frame-keeping operations
         for op in ({"type": "TRIM", "params": {"start": 0, "end": 1}}, {"type": "CUT", "params": {"keep": [{"start": 0, "end": 1}]}}, {"type": "SPEED", "params": {"factor": 2}},
-                   {"type": "OVERLAY", "params": {"image": "logo"}}):
+                   {"type": "OVERLAY", "params": {"image": "logo"}}, {"type": "ROTATE", "params": {"degrees": 90}}):
             ex = self.executor([dict(op, id="x", input="A")], probes=dict(odd, logo={"duration": None, "video": {"width": 120, "height": 40}, "audio": None}))
             with self.assertRaises(EditError, msg=op["type"]) as cm:
                 ex._check_media()
@@ -685,9 +716,15 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
             ex = self.executor([dict(op, id="x", input="A")], probes=odd)
             ex._check_media()
             self.assertTrue(all(v % 2 == 0 for v in ex.target_frame("x")), op)
-        # the semantics block names the three types and no operation stretches
+        # ROTATE swaps width x height for a 90 / 270 turn, keeps them for 180 or a flip alone
+        for degrees, want in ((90, (360, 640)), (180, (640, 360)), (270, (360, 640))):
+            ex = self.executor([{"id": "x", "type": "ROTATE", "input": "A", "params": {"degrees": degrees}}], probes={"A": self.probe(640, 360), "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+            self.assertEqual(ex.target_frame("x"), want, degrees)
+        ex = self.executor([{"id": "x", "type": "ROTATE", "input": "A", "params": {"flip": "h"}}], probes={"A": self.probe(640, 360), "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+        self.assertEqual(ex.target_frame("x"), (640, 360), "a flip alone never changes the frame size")
+        # the semantics block names the four types and no operation stretches
         sem = contract.skill_contract()["frame_semantics"]
-        self.assertEqual(set(sem) - {"rules"}, {"RESIZE", "FIT", "FILL"})
+        self.assertEqual(set(sem) - {"rules"}, {"RESIZE", "FIT", "FILL", "ROTATE"})
         self.assertTrue(any("stretch" in r for r in sem["rules"]))
 
     def test_hdr_vfr_and_codec(self):
@@ -754,13 +791,13 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         self.assertIn("video codec choice", c["encoding"]["not_configurable"])
         self.assertEqual(c["request_shape"], json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))["request_shape"])
 
-    def test_pinned_blocks_are_unchanged_since_0_2_0(self):
+    def test_pinned_blocks_are_unchanged_since_0_3_0(self):
         """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the golden copy.
 
-        Bumped from 0.1.0 to 0.2.0 deliberately (docs/decisions.md ADR-009: FILL.anchor, outputs[].encoding
-        formalized in request_shape) - a breaking contract_version change video-production-agent's
-        SUPPORTED_SKILL_VERSIONS = ("0.1.",) must widen before it accepts this release; this test only
-        guards against further *undocumented* drift from here, not against 0.2.0 itself.
+        Bumped from 0.2.0 to 0.3.0 deliberately (docs/decisions.md ADR-011: a new `ROTATE` operation type) - a
+        breaking contract_version change video-production-agent's SUPPORTED_SKILL_VERSIONS = ("0.1.",) must widen
+        before it accepts this release, same as 0.2.0 (ADR-009); this test only guards against further
+        *undocumented* drift from here, not against 0.3.0 itself.
 
         `engine` is deliberately excluded from the fields compared below: it is an additive block
         (docs/decisions.md ADR-008), free to drift as the ffmpeg-skill version range this Skill enforces changes
@@ -770,7 +807,7 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         for k in ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "capability_names", "schemas",
                   "response_shape", "request_shape", "formats"):
             self.assertEqual(c[k], golden[k], k)
-        self.assertEqual(c["version"], "0.2.0")
+        self.assertEqual(c["version"], "0.3.0")
         for t in c["tools"]:
             g = next(x for x in golden["tools"] if x["tool_id"] == t["tool_id"])
             for f in ("parameters", "required_capabilities", "inputs", "result_keys", "executed_by", "deterministic", "produces_output", "writes_media", "kind"):

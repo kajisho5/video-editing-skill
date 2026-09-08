@@ -16,6 +16,8 @@ TRANSITIONS = ("fade", "dissolve", "wipeleft", "wiperight", "wipeup", "wipedown"
                "circleopen", "circleclose", "fadeblack", "fadewhite", "smoothleft", "smoothright", "radial")
 POSITIONS = ("top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right")
 PRECISIONS = ("frame", "keyframe")
+ROTATIONS = (90, 180, 270)
+FLIPS = ("h", "v")
 _COLOR = re.compile(r"^(black|white|gray|grey|red|green|blue|yellow|0x[0-9A-Fa-f]{6})$")
 _ASPECT = re.compile(r"^([1-9]\d{0,3}):([1-9]\d{0,3})$")
 
@@ -48,8 +50,9 @@ ENCODING = {
                 "two outputs of one operation with different profiles (DEPENDENCY_ERROR)"],
 }
 
-# ---- frame semantics (contract.frame_semantics): RESIZE, FIT and FILL never overlap. Targets follow ffmpeg-skill fit.py
-# exactly (even(n) = round(n), +1 when odd), so the frame is normalized before execution and verified afterwards.
+# ---- frame semantics (contract.frame_semantics): RESIZE, FIT, FILL and ROTATE never overlap. Targets follow
+# ffmpeg-skill fit.py exactly (even(n) = round(n), +1 when odd), so the frame is normalized before execution and
+# verified afterwards.
 FRAME_SEMANTICS = {
     "RESIZE": {"changes": "frame size", "keeps": "the source aspect ratio; nothing is padded, cropped or stretched",
                "target": "width = params.width (even); height = even(width * source_height / source_width)",
@@ -59,10 +62,16 @@ FRAME_SEMANTICS = {
             "when": "a delivery aspect differs from the source and nothing may be lost"},
     "FILL": {"changes": "frame aspect ratio", "keeps": "the centre of the picture (scaled to cover, centre-cropped); edges are lost",
              "target": "same rule as FIT", "when": "a delivery aspect differs from the source and a full frame matters more than the edges"},
+    "ROTATE": {"changes": "picture orientation only (a clockwise turn and/or a mirror); frame size changes only by the width x height swap a 90 / 270 turn implies -- never by scaling",
+               "keeps": "every source pixel losslessly; no scaling, padding or cropping (like TRIM / CUT / SPEED / OVERLAY, unlike RESIZE / FIT / FILL)",
+               "target": "width, height = source width, height (already measured as displayed); swapped when params.degrees is 90 or 270",
+               "when": "a source was recorded or tagged with the wrong orientation, or needs mirroring, and no aspect or size change is wanted"},
     "rules": ["a source whose rotation metadata is ±90 / 270 is measured with width and height swapped (as the engine does)",
               "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)",
               "CONCAT (ffmpeg-skill join.py): params.width x params.height; only one given -> the other from the first input's aspect (round); none -> the first input's frame; then floored to even",
-              "TRIM / CUT / SPEED / OVERLAY keep the input frame; an input with an odd width or height is refused before execution (INVALID_INPUT odd_frame) because the engine's encoders need even sizes",
+              "TRIM / CUT / SPEED / OVERLAY / ROTATE keep the input frame -- losslessly, no filter maths beyond a turn or a mirror for ROTATE, whose target frame is the source's "
+              "width x height, swapped for a 90 / 270 degrees turn; an input with an odd width or height is refused before execution (INVALID_INPUT odd_frame) because the "
+              "engine's encoders need even sizes",
               "no operation stretches (distorts) the picture; anamorphic output is not provided",
               "the normalized target frame is reported in plan.steps[].normalized and execution.operations[].normalized and verified on the output exactly"],
 }
@@ -73,7 +82,7 @@ MEDIA_POLICY = {
         "source with no video stream (audio-only files, corrupt containers): INVALID_INPUT no_video_stream",
         "video source without a duration (a still image or a broken container declared as video): INVALID_INPUT no_duration",
         "image source that does not decode to a frame: INVALID_INPUT image_undecodable",
-        "TRIM / CUT / SPEED / OVERLAY on an input whose frame has an odd width or height: INVALID_INPUT odd_frame (the encoder needs even sizes; RESIZE / FIT / FILL / CONCAT normalize to even)",
+        "TRIM / CUT / SPEED / OVERLAY / ROTATE on an input whose frame has an odd width or height: INVALID_INPUT odd_frame (the encoder needs even sizes; RESIZE / FIT / FILL / CONCAT normalize to even)",
         "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
         "unsupported input extension / output container: UNSUPPORTED_FORMAT", "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
         "engine tool / encoder / filter missing: TOOL_ERROR (not retryable)",
@@ -98,7 +107,7 @@ MEDIA_POLICY = {
         "variable_frame_rate": "allowed; conformed to constant fps by the engine (warning)",
         "hdr": "allowed alone (output hevc, warning); not mixed with SDR in CONCAT",
         "rotation_metadata": "honoured (a display matrix): the frame is measured as displayed; a legacy `rotate` tag is ignored by ffmpeg >= 5 and therefore by the probe",
-        "odd_frame": "RESIZE / FIT / FILL / CONCAT normalize to even sizes; TRIM / CUT / SPEED / OVERLAY refuse it up front (odd_frame)",
+        "odd_frame": "RESIZE / FIT / FILL / CONCAT normalize to even sizes; TRIM / CUT / SPEED / OVERLAY / ROTATE refuse it up front (odd_frame)",
     },
 }
 
@@ -124,6 +133,8 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
                "summary": "scale to a width keeping the aspect ratio"},
     "OVERLAY": {"arity": "one", "tool": "ffmpeg-skill/overlay", "capability": "video.overlay",
                 "summary": "composite a still image (logo, lower-third PNG) at a named position for a time range"},
+    "ROTATE": {"arity": "one", "tool": "ffmpeg-skill/fit", "capability": "video.rotate",
+               "summary": "turn the picture clockwise by 90/180/270 and/or mirror it horizontally or vertically (no scaling, padding or cropping)"},
 }
 
 # Media compatibility per operation: what every input must be, what the output keeps, and which mismatches are
@@ -157,6 +168,9 @@ MEDIA: Dict[str, Dict[str, Any]] = {
                 "output": {"frame_size": "as input", "audio": "as input", "fps": "as input"},
                 "refused_before_execution": ["source without a video stream or duration", "image that does not decode",
                                              "start / end beyond the input duration", "input frame with an odd width or height (odd_frame)"]},
+    "ROTATE": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+               "output": {"frame_size": "as input, with width and height swapped when params.degrees is 90 or 270", "audio": "as input", "fps": "as input"},
+               "refused_before_execution": ["source without a video stream or duration", "input frame with an odd width or height (odd_frame)"]},
 }
 
 # capabilities that video editing normally has but ffmpeg-skill 0.9.x has no tool for: declared as gaps,
@@ -189,6 +203,12 @@ def _even(v: Any, what: str) -> int:
 
 def _enum(v: Any, what: str, allowed: tuple) -> str:
     if not isinstance(v, str) or v not in allowed:
+        raise EditError("INVALID_REQUEST", f"{what}: must be one of {list(allowed)}")
+    return v
+
+
+def _int_choice(v: Any, what: str, allowed: tuple) -> int:
+    if isinstance(v, bool) or not isinstance(v, int) or v not in allowed:
         raise EditError("INVALID_REQUEST", f"{what}: must be one of {list(allowed)}")
     return v
 
@@ -341,6 +361,14 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
             if not (0 <= fd <= 10):
                 raise EditError("INVALID_REQUEST", f"{what}.fade: must be between 0 and 10 seconds")
             p["fade"] = fd
+    elif op_type == "ROTATE":
+        _keys(params, what, ("degrees", "flip"))
+        if "degrees" in params:
+            p["degrees"] = _int_choice(params["degrees"], what + ".degrees", ROTATIONS)
+        if "flip" in params:
+            p["flip"] = _enum(params["flip"], what + ".flip", FLIPS)
+        if "degrees" not in p and "flip" not in p:
+            raise EditError("INVALID_REQUEST", f"{what}: give degrees and/or flip; nothing to do")
     return p
 
 

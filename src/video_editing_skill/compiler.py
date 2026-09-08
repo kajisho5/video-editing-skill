@@ -17,7 +17,7 @@ ENCODING_FLAGS = ("crf", "preset")   # the typed encoding profile (operations.va
 ALLOWED_FLAGS: Dict[str, tuple] = {
     "cut": ("start", "end", "segments", "accurate") + ENCODING_FLAGS,
     "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color") + ENCODING_FLAGS,
-    "fit": ("duration", "method", "max_speed", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps") + ENCODING_FLAGS,
+    "fit": ("duration", "method", "max_speed", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps", "rotate", "flip") + ENCODING_FLAGS,
     "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
     "probe": (),
 }
@@ -126,6 +126,13 @@ def _compile(op: EditOperation) -> Step:
         args = {"width": p["width"]}
         if "fps" in p:
             args["fps"] = _fps_text(p["fps"])
+        return Step(op, "ffmpeg-skill/fit", args, video_inputs)
+    if op.type == "ROTATE":
+        args = {}
+        if "degrees" in p:
+            args["rotate"] = p["degrees"]
+        if "flip" in p:
+            args["flip"] = p["flip"]
         return Step(op, "ffmpeg-skill/fit", args, video_inputs)
     if op.type == "OVERLAY":
         pos = p["position"]
