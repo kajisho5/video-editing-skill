@@ -7,19 +7,29 @@ flag that is not listed in ALLOWED_FLAGS for its tool.
 """
 import os
 from fractions import Fraction
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .errors import EditError
 from .project import EditOperation, EditProject
 from .timebase import Time, fraction_text
 
 ENCODING_FLAGS = ("crf", "preset")   # the typed encoding profile (operations.validate_encoding): every re-encoding tool takes them
+                                     # (crf is passed as --quality where the engine has it: ffmpeg_skill.FLAG_SPELLINGS)
 ALLOWED_FLAGS: Dict[str, tuple] = {
     "cut": ("start", "end", "segments", "accurate") + ENCODING_FLAGS,
     "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color") + ENCODING_FLAGS,
     "fit": ("duration", "method", "max_speed", "smooth", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps", "rotate", "flip") + ENCODING_FLAGS,
     "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
     "probe": (),
+}
+
+
+# The flags every operation of a type passes whatever its parameters; doctor reports the type MISSING when the installed
+# ffmpeg-skill lacks one. Optional parameters' flags are checked per request before anything runs (Executor._check_engine).
+OPERATION_FLAGS: Dict[str, tuple] = {
+    "TRIM": ("--start", "--end"), "CUT": ("--segments",), "CONCAT": ("--transition", "--duration", "--fit", "--pad-color"),
+    "SPEED": ("--duration", "--method", "--max-speed"), "FIT": ("--aspect", "--fit", "--pad-color"), "FILL": ("--aspect", "--fit"),
+    "RESIZE": ("--width",), "ROTATE": ("--rotate", "--flip"), "OVERLAY": ("--image", "--position", "--margin"),
 }
 
 
@@ -47,8 +57,15 @@ class Step:
                 "arguments": dict(self.args),
                 "duration_from_input": self.needs_input_duration}
 
-    def argv_for(self, inputs: List[str], output: str, image: Optional[str] = None, input_duration: Optional[Time] = None) -> List[str]:
-        """Materialise argv from resolved paths. Paths are positional / -o / --image only."""
+    def flags(self) -> List[str]:
+        """The CLI flags this step passes (before any spelling is resolved against the installed engine)."""
+        keys = ["duration" if k == "_factor" else k for k, v in self.args.items() if v is not False and v is not None]
+        return ["--" + k.replace("_", "-") for k in keys] + (["--image"] if self.image_input else [])
+
+    def argv_for(self, inputs: List[str], output: str, image: Optional[str] = None, input_duration: Optional[Time] = None,
+                 resolve: Optional[Callable[[str], Optional[str]]] = None) -> List[str]:
+        """Materialise argv from resolved paths. Paths are positional / -o / --image only. `resolve` maps a flag to the
+        spelling the installed engine accepts (FfmpegSkill.resolve_flag); None when it accepts no spelling of it."""
         allowed = ALLOWED_FLAGS[self.script]
         argv: List[str] = list(inputs) + ["-o", output]
         args = dict(self.args)
@@ -63,6 +80,14 @@ class Step:
             if key not in allowed:
                 raise EditError("INTERNAL_ERROR", f"flag {key!r} is not allowed for {self.tool}")
             flag = "--" + key.replace("_", "-")
+            if val is False or val is None:
+                continue
+            if resolve is not None:
+                spelled = resolve(flag)
+                if spelled is None:
+                    raise EditError("TOOL_ERROR", f"{self.tool} in this ffmpeg-skill checkout has no {flag} flag", {"tool": self.tool, "missing": [f"flag:{flag}"]},
+                                    retryable=False)
+                flag = spelled
             if val is True:
                 argv.append(flag)
             elif val is False or val is None:

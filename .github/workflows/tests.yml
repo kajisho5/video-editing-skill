@@ -2,10 +2,14 @@ name: tests
 
 # Runs on every pull request and on pushes to main (same policy as media-analysis-skill), plus a manual trigger.
 # workflow_dispatch is only offered by GitHub once this file is on the default branch; pull_request works from the PR head.
+# The daily schedule runs the integration matrix against ffmpeg-skill main, so a new ffmpeg-skill release that breaks
+# this Skill shows up without waiting for a change here (docs/decisions.md ADR-013).
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "23 5 * * *"   # daily, 05:23 UTC
   workflow_dispatch:
 
 jobs:
@@ -35,14 +39,24 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e .
-      - run: python -m unittest -v test_unit test_paths test_security test_engine_contract
+      - run: python -m unittest -v test_unit test_paths test_security test_engine_contract test_engine_compat
         working-directory: tests
       - run: video-editing contract --check tests/contract/contract.json
       - run: video-editing skill --json > /dev/null
         shell: bash
 
   integration:
+    # The same real-media suite against two ffmpeg-skill checkouts: the oldest release every operation's flags exist in
+    # (0.11.0, pinned by commit so it never moves) and ffmpeg-skill main, so both ends of what this Skill detects are
+    # exercised. No version window: what differs between them is detected (ADR-013).
+    name: integration (ffmpeg-skill ${{ matrix.engine.name }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        engine:
+          - {name: "0.11.0", ref: b388035b66b3a4c370be57078ff42b115987f76c}
+          - {name: main, ref: main}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -52,6 +66,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: kajisho5/ffmpeg-skill
+          ref: ${{ matrix.engine.ref }}
           path: vendor/ffmpeg-skill
       - run: pip install -e .
       - run: video-editing doctor --json --workspace .

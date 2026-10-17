@@ -19,6 +19,18 @@ from video_editing_skill.canonical import sha256_file  # noqa: E402
 
 READY = HAVE_FFMPEG and FFMPEG_SKILL is not None and FFMPEG_SKILL.version_supported() and not FFMPEG_SKILL.missing_tools()
 REASON = "needs ffmpeg/ffprobe on PATH and a supported ffmpeg-skill checkout (VIDEO_EDITING_FFMPEG_SKILL_DIR)"
+# Detected, not assumed from the version (ADR-013): ffmpeg-skill 0.10.0's fit.py has no --rotate / --flip (added in
+# 0.11.0). Against such a checkout ROTATE must be refused up front and reported MISSING by doctor; that is what is tested.
+HAS_ROTATE = READY and FFMPEG_SKILL.missing_flags("fit", ["--rotate", "--flip"]) == []
+ALL_OPERATIONS = ["CONCAT", "CUT", "FILL", "FIT", "OVERLAY", "RESIZE", "ROTATE", "SPEED", "TRIM"]
+AVAILABLE_OPERATIONS = ALL_OPERATIONS if HAS_ROTATE else [t for t in ALL_OPERATIONS if t != "ROTATE"]
+# fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
+# exceed the source": the exact frame each rule must deliver, written out (old, bounded).
+BOUNDED = READY and FFMPEG_SKILL.fit_bounds_by_source()
+
+
+def fit_frame(old, bounded):
+    return bounded if BOUNDED else old
 
 
 def probe(path):
@@ -201,9 +213,13 @@ class RealMediaTests(unittest.TestCase):
 
     def test_doctor(self):
         rc, out, _ = cli(["doctor", "--json", "--workspace", self.ws], env=self.env)
-        self.assertEqual(rc, 0)
-        self.assertTrue(out["ok"])
+        self.assertEqual(rc, 0 if HAS_ROTATE else 1)
+        self.assertEqual(out["ok"], HAS_ROTATE)
+        if not HAS_ROTATE:
+            self.assertEqual(out["problems"], ["operation ROTATE unavailable: flag:ffmpeg-skill/fit --rotate, flag:ffmpeg-skill/fit --flip"])
         self.assertFalse(out["secrets_shown"])
+        self.assertIsNone(out["engine"]["compatibility"]["upper_bound"])
+        self.assertEqual({t["flags_from"] for t in out["engine"]["compatibility"]["tools"].values()} - {"contract", "help"}, set())
 
 
 if __name__ == "__main__":
@@ -389,6 +405,12 @@ class OperationE2ETests(unittest.TestCase):
 
     def test_rotate(self):
         # kajisho5/video-editing-skill#11 item 1: ROTATE -> fit.py --rotate / --flip
+        if not HAS_ROTATE:   # an engine without the flags: refused before anything runs, nothing delivered
+            out = self.one({"type": "ROTATE", "input": "A", "params": {"degrees": 90}}, expect=10)
+            self.assertEqual(out["error"]["code"], "TOOL_ERROR")
+            self.assertIn("flag:--rotate", out["error"]["details"]["missing"])
+            self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
+            return
         out = self.one({"type": "ROTATE", "input": "A", "params": {"degrees": 90}})
         path90, streams = self.facts(out, 6.0)
         self.assertEqual(size(path90), (360, 640), "a 90 degree turn swaps width and height")
@@ -459,8 +481,8 @@ class OperationE2ETests(unittest.TestCase):
 
     def test_doctor_reports_every_operation_available(self):
         rc, rep, err = cli(["doctor", "--json", "--workspace", self.ws], env=self.env)
-        self.assertEqual(rc, 0, err)
-        self.assertEqual(sorted(rep["supported_operations"]), ["CONCAT", "CUT", "FILL", "FIT", "OVERLAY", "RESIZE", "ROTATE", "SPEED", "TRIM"])
+        self.assertEqual(rc, 0 if HAS_ROTATE else 1, err)
+        self.assertEqual(sorted(rep["supported_operations"]), AVAILABLE_OPERATIONS)
         self.assertTrue(rep["engine"]["capabilities_reported"])
         self.assertEqual(rep["engine"]["version"], FFMPEG_SKILL.version)
 
@@ -731,10 +753,10 @@ class MediaMatrixE2ETests(unittest.TestCase):
     def test_frame_targets_are_exact(self):
         cases = [({"type": "RESIZE", "input": "A", "params": {"width": 250}}, "a", (250, 142)),
                  ({"type": "RESIZE", "input": "B", "params": {"width": 300}}, "b", (300, 170)),
-                 ({"type": "FIT", "input": "A", "params": {"aspect": "21:9"}}, "a", (840, 360)),
+                 ({"type": "FIT", "input": "A", "params": {"aspect": "21:9"}}, "a", fit_frame((840, 360), (640, 274))),
                  ({"type": "FILL", "input": "A", "params": {"aspect": "4:3", "width": 334}}, "a", (334, 250)),
-                 ({"type": "FIT", "input": "B", "params": {"aspect": "9:16"}}, "b", (1280, 2276)),
-                 ({"type": "FILL", "input": "A", "params": {"aspect": "1:1"}}, "a", (640, 640))]
+                 ({"type": "FIT", "input": "B", "params": {"aspect": "9:16"}}, "b", fit_frame((1280, 2276), (406, 720))),
+                 ({"type": "FILL", "input": "A", "params": {"aspect": "1:1"}}, "a", fit_frame((640, 640), (360, 360)))]
         for op, key, frame in cases:
             self.setUp()
             doc = request([{"id": op["input"], "path": self.media[key]}], [dict(op, id="x")], [{"id": "o", "operation": "x", "path": "out/o.mp4"}])
@@ -752,7 +774,7 @@ class MediaMatrixE2ETests(unittest.TestCase):
         out = self.run_cli("run", doc, expect=3)
         self.assertEqual((out["error"]["details"]["reason"], out["error"]["details"]["frame"]), ("odd_frame", [641, 361]))
         self.assertFalse(os.path.exists(os.path.join(self.ws, ".video-editing")), "nothing ran")
-        for op, frame in (({"type": "RESIZE", "input": "O", "params": {"width": 202}}, (202, 114)), ({"type": "FIT", "input": "O", "params": {"aspect": "1:1"}}, (642, 642)),
+        for op, frame in (({"type": "RESIZE", "input": "O", "params": {"width": 202}}, (202, 114)), ({"type": "FIT", "input": "O", "params": {"aspect": "1:1"}}, fit_frame((642, 642), (362, 362))),
                           ({"type": "CONCAT", "inputs": ["O", "A"], "params": {}}, (640, 360))):
             self.setUp()
             doc = request([self.src("odd", "O"), self.src("a", "A")], [dict(op, id="x")], [{"id": "o", "operation": "x", "path": "out/o.mp4"}])

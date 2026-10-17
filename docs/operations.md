@@ -112,7 +112,7 @@ image must decode to a frame. Per operation:
 
 `OVERLAY` no longer requires audio (ADR-009): ffmpeg-skill 0.9.x's overlay (`-loop 1` image + `-shortest`) could run
 unbounded on a video without an audio stream, but ffmpeg-skill >=0.10.0 bounds it with an explicit `-t <video
-duration>` instead, verified against real audio-less footage. `SUPPORTED_MIN` was bumped to `0.10.0` accordingly.
+duration>` instead, verified against real audio-less footage. The floor (`MIN_VERSION`, formerly `SUPPORTED_MIN`) is `0.10.0` accordingly.
 
 Profiles of not-yet-produced intermediates are derived (`EXPECTED`) with the same rules the engine applies (frame
 semantics, audio presence, fps, HDR); once an intermediate exists its probe (`OBSERVED`) is used.
@@ -172,12 +172,33 @@ with the same probe checks; a candidate that no longer validates is discarded an
 
 ## Engine versions and what the tests prove
 
-Verified against ffmpeg-skill 0.9.0, 0.9.1 and 0.10.0 with ffmpeg 6.1.1 (`>=0.10.0,<1.0.0` since ADR-009). 0.9.1
+Originally verified against ffmpeg-skill 0.9.0, 0.9.1 and 0.10.0 with ffmpeg 6.1.1; since ADR-013 there is no upper
+bound (`>=0.10.0`) and the real-media suite runs against 0.11.0 and ffmpeg-skill main (see "Across ffmpeg-skill
+releases" below). 0.9.1
 adds audio-only cut / join modes and a three-state capability doctor (`available` / `missing` / `unknown`); this
 Skill uses none of the audio-only modes and treats a capability absent from `available` as missing (conservative: a
 detection failure refuses rather than guesses). 0.10.0 bounds `overlay.py --image` with an explicit `-t <video
 duration>` instead of `-shortest`, verified (ADR-009) to terminate correctly on a real, audio-less clip — the
-reason `SUPPORTED_MIN` no longer allows 0.9.x, which lacks that fix.
+reason the `MIN_VERSION` floor no longer allows 0.9.x, which lacks that fix.
+
+### Across ffmpeg-skill releases (ADR-013)
+
+What changed between ffmpeg-skill releases and how this Skill handles each, detected rather than version-gated:
+
+| Change | Where | Handling |
+|---|---|---|
+| `fit.py --rotate` / `--flip` | added in 0.11.0 | flags read from the checkout; without them `ROTATE` is MISSING in doctor and refused (`TOOL_ERROR`, `flag:--rotate`) before anything runs |
+| `--crf` → `--quality` (same CRF scale and default) | `--quality` added in 1.10, `--crf` removed in 2.0 | `outputs[].encoding.crf` is passed as `--quality` where the tool lists it, else as `--crf` |
+| `fit.py`'s aspect-only canvas (no `width`) | 0.16.10: never exceeds the source (9:16 from 1280x720 is 406x720, was 1280x2276) | behaviour, not a flag: the expected frame follows the rule of the installed release (`fit_bounds_by_source()`) |
+| probe `hdr` narrowed to PQ/HLG; `bt2020_or_hdr` keeps the old meaning | 2.0 | `bt2020_or_hdr` is read where present, `hdr` where not: a BT.2020 SDR source still expects HEVC |
+| an existing output refused without `--overwrite` | 1.10 warned, 2.0 refuses | never reached: every tool writes a fresh `.partial` path the executor removes first, so `--overwrite` is not passed |
+| a dry run refuses an output directory that does not exist | by 1.26.0 (not in 0.16.0) | `plan` creates the work directory for its previews and removes it again (a plan still writes nothing) |
+| `_common.py` → `_common/` package | 2.0 | not used: this Skill only runs `scripts/<tool>.py` and `scripts/_contract.py` |
+
+Known upstream defect, not worked around: from ffmpeg-skill 2.4.1 (`join.py`, ffmpeg-skill PR #302, commit d6f3318) a plain-cut
+CONCAT whose first clip's audio outruns its picture by under a frame can leave a one-frame timestamp hole at the cut
+(166 frames over 5.567 s at `--fps 30`, `avg_frame_rate` 29.82). This Skill's output validation refuses that file
+(`VALIDATION_ERROR`, `reason: fps`) instead of delivering it; `tests/test_integration.py::test_pipeline_e2e` shows it.
 
 The HDR fixture in `tests/test_integration.py` is an SDR test pattern **flagged** as HDR (BT.2020 primaries, PQ
 transfer tags): it exercises the engine's HDR detection and HEVC path and this Skill's codec / mixing rules, not
