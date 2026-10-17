@@ -1,4 +1,34 @@
-# video-editing-skill
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/app-icon-dark.png">
+    <img src="brand/app-icon.png" width="128" alt="video-editing-skill app icon">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/logo/video-editing-skill-wordmark-white.svg">
+    <img src="brand/logo/video-editing-skill-wordmark-black.svg" height="48" alt="video-editing-skill">
+  </picture>
+</p>
+
+<p align="center"><b>A deterministic, verifiable video editing Skill for the video-production-agent ecosystem.</b><br>
+Typed edit request in, ffmpeg-skill tool calls inside a workspace boundary, validated result with provenance out.<br>
+No decisions, no plan, no LLM. Python ≥ 3.9, standard library only.</p>
+
+<p align="center">
+  <a href="#development"><b>Install</b></a> ·
+  <a href="#scope">Scope</a> ·
+  <a href="#cli">CLI</a> ·
+  <a href="#contract">Contract</a> ·
+  <a href="docs/decisions.md">Design records</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/kajisho5/video-editing-skill/actions/workflows/tests.yml"><img src="https://github.com/kajisho5/video-editing-skill/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+  <img src="https://img.shields.io/badge/python-%E2%89%A53.9-3776AB" alt="Python ≥ 3.9">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
+</p>
 
 A deterministic, verifiable **video editing Skill** for the video-production-agent ecosystem.
 
