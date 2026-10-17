@@ -12,7 +12,8 @@ prints one response document on stdout. Everything else (`skill`, `doctor`, `val
 Workflow for a caller:
 
 1. `doctor --json --workspace DIR` once: `ok` must be true; `operations[]` says per type whether it is AVAILABLE
-   (tool present, encoders / filters found by ffmpeg-skill's doctor) and `supported_operations` lists exactly those.
+   (tool and the flags it needs present in the installed ffmpeg-skill, any release; encoders / filters found by its
+   doctor) and `supported_operations` lists exactly those.
 2. Build the request from the contract's `request_shape`: sources (files under an allowed root), allowlisted
    operations with typed params, outputs (relative paths under the workspace).
 3. `plan - --json` to see the operation graph, the timeline mapping, the tool per step and the commands

@@ -23,7 +23,7 @@ from .contract_check import run_check
 from .doctor import doctor_report, format_doctor
 from .errors import EditError
 from .executor import Executor, _Failed
-from .ffmpeg_skill import engine_doctor, install_signal_handlers, locate, tool_versions
+from .ffmpeg_skill import MIN_VERSION, engine_doctor, install_signal_handlers, locate, tool_versions
 from .paths import PathPolicy
 from .project import parse_request
 from .response import check_response
@@ -81,8 +81,12 @@ def _engine(args: argparse.Namespace):
     skill = locate(args.ffmpeg_skill_dir)
     if skill is None:
         raise EditError("TOOL_ERROR", "ffmpeg-skill not found (set VIDEO_EDITING_FFMPEG_SKILL_DIR or --ffmpeg-skill-dir)", retryable=False)
-    if not skill.version_supported() or skill.missing_tools():
-        raise EditError("TOOL_ERROR", f"ffmpeg-skill {skill.version} at {skill.root} is not supported (missing tools {skill.missing_tools()})", retryable=False)
+    if skill.missing_tools():
+        raise EditError("TOOL_ERROR", f"ffmpeg-skill {skill.version} at {skill.root} lacks required tools {skill.missing_tools()}",
+                        {"missing": [f"tool:ffmpeg-skill/{t}" for t in skill.missing_tools()]}, retryable=False)
+    if skill.below_floor():
+        raise EditError("TOOL_ERROR", f"ffmpeg-skill {skill.version} at {skill.root} is older than {'.'.join(map(str, MIN_VERSION))} "
+                        "(its overlay.py has no -t bound for an audio-less input; ADR-010)", {"reason": "below_floor"}, retryable=False)
     doctor = engine_doctor(skill)
     if not doctor["ok"]:
         raise EditError("TOOL_ERROR", doctor.get("detail") or "ffmpeg-skill is not ready (ffmpeg / ffprobe missing)",
