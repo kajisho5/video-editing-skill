@@ -698,7 +698,7 @@
   },
   "engine": {
     "id": "ffmpeg-skill",
-    "version_range": ">=0.10.0,<1.0.0",
+    "version_range": ">=0.10.0",
     "tools_used": [
       "ffmpeg-skill/probe",
       "ffmpeg-skill/cut",
@@ -707,7 +707,17 @@
       "ffmpeg-skill/overlay"
     ],
     "location": "VIDEO_EDITING_FFMPEG_SKILL_DIR | --ffmpeg-skill-dir | ~/.claude/skills/ffmpeg-skill | ./vendor/ffmpeg-skill | ../ffmpeg-skill",
-    "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout"
+    "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout",
+    "compatibility": {
+      "upper_bound": null,
+      "detected": [
+        "tools present (scripts/<tool>.py)",
+        "CLI flags per tool (scripts/_contract.py --json input_schema, else <tool>.py --help)",
+        "encoding quality flag: --quality where offered, else --crf (same CRF scale)",
+        "probe colour key: video.bt2020_or_hdr where present, else video.hdr (same meaning)"
+      ],
+      "floor_reason": "overlay.py bounds a looped-image composite with -t only from 0.10.0 (behaviour, not a flag)"
+    }
   },
   "execution": {
     "mode": "local_subprocess",
@@ -960,7 +970,7 @@
   "dependencies": [
     {
       "skill_id": "ffmpeg-skill",
-      "version_range": ">=0.10.0,<1.0.0"
+      "version_range": ">=0.10.0"
     }
   ],
   "media_compatibility": {

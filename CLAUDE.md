@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-012). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-013). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -63,9 +63,12 @@ sandboxed session. `.github/workflows/tests.yml` runs both, matrixed across OS/P
 
 ## Ecosystem relationships (verify live, never assume — these repos evolve independently)
 
-- **`ffmpeg-skill`** (dependency) — the only FFmpeg boundary. Version range pinned in
-  `ffmpeg_skill.py` (`SUPPORTED_MIN` / `SUPPORTED_MAX_EXCLUSIVE`, currently `>=0.10.0,<1.0.0`,
-  bumped from `>=0.9.0` in ADR-010).
+- **`ffmpeg-skill`** (dependency) — the only FFmpeg boundary. **No version window since ADR-013**: only a
+  `>=0.10.0` floor (`ffmpeg_skill.MIN_VERSION`, ADR-010's overlay `-t` bound, behaviour no flag reveals); everything
+  that differs between releases is detected from the installed checkout (flags from `_contract.py --json` or
+  `--help`, `--quality`/`--crf`, probe `bt2020_or_hdr`/`hdr`) or, for fit.py's 0.16.10 canvas rule only, chosen by
+  the release that changed it. Don't reintroduce a ceiling; add a detection. CI runs the real-media suite against
+  ffmpeg-skill 0.11.0 (pinned commit) and main, daily. The history below predates ADR-013.
   Verified against 0.9.0, 0.9.1, and 0.10.0 as of this writing (full real-media integration
   matrix green against a live 0.10.0 checkout); re-verify `fit.py` / `join.py` / `overlay.py`
   geometry and behavior before raising the ceiling. **Known real gap, found by live
@@ -174,6 +177,13 @@ exception to ADR-001.
   (`tests/test_integration.py`: `SPEED` with `smooth="blend"` and `smooth="interpolate"` against a
   slow-down factor, asserting distinct output bytes from each other and from the no-`smooth`
   baseline); golden contract regenerated.
+
+- (this change, ADR-013, no version bump: `engine` / `dependencies` are non-pinned blocks) — no ffmpeg-skill version
+  window: flags, renamed flags (`--crf` → `--quality`), probe's `hdr` → `bt2020_or_hdr`, missing `fit.py --rotate`
+  on 0.10.0 are detected; fit.py's 0.16.10 canvas rule is chosen by release; `plan` creates and removes the work dir
+  for 1.x+ dry runs. CI integration is a matrix over ffmpeg-skill 0.11.0 (pinned) and main, plus a daily schedule.
+  Upstream defects found and not masked: 0.12.x `probe.py` deletes an unreadable input; 2.4.1+ `join.py` leaves a
+  one-frame hole at some plain cuts (`test_pipeline_e2e` fails on main for that reason, `reason: fps`).
 
 ## Picking the next task
 

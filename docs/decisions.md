@@ -395,3 +395,51 @@ this ADR was written. A real-media integration test (`tests/test_integration.py`
 factor and both `smooth` values against a real ffmpeg-skill checkout and asserts the two outputs' bytes differ from
 each other and from the no-`smooth` baseline — the same "prove different flags produce different delivered bytes,
 not just different compiled argv" rigor `test_fill_anchor` established for ADR-009.
+
+## ADR-013 — No ffmpeg-skill version window: detect what the installed release offers
+
+**Context.** `ffmpeg_skill.py` refused any ffmpeg-skill outside `>=0.10.0,<1.0.0`, while CI checked out ffmpeg-skill
+main. ffmpeg-skill has since shipped 1.x and 2.x, so every real install was refused (`doctor`: "unsupported version")
+and the integration job skipped all 46 tests instead of running them. Raising the ceiling would only move the problem
+to the next major. What actually differs between releases, measured against real 0.10.0, 0.11.0, 0.16.0, 1.26.0 and
+2.10.3 checkouts:
+
+- `fit.py --rotate` / `--flip` do not exist in 0.10.0 (added in 0.11.0), so ROTATE never worked on 0.10.0 even
+  inside the old window;
+- `--quality` was added in 1.10 and `--crf` removed in 2.0 (`--crf` is an unknown argument there);
+- `fit.py`'s aspect-only canvas changed in 0.16.10 to never exceed the source (a defect fix upstream);
+- probe's `hdr` was narrowed to PQ/HLG in 2.0, `bt2020_or_hdr` keeps the old meaning the encoders still route on;
+- 1.x refuses a dry run into a directory that does not exist; 2.0 refuses an existing output without `--overwrite`.
+
+**Decision.** No upper bound. Each difference is handled where it lives, by detection where a detection exists:
+
+- **Flags** are read from the installed checkout once per process: `scripts/_contract.py --json`
+  (`tools[].input_schema.properties[].cli`, present in every release from 0.10.0 to 2.x), else each tool's
+  `--help`. `FLAG_SPELLINGS` maps a renamed flag to its spellings (`--crf` → `--quality`, then `--crf`). A flag no
+  spelling of which exists is a gap: the operation type is MISSING in `doctor` (for the flags it always passes,
+  `compiler.OPERATION_FLAGS`) and a request using it is refused before anything runs (`TOOL_ERROR`,
+  `missing: ["flag:--rotate"]`). Where nothing can be detected, flags pass under their historical spelling, as before.
+- **Probe keys**: `bt2020_or_hdr` where present, else `hdr` — the same meaning either way.
+- **fit.py's canvas** is behaviour, not a flag, so it is the one rule chosen by the release that changed it
+  (`FfmpegSkill.fit_bounds_by_source()`, `>= 0.16.10`; an unparseable version gets the current rule).
+- **Overwrite**: not needed — every tool writes a fresh `.partial` path the executor removes first, so `--overwrite`
+  is never passed (pinned by `tests/test_engine_compat.py::test_rerun_needs_no_overwrite` against a fake that refuses
+  an existing output like 2.x).
+- **Dry-run directories**: `plan` creates the missing work directory for its previews and removes what it created.
+- **The floor stays** (`MIN_VERSION = 0.10.0`): ADR-010's `overlay.py -t` bound is behaviour no flag reveals.
+  `contract.engine.version_range` / `dependencies` become `>=0.10.0` (non-pinned blocks: additive), and
+  `engine.compatibility` says what is detected.
+
+`doctor --json` reports what was detected per tool (`engine.compatibility.tools.<tool>.flags_from` = `contract` /
+`help`, and the spelling `--crf` resolves to), never a version-derived guess.
+
+**CI.** The integration job is a matrix over ffmpeg-skill 0.11.0 (pinned by commit `b388035`: the oldest release
+every operation's flags exist in) and ffmpeg-skill main, and runs daily, so a new ffmpeg-skill release is exercised
+without a change here. `tests/test_engine_compat.py` covers the detection offline with fake 0.10 / 0.x / 1.x / 2.x /
+help-only checkouts whose tools reject flags they do not list.
+
+**Found, not worked around.** ffmpeg-skill 0.12.0–0.12.x's `probe.py` deletes an input it cannot read (a truncated
+MP4), which the integration suite's fixture-integrity check catches (`broken.mp4 was modified`); fixed upstream by
+0.16.0. From ffmpeg-skill 2.4.1 (PR #302) `join.py` can leave a one-frame timestamp hole at a plain cut whose first
+clip's audio outruns its picture; this Skill's output validation refuses the file (`reason: fps`). Both are engine
+defects; neither is masked by loosening a check here.

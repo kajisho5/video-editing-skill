@@ -16,19 +16,32 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 from .errors import EditError
 
 ENV_DIR = "VIDEO_EDITING_FFMPEG_SKILL_DIR"
-# 0.10.0 is the floor, not 0.9.x: 0.9.x's overlay.py (-loop 1 image + -shortest, no explicit -t) could run far
-# longer than the source on an audio-less input; 0.10.0 added an explicit -t bound (verified against real,
-# audio-less footage) and OVERLAY no longer needs to refuse those inputs up front. See ADR-009.
-SUPPORTED_MIN = (0, 10, 0)
-SUPPORTED_MAX_EXCLUSIVE = (1, 0, 0)
+# No version window (ADR-013). What differs between ffmpeg-skill releases - which tools exist, which flags each tool
+# takes, which probe key carries which meaning - is detected from the installed checkout itself (its `contract --json`,
+# or each tool's `--help` where an older checkout has no usable contract). The one number kept is a floor for the one
+# requirement no flag reveals: 0.9.x's overlay.py (-loop 1 image + -shortest, no explicit -t) could run far longer than
+# the source on an audio-less input; 0.10.0 added an explicit -t bound (verified against real, audio-less footage), so
+# OVERLAY does not refuse those inputs up front (ADR-010). A version string that does not parse is not evidence of an
+# old release and is not refused for it.
+MIN_VERSION = (0, 10, 0)
+FIT_BOUNDED_SINCE = (0, 16, 10)   # fit.py's aspect-only canvas rule changed here (FfmpegSkill.fit_bounds_by_source)
 REQUIRED_TOOLS = ("probe", "cut", "join", "fit", "overlay")
+# A typed flag whose CLI spelling changed between releases, with the spellings in order of preference: ffmpeg-skill
+# 1.10 added --quality (same CRF scale and default) and 2.0 removed --crf from every re-encoding tool that takes it.
+FLAG_SPELLINGS: Dict[str, Tuple[str, ...]] = {"--crf": ("--quality", "--crf")}
+_FLAG_RE = re.compile(r"(?<![\w-])(--[a-z0-9][a-z0-9-]*)")
 _ENV_KEEP = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "TERM", "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT",
              "COMSPEC", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA")
+
+
+def parse_version(text: str) -> Optional[Tuple[int, int, int]]:
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)", text or "")
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
 @dataclass
@@ -36,23 +49,117 @@ class FfmpegSkill:
     root: str
     version: str
     tools: List[str]
+    # CLI flags per tool, detected from the checkout on first use (detect_flags); None for a tool means "not detected",
+    # and then flags are passed under their historical spelling exactly as before detection existed.
+    flags: Optional[Dict[str, FrozenSet[str]]] = field(default=None, repr=False, compare=False)
+    flag_source: Dict[str, str] = field(default_factory=dict, repr=False, compare=False)
 
     def script(self, tool: str) -> str:
         return os.path.join(self.root, "scripts", f"{tool}.py")
 
+    def below_floor(self) -> bool:
+        v = parse_version(self.version)
+        return v is not None and v < MIN_VERSION
+
     def version_supported(self) -> bool:
-        m = re.match(r"^(\d+)\.(\d+)\.(\d+)", self.version)
-        if not m:
-            return False
-        v = tuple(int(x) for x in m.groups())
-        return SUPPORTED_MIN <= v < SUPPORTED_MAX_EXCLUSIVE
+        """Not below MIN_VERSION. There is no upper bound: a newer release is used through what it is detected to offer."""
+        return not self.below_floor()
+
+    def fit_bounds_by_source(self) -> bool:
+        """fit.py's aspect-only canvas (no --width): from 0.16.10 it never exceeds the source in either dimension (a
+        16:9 source at 9:16 keeps its height); before, it kept the source width for a narrower aspect and the height for
+        a wider one (1280x720 at 9:16 came out 1280x2276). This is behaviour, not a flag, so it is the one rule chosen by
+        the release that changed it; a version that does not parse gets the current rule."""
+        v = parse_version(self.version)
+        return v is None or v >= FIT_BOUNDED_SINCE
 
     def missing_tools(self) -> List[str]:
         return [t for t in REQUIRED_TOOLS if t not in self.tools]
 
+    # ------------------------------------------------------------ flag detection
+    def detect_flags(self, timeout: float = 60.0) -> Dict[str, FrozenSet[str]]:
+        if self.flags is None:
+            self.flags, self.flag_source = detect_flags(self, timeout)
+        return self.flags
+
+    def cli_flags(self, tool: str) -> Optional[FrozenSet[str]]:
+        return self.detect_flags().get(tool)
+
+    def resolve_flag(self, tool: str, flag: str) -> Optional[str]:
+        """The spelling of `flag` this checkout's `tool` accepts (FLAG_SPELLINGS, most preferred first), or None when it
+        accepts none of them. Undetected flags pass through unchanged."""
+        known = self.cli_flags(tool)
+        if known is None:
+            return flag
+        for spelling in FLAG_SPELLINGS.get(flag, (flag,)):
+            if spelling in known:
+                return spelling
+        return None
+
+    def missing_flags(self, tool: str, flags: Iterable[str]) -> List[str]:
+        return [f for f in flags if self.resolve_flag(tool, f) is None]
+
     def to_dict(self) -> Dict[str, Any]:
         return {"id": "ffmpeg-skill", "version": self.version, "root": self.root, "tools": list(self.tools),
                 "version_supported": self.version_supported(), "missing_tools": self.missing_tools()}
+
+
+def _flags_from_contract(doc: Any) -> Dict[str, FrozenSet[str]]:
+    """{tool: flags} from an ffmpeg-skill `contract --json` document (tools[].input_schema.properties[].cli)."""
+    out: Dict[str, FrozenSet[str]] = {}
+    if not isinstance(doc, dict) or not isinstance(doc.get("tools"), list):
+        return out
+    for spec in doc["tools"]:
+        if not isinstance(spec, dict):
+            continue
+        name = str(spec.get("id") or spec.get("name") or "").split("/")[-1]
+        props = (spec.get("input_schema") or {}).get("properties") if isinstance(spec.get("input_schema"), dict) else None
+        if not name or not isinstance(props, dict):
+            continue
+        flags: Set[str] = set()
+        for p in props.values():
+            cli = p.get("cli") if isinstance(p, dict) else None
+            if isinstance(cli, list):
+                flags.update(c for c in cli if isinstance(c, str) and c.startswith("--"))
+        if flags:
+            out[name] = frozenset(flags)
+    return out
+
+
+def _run_quiet(cmd: List[str], timeout: float) -> Optional[str]:
+    try:
+        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, env=clean_env(), timeout=timeout, **_group_kwargs())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout.decode("utf-8", errors="replace") if proc.returncode == 0 else None
+
+
+def detect_flags(skill: FfmpegSkill, timeout: float = 60.0) -> Tuple[Dict[str, FrozenSet[str]], Dict[str, str]]:
+    """Which CLI flags each REQUIRED_TOOLS tool of this checkout takes, and where that was read. ffmpeg-skill's own
+    machine-readable contract first (`scripts/_contract.py --json`; `scripts/contract.py --json` in a checkout that
+    names it so); for a tool the contract does not describe, its argparse `--help`. A tool neither source describes
+    is left out (undetected), never guessed."""
+    flags: Dict[str, FrozenSet[str]] = {}
+    source: Dict[str, str] = {}
+    for name in ("_contract.py", "contract.py"):
+        script = os.path.join(skill.root, "scripts", name)
+        if not os.path.isfile(script):
+            continue
+        out = _run_quiet([sys.executable, script, "--json"], timeout)
+        found = _flags_from_contract(_parse_json(out or ""))
+        for tool in REQUIRED_TOOLS:
+            if tool in found and tool not in flags:
+                flags[tool], source[tool] = found[tool], "contract"
+        if all(t in flags for t in REQUIRED_TOOLS):
+            break
+    for tool in REQUIRED_TOOLS:
+        if tool in flags or tool not in skill.tools:
+            continue
+        out = _run_quiet([sys.executable, skill.script(tool), "--help"], timeout)
+        found_help = set(_FLAG_RE.findall(out or "")) - {"--help"}
+        if found_help:
+            flags[tool], source[tool] = frozenset(found_help), "help"
+    return flags, source
 
 
 def _candidate(path: str) -> Optional[FfmpegSkill]:

@@ -18,6 +18,7 @@ from .compiler import Step, compile_project, output_extension
 from .errors import EditError
 from .ffmpeg_skill import FfmpegSkill, cancelled, missing_capabilities, probe, run_tool, tool_error
 from .operations import ENCODING_DEFAULTS, MEDIA, even, params_to_json
+from .paths import is_within
 from .project import EditProject
 from .timebase import Time
 from .timeline import Clip, build_timelines
@@ -46,6 +47,15 @@ def _fps_of(doc: Optional[Dict[str, Any]]) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return f if f > 0 else None
+
+
+def _hdr_of(video: Dict[str, Any]) -> bool:
+    """The colour system ffmpeg-skill's encoders route on: BT.2020 primaries or a PQ/HLG transfer. ffmpeg-skill 2.0
+    narrowed probe's `hdr` to PQ/HLG/Dolby Vision only and moved the wider meaning to `bt2020_or_hdr`; before 2.0, `hdr`
+    carried it and `bt2020_or_hdr` did not exist. Whichever key the probe has is read with that one meaning."""
+    if "bt2020_or_hdr" in video:
+        return bool(video.get("bt2020_or_hdr"))
+    return bool(video.get("hdr"))
 
 
 def now_iso() -> str:
@@ -117,6 +127,7 @@ class Executor:
                 raise EditError("TOOL_ERROR", f"operation {ref!r} ({op.type}) needs {op.tool}, which this ffmpeg-skill checkout does not provide",
                                 {"operation": ref, "tool": op.tool, "missing": [f"tool:{op.tool}"]}, retryable=False)
             gaps = missing_capabilities(self.engine_doctor, TOOL_REQUIREMENTS[op.tool]) if self.engine_doctor else []
+            gaps += [f"flag:{f}" for f in self.skill.missing_flags(script, self.steps[ref].flags())]   # detected, not version-guessed
             if gaps:
                 raise EditError("TOOL_ERROR", f"operation {ref!r} ({op.type}) needs {', '.join(gaps)}, which ffmpeg-skill's doctor did not find",
                                 {"operation": ref, "tool": op.tool, "missing": gaps}, retryable=False)
@@ -181,7 +192,14 @@ class Executor:
             ratio = aw / ah
             if "width" in p:
                 w = even(p["width"])
+            elif sw and sh and self.skill.fit_bounds_by_source():
+                # fit.py from 0.16.10: the canvas takes the aspect without exceeding the source in either dimension
+                if ratio <= sw / sh:
+                    h = even(sh)
+                    return (even(h * ratio), h)
+                w = even(sw)
             elif sw and sh:
+                # fit.py before 0.16.10: the canvas keeps the source width (narrower aspect) or height (wider aspect)
                 w = even(sw if ratio <= sw / sh else sh * ratio)
             else:
                 return None
@@ -225,7 +243,7 @@ class Executor:
         if size and v.get("rotation") in (90, -90, 270, -270):
             size = (size[1], size[0])
         return {"audio": _has_audio(doc), "width": size[0] if size else None, "height": size[1] if size else None, "fps": _fps_of(doc),
-                "hdr": bool(v.get("hdr")) if doc else None, "vfr": bool(v.get("variable_frame_rate_suspected")) if doc else None,
+                "hdr": _hdr_of(v) if doc else None, "vfr": bool(v.get("variable_frame_rate_suspected")) if doc else None,
                 "provenance": provenance if doc else None}
 
     def _check_media(self) -> None:
@@ -306,6 +324,34 @@ class Executor:
 
     # ------------------------------------------------------------ plan
     def plan(self, preview: bool = True) -> Dict[str, Any]:
+        # ffmpeg-skill from 1.x refuses a dry run whose output directory does not exist ("this tool never creates
+        # directories"); the work directory is created for the previews and removed again, so a plan still writes nothing
+        created = self._make_missing_dirs(self.work) if preview else []
+        try:
+            return self._plan(preview)
+        finally:
+            for d in reversed(created):
+                try:
+                    os.rmdir(d)
+                except OSError:
+                    pass
+
+    def _make_missing_dirs(self, path: str) -> List[str]:
+        missing: List[str] = []
+        d = path
+        while not os.path.isdir(d) and is_within(self.project.policy.workspace, d) and d != os.path.dirname(d):
+            missing.append(d)
+            d = os.path.dirname(d)
+        created: List[str] = []
+        for d in reversed(missing):
+            try:
+                os.mkdir(d)
+            except OSError:
+                break
+            created.append(d)
+        return created
+
+    def _plan(self, preview: bool) -> Dict[str, Any]:
         steps: List[Dict[str, Any]] = []
         for ref in self.project.order:
             st = self.steps[ref]
@@ -389,7 +435,7 @@ class Executor:
                 dur = self._probe_duration(inputs[0])
             if dur is None:
                 dur = Time.from_float(10.0)  # dry-run placeholder only; the real run probes
-        return st.argv_for(inputs, out, image, dur)
+        return st.argv_for(inputs, out, image, dur, resolve=lambda flag: self.skill.resolve_flag(st.script, flag))
 
     def _partial(self, ref: str) -> str:
         op = self.project.operations[ref]

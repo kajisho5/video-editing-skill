@@ -12,7 +12,8 @@ video-editing-skill ≠ video-production-agent   (no decisions, no plan, no LLM,
 video-editing-skill ≠ ffmpeg-skill             (no ffmpeg command generation, no filter strings)
 ```
 
-Python ≥ 3.9, standard library only. Requires an ffmpeg-skill >=0.10.0 checkout and ffmpeg / ffprobe on `PATH`.
+Python ≥ 3.9, standard library only. Requires an ffmpeg-skill checkout (any release from 0.10.0 on, no upper bound)
+and ffmpeg / ffprobe on `PATH`.
 
 ## Scope
 
@@ -380,7 +381,12 @@ integration on Ubuntu with apt ffmpeg and a checkout of kajisho5/ffmpeg-skill.
 ffmpeg-skill is the media execution engine. This skill uses five of its tools (`probe`, `cut`, `join`, `fit`,
 `overlay`) through their public CLI contract (`python3 scripts/<tool>.py … --json`, `status: completed | failed`,
 `error.kind`) and its doctor (`scripts/_contract.py doctor --json`: ffmpeg / ffprobe versions, available encoders
-and filters), pinned to versions `>=0.10.0,<1.0.0`, located from the environment, never from the request.
+and filters), located from the environment, never from the request. There is no version window: what differs between
+ffmpeg-skill releases is detected from the installed checkout (ADR-013) — each tool's flags from its
+`contract --json` (or `--help`), `--quality` where offered and `--crf` where not, probe's `bt2020_or_hdr` where present
+and `hdr` where not — and `doctor --json` reports what was detected (`engine.compatibility`). An operation whose flags
+the installed release lacks (ROTATE on 0.10.0, which has no `fit.py --rotate`) is reported MISSING and refused up front.
+The one version number kept is the `>=0.10.0` floor, for a behaviour no flag reveals (ADR-010's `overlay.py -t` bound).
 Nothing here builds ffmpeg command lines or filter strings; what ffmpeg-skill ran is reported verbatim in
 `commands`. Gaps in ffmpeg-skill (pixel crop, freeze, reverse, image-to-clip) are reported as gaps, not worked
 around with a direct ffmpeg call. ffmpeg-skill's `render.py` project format is not used: it has a fixed stage
@@ -404,8 +410,8 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 - `TRIM` / `CUT` / `SPEED` / `OVERLAY` / `ROTATE` refuse an input whose frame has an odd width or height
   (`odd_frame`); the frame-changing operations normalize it to even first.
 - The integration HDR fixture is an SDR pattern flagged as HDR (colour tags); real HDR10 / HLG content and tone
-  mapping are not covered. Verified against ffmpeg-skill 0.9.0, 0.9.1, and 0.10.0 (full real-media integration
-  matrix, 43/43, against a live 0.10.0 checkout).
+  mapping are not covered. The real-media integration suite runs in CI against ffmpeg-skill 0.11.0 (pinned commit)
+  and ffmpeg-skill main, daily as well as on every change (ADR-013).
 - Real rotation metadata (a display matrix) is honoured; a legacy `rotate` tag is ignored by ffmpeg ≥ 5 and therefore
   by this Skill's probe-based normalization (the frame is then the stored one).
 - One video track plus image overlays; no picture-in-picture of video, no audio-only sources, no per-track audio.

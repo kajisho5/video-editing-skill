@@ -699,7 +699,11 @@ class DoctorAvailabilityTests(unittest.TestCase):
         self.assertEqual(rows["TRIM"]["status"], "AVAILABLE")
         rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.10.0", ["probe", "cut"]), full)}
         self.assertEqual(rows["OVERLAY"]["missing"], ["tool:ffmpeg-skill/overlay"])
-        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "1.2.0", ["probe", "cut", "join", "fit", "overlay"]), full)}
+        # no version ceiling (ADR-013): a newer release is judged by what it offers; only the 0.10.0 floor is a version check
+        for newer in ("1.2.0", "2.10.3"):
+            rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", newer, ["probe", "cut", "join", "fit", "overlay"]), full)}
+            self.assertTrue(all(r["status"] == "AVAILABLE" for r in rows.values()), rows)
+        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.9.1", ["probe", "cut", "join", "fit", "overlay"]), full)}
         self.assertTrue(all(r["status"] == "MISSING" for r in rows.values()))
         rows = {r["type"]: r for r in operation_availability(None, None)}
         self.assertTrue(all(r["missing"] == ["ffmpeg-skill"] for r in rows.values()))

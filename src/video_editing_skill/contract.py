@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from . import CONTRACT_SCHEMA, CONTRACT_VERSION, DOCTOR_SCHEMA, PACKAGE_NAME, PLAN_SCHEMA, REQUEST_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
 from .errors import DEFAULT_RETRYABLE, ERROR_CODES, EXIT_CODES
-from .ffmpeg_skill import REQUIRED_TOOLS, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN
+from .ffmpeg_skill import MIN_VERSION, REQUIRED_TOOLS
 from .operations import (ENCODING, FORBIDDEN_KEYS, FRAME_SEMANTICS, MEDIA, MEDIA_POLICY, OPERATIONS, POSITIONS, TRANSITIONS, capability_list,
                          media_compatibility, unsupported_list)
 from .paths import IMAGE_EXTENSIONS, OUTPUT_EXTENSIONS, VIDEO_EXTENSIONS
@@ -46,12 +46,12 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
 
 
 def ffmpeg_skill_version_range() -> str:
-    """The version range this Skill's own `version_supported()` check already enforces at runtime
-    (`ffmpeg_skill.py`'s `SUPPORTED_MIN` / `SUPPORTED_MAX_EXCLUSIVE`), as the range-string shape
-    `dependencies[].version_range` uses (never an exact pin: `kajisho5/AI-video-production-OS`
-    `docs/VERSIONING.md` section 2). Shared by `engine.version_range` and `dependencies` so the two
-    can never say something different."""
-    return f">={'.'.join(map(str, SUPPORTED_MIN))},<{'.'.join(map(str, SUPPORTED_MAX_EXCLUSIVE))}"
+    """The version range this Skill's own `version_supported()` check enforces at runtime (`ffmpeg_skill.py`'s
+    `MIN_VERSION`), as the range-string shape `dependencies[].version_range` uses (never an exact pin:
+    `kajisho5/AI-video-production-OS` `docs/VERSIONING.md` section 2). A floor only, no ceiling: what differs between
+    ffmpeg-skill releases is detected from the installed checkout (ADR-013). Shared by `engine.version_range` and
+    `dependencies` so the two can never say something different."""
+    return f">={'.'.join(map(str, MIN_VERSION))}"
 
 
 def capability_provides() -> List[Dict[str, str]]:
@@ -110,7 +110,13 @@ def skill_contract() -> Dict[str, Any]:
         "engine": {"id": "ffmpeg-skill", "version_range": ffmpeg_skill_version_range(),
                    "tools_used": [f"ffmpeg-skill/{t}" for t in REQUIRED_TOOLS],
                    "location": "VIDEO_EDITING_FFMPEG_SKILL_DIR | --ffmpeg-skill-dir | ~/.claude/skills/ffmpeg-skill | ./vendor/ffmpeg-skill | ../ffmpeg-skill",
-                   "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout"},
+                   "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout",
+                   "compatibility": {"upper_bound": None,
+                                     "detected": ["tools present (scripts/<tool>.py)",
+                                                  "CLI flags per tool (scripts/_contract.py --json input_schema, else <tool>.py --help)",
+                                                  "encoding quality flag: --quality where offered, else --crf (same CRF scale)",
+                                                  "probe colour key: video.bt2020_or_hdr where present, else video.hdr (same meaning)"],
+                                     "floor_reason": "overlay.py bounds a looped-image composite with -t only from 0.10.0 (behaviour, not a flag)"}},
         "execution": {
             "mode": "local_subprocess",
             "canonical_invocation": ["video-editing", "run", "-", "--json", "--workspace", "<dir>", "--allowed-input", "<root>"],

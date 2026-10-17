@@ -8,14 +8,16 @@ from typing import Any, Dict, List, Optional
 from . import CONTRACT_SCHEMA, CONTRACT_VERSION, DOCTOR_SCHEMA, PLAN_SCHEMA, REQUEST_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
 from .contract import TOOL_REQUIREMENTS
 from .errors import EditError
-from .ffmpeg_skill import ENV_DIR, REQUIRED_TOOLS, SUPPORTED_MAX_EXCLUSIVE, SUPPORTED_MIN, engine_doctor, locate, missing_capabilities
+from .compiler import OPERATION_FLAGS
+from .ffmpeg_skill import ENV_DIR, FLAG_SPELLINGS, MIN_VERSION, REQUIRED_TOOLS, engine_doctor, locate, missing_capabilities
 from .operations import OPERATIONS, unsupported_list
 from .paths import PathPolicy
 
 
 def operation_availability(skill, eng: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Per operation type: AVAILABLE only when its ffmpeg-skill tool exists and every encoder / filter it needs is reported
-    present by ffmpeg-skill's doctor; otherwise MISSING with the gaps named. Nothing is reported available on a guess."""
+    """Per operation type: AVAILABLE only when its ffmpeg-skill tool exists, takes every flag the type always passes
+    (detected from the checkout), and every encoder / filter it needs is reported present by ffmpeg-skill's doctor;
+    otherwise MISSING with the gaps named. Nothing is reported available on a guess."""
     rows = []
     for t in sorted(OPERATIONS):
         spec = OPERATIONS[t]
@@ -25,14 +27,34 @@ def operation_availability(skill, eng: Optional[Dict[str, Any]]) -> List[Dict[st
             missing.append("ffmpeg-skill")
         else:
             if not skill.version_supported():
-                missing.append(f"ffmpeg-skill version {skill.version} (supported >={'.'.join(map(str, SUPPORTED_MIN))},<{'.'.join(map(str, SUPPORTED_MAX_EXCLUSIVE))})")
+                missing.append(f"ffmpeg-skill version {skill.version} (needs >={_floor()})")
             if script not in skill.tools:
                 missing.append(f"tool:{spec['tool']}")
+            else:
+                missing += [f"flag:{spec['tool']} {f}" for f in skill.missing_flags(script, OPERATION_FLAGS[t])]
             missing += missing_capabilities(eng or {}, TOOL_REQUIREMENTS[spec["tool"]]) if eng is not None else ["ffmpeg-skill doctor did not run"]
         rows.append({"type": t, "tool_id": f"{SKILL_ID}/{t.lower()}", "capability": spec["capability"], "executed_by": spec["tool"],
                      "required_capabilities": list(TOOL_REQUIREMENTS[spec["tool"]]),
                      "status": "AVAILABLE" if not missing else "MISSING", "missing": missing})
     return rows
+
+
+def _floor() -> str:
+    return ".".join(map(str, MIN_VERSION))
+
+
+def engine_compatibility(skill) -> Dict[str, Any]:
+    """What was detected about the installed ffmpeg-skill, per tool: where its flags were read (contract / help / None
+    when undetected) and the spelling each renamed flag resolves to. Reported as found, never inferred from the version."""
+    tools: Dict[str, Any] = {}
+    skill.detect_flags()
+    for t in REQUIRED_TOOLS:
+        if t not in skill.tools:
+            continue
+        known = skill.cli_flags(t)
+        tools[t] = {"flags_from": skill.flag_source.get(t), "flag_count": len(known) if known is not None else None,
+                    "spellings": {f: skill.resolve_flag(t, f) for f in FLAG_SPELLINGS if t != "probe"}}
+    return {"version_floor": ">=" + _floor(), "upper_bound": None, "tools": tools}
 
 
 def doctor_report(ffmpeg_skill_dir: Optional[str] = None, workspace: Optional[str] = None, allowed_inputs: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -51,11 +73,18 @@ def doctor_report(ffmpeg_skill_dir: Optional[str] = None, workspace: Optional[st
         ok = skill.version_supported() and not missing
         checks.append({"check": "ffmpeg-skill", "status": "AVAILABLE" if ok else "DEGRADED", "version": skill.version, "root": skill.root,
                        "version_supported": skill.version_supported(), "missing_tools": missing,
-                       "detail": None if ok else ("unsupported version" if not skill.version_supported() else f"missing tools {missing}")})
+                       "detail": None if ok else (f"version below the {_floor()} floor" if not skill.version_supported() else f"missing tools {missing}")})
         if not ok:
             problems.append("ffmpeg-skill version or tools unsupported")
+        skill.detect_flags()
         for t in REQUIRED_TOOLS:
-            checks.append({"check": f"tool:ffmpeg-skill/{t}", "status": "AVAILABLE" if t in skill.tools else "MISSING"})
+            row: Dict[str, Any] = {"check": f"tool:ffmpeg-skill/{t}", "status": "AVAILABLE" if t in skill.tools else "MISSING"}
+            if t in skill.tools:
+                row["flags_from"] = skill.flag_source.get(t) or "undetected"
+                for f in FLAG_SPELLINGS:
+                    if t != "probe":
+                        row["uses_" + f.lstrip("-")] = skill.resolve_flag(t, f)
+            checks.append(row)
 
     eng: Optional[Dict[str, Any]] = None
     if skill is not None:
@@ -94,7 +123,8 @@ def doctor_report(ffmpeg_skill_dir: Optional[str] = None, workspace: Optional[st
                        "version_supported": skill.version_supported() if skill else None, "tools_required": list(REQUIRED_TOOLS),
                        "tools_missing": skill.missing_tools() if skill else list(REQUIRED_TOOLS),
                        "ffmpeg": (eng or {}).get("ffmpeg"), "ffprobe": (eng or {}).get("ffprobe"), "ready": bool((eng or {}).get("ok")),
-                       "capabilities_missing": list((eng or {}).get("missing") or []), "capabilities_reported": isinstance((eng or {}).get("available"), list)},
+                       "capabilities_missing": list((eng or {}).get("missing") or []), "capabilities_reported": isinstance((eng or {}).get("available"), list),
+                       "compatibility": engine_compatibility(skill) if skill else None},
             "operations": operations, "supported_operations": supported,
             "unsupported": unsupported_list(),
             "checks": checks, "problems": problems,
