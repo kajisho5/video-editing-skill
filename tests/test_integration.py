@@ -515,8 +515,14 @@ class MediaMatrixE2ETests(unittest.TestCase):
         run("-display_rotation", "90", "-i", cls.media["a"], "-c", "copy", cls.media["rot90"])   # a real display matrix (a `rotate` tag is ignored by ffmpeg >= 5)
         cls.media["hdr"] = os.path.join(media, "hdr.mp4")
         run("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "3",
+            # setparams tags the frames themselves: ffmpeg >= 8 takes the encoder's colour properties from the frames and drops
+            # -color_primaries / -color_trc output options, which left an untagged (SDR) "HDR" fixture behind
+            "-vf", "setparams=color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc",
             "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc",
             "-c:a", "aac", cls.media["hdr"])
+        tags = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_primaries,color_transfer",
+                                          "-of", "json", cls.media["hdr"]], check=True, capture_output=True, text=True).stdout)["streams"][0]
+        assert (tags.get("color_primaries"), tags.get("color_transfer")) == ("bt2020", "smpte2084"), f"the HDR fixture is not tagged BT.2020 / PQ: {tags}"
         cls.media["odd"] = os.path.join(media, "odd.mp4")   # 641x361: only mpeg4 stores an odd frame (libx264 yuv420p refuses it)
         run("-f", "lavfi", "-i", "testsrc2=size=642x362:rate=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "2", "-vf", "scale=641:361",
             "-c:v", "mpeg4", "-q:v", "3", "-c:a", "aac", cls.media["odd"])
