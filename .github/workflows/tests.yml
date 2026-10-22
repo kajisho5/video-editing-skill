@@ -27,7 +27,8 @@ jobs:
       - run: video-editing contract --check tests/contract/contract.json --json
 
   unit:
-    runs-on: ${{ matrix.os }}
+    # ubuntu-latest is Ubuntu 26.04, which has no Python 3.9 build; keep 3.9 on the newest image that does
+    runs-on: ${{ matrix.python == '3.9' && startsWith(matrix.os, 'ubuntu') && 'ubuntu-24.04' || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -49,14 +50,17 @@ jobs:
     # The same real-media suite against two ffmpeg-skill checkouts: the oldest release every operation's flags exist in
     # (0.11.0, pinned by commit so it never moves) and ffmpeg-skill main, so both ends of what this Skill detects are
     # exercised. No version window: what differs between them is detected (ADR-013).
+    # 0.11.0 runs on ubuntu-24.04 (apt ffmpeg 6.1): on Ubuntu 26.04's ffmpeg 8.0 its join.py leaves a one-frame hole at
+    # a cut (29.82 fps where 30 was asked), an engine defect fixed upstream that output validation rightly refuses
+    # (ADR-013 "Found, not worked around"). main runs on ubuntu-latest, so the newest ffmpeg is still exercised.
     name: integration (ffmpeg-skill ${{ matrix.engine.name }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.engine.os }}
     strategy:
       fail-fast: false
       matrix:
         engine:
-          - {name: "0.11.0", ref: b388035b66b3a4c370be57078ff42b115987f76c}
-          - {name: main, ref: main}
+          - {name: "0.11.0", ref: b388035b66b3a4c370be57078ff42b115987f76c, os: ubuntu-24.04}
+          - {name: main, ref: main, os: ubuntu-latest}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

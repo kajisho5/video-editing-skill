@@ -435,7 +435,10 @@ to the next major. What actually differs between releases, measured against real
 
 **CI.** The integration job is a matrix over ffmpeg-skill 0.11.0 (pinned by commit `b388035`: the oldest release
 every operation's flags exist in) and ffmpeg-skill main, and runs daily, so a new ffmpeg-skill release is exercised
-without a change here. `tests/test_engine_compat.py` covers the detection offline with fake 0.10 / 0.x / 1.x / 2.x /
+without a change here. main runs on `ubuntu-latest` (the newest apt ffmpeg, 8.0 on Ubuntu 26.04); 0.11.0 runs on
+`ubuntu-24.04` (ffmpeg 6.1), the ffmpeg of its era, because on ffmpeg 8.0 its `join.py` leaves a one-frame hole at a
+cut (`test_pipeline_e2e`: 29.82 fps where 30 was asked) — an engine defect current releases do not have, refused here
+as below rather than masked. `tests/test_engine_compat.py` covers the detection offline with fake 0.10 / 0.x / 1.x / 2.x /
 help-only checkouts whose tools reject flags they do not list.
 
 **Found, not worked around.** ffmpeg-skill 0.12.0–0.12.x's `probe.py` deletes an input it cannot read (a truncated
