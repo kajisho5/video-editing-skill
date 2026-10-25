@@ -28,6 +28,7 @@ No decisions, no plan, no LLM. Python ≥ 3.9, standard library only.</p>
   <a href="https://github.com/kajisho5/video-editing-skill/actions/workflows/tests.yml"><img src="https://github.com/kajisho5/video-editing-skill/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
   <img src="https://img.shields.io/badge/python-%E2%89%A53.9-3776AB" alt="Python ≥ 3.9">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License"></a>
+  <a href="https://github.com/sponsors/kajisho5"><img src="https://img.shields.io/badge/sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors" alt="Sponsor"></a>
 </p>
 
 A deterministic, verifiable **video editing Skill** for the video-production-agent ecosystem.
