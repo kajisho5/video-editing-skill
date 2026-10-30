@@ -24,11 +24,11 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay. Not 
 
 ## Steps
 
-- [ ] **1. Unsupported list from engine detection** — CROP / FREEZE / REVERSE / IMAGE_INSERT are listed as impossible, but ffmpeg-skill now ships crop, freeze, reverse, insert
+- [x] **1. Unsupported list from engine detection** — [#20](https://github.com/kajisho5/video-editing-skill/pull/20) — CROP / FREEZE / REVERSE / IMAGE_INSERT are listed as impossible, but ffmpeg-skill now ships crop, freeze, reverse, insert
   - Done when: the contract does not call a tool missing when the detected checkout has it
-- [ ] **2. FREEZE via ffmpeg-skill/freeze**
+- [x] **2. FREEZE via ffmpeg-skill/freeze** — [#20](https://github.com/kajisho5/video-editing-skill/pull/20)
   - Done when: integration test; provides gains video.freeze
-- [ ] **3. REVERSE via ffmpeg-skill/reverse**
+- [x] **3. REVERSE via ffmpeg-skill/reverse** — [#20](https://github.com/kajisho5/video-editing-skill/pull/20)
   - Done when: integration test
 - [ ] **4. IMAGE_INSERT via ffmpeg-skill/insert** — a still can join CONCAT
   - Done when: integration test
