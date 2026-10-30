@@ -161,7 +161,7 @@ class Executor:
     # ------------------------------------------------------------ normalization (frame_semantics)
     def target_frame(self, ref: str) -> Optional[tuple]:
         """The frame an operation must deliver, computed before execution from its parameters and the (measured or expected)
-        input frame with ffmpeg-skill's own rule; None when it is the input's frame (TRIM / CUT / SPEED / OVERLAY / ROTATE) and
+        input frame with ffmpeg-skill's own rule; None when it is the input's frame (TRIM / CUT / SPEED / OVERLAY / FREEZE / REVERSE) and
         that is not known yet."""
         op = self.project.operations[ref]
         p = op.params
@@ -264,7 +264,7 @@ class Executor:
                 if any(h is True for h in hdrs.values()) and any(h is False for h in hdrs.values()):
                     raise EditError("INVALID_INPUT", f"operation {ref!r} (CONCAT): HDR and SDR inputs cannot be joined (the engine encodes from the first input's colour system)",
                                     {"operation": ref, "inputs": hdrs, "reason": "hdr_mismatch"})
-            if op.type in ("TRIM", "CUT", "SPEED", "OVERLAY", "ROTATE"):   # these keep the input frame; the engine's encoders need even sizes
+            if op.type in ("TRIM", "CUT", "SPEED", "OVERLAY", "ROTATE", "FREEZE", "REVERSE"):   # these keep the input frame; the engine's encoders need even sizes
                 prof = self.profile(video_inputs[0])
                 if prof["width"] and prof["height"] and (prof["width"] % 2 or prof["height"] % 2):
                     raise EditError("INVALID_INPUT", f"operation {ref!r} ({op.type}): input {video_inputs[0]!r} frame {prof['width']}x{prof['height']} has an odd dimension; "
@@ -293,6 +293,11 @@ class Executor:
                 ranges = [(op.params["start"], op.params["end"])]
             elif op.type == "CUT":
                 ranges = [(r["start"], r["end"]) for r in op.params["keep"]]
+            elif op.type == "FREEZE" and "at" in op.params:
+                at = op.params["at"]
+                if not at.value < limit.value:   # the last frame is held by omitting `at`
+                    raise EditError("INVALID_TIME_RANGE", f"operation {ref!r}: at {at.text(3)}s is at or beyond the input duration {limit.text(3)}s; "
+                                    "omit at to hold the last frame")
             elif op.type == "OVERLAY":
                 for k in ("start", "end"):
                     t = op.params.get(k)

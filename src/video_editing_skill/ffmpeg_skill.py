@@ -31,6 +31,12 @@ ENV_DIR = "VIDEO_EDITING_FFMPEG_SKILL_DIR"
 MIN_VERSION = (0, 10, 0)
 FIT_BOUNDED_SINCE = (0, 16, 10)   # fit.py's aspect-only canvas rule changed here (FfmpegSkill.fit_bounds_by_source)
 REQUIRED_TOOLS = ("probe", "cut", "join", "fit", "overlay")
+# Tools only their own operation type needs (ADR-014): FREEZE -> freeze.py (shipped from ffmpeg-skill 0.16.0; the
+# pinned 0.11.0 has none), REVERSE -> reverse.py (from 0.11.0). A checkout without one still runs every other
+# operation; doctor reports that one type MISSING (`tool:ffmpeg-skill/<name>`, detected from the checkout, never
+# inferred from its version) and a request using it is refused before anything runs.
+OPTIONAL_TOOLS = ("freeze", "reverse")
+ENGINE_TOOLS = REQUIRED_TOOLS + OPTIONAL_TOOLS
 # A typed flag whose CLI spelling changed between releases, with the spellings in order of preference: ffmpeg-skill
 # 1.10 added --quality (same CRF scale and default) and 2.0 removed --crf from every re-encoding tool that takes it.
 FLAG_SPELLINGS: Dict[str, Tuple[str, ...]] = {"--crf": ("--quality", "--crf")}
@@ -75,6 +81,9 @@ class FfmpegSkill:
 
     def missing_tools(self) -> List[str]:
         return [t for t in REQUIRED_TOOLS if t not in self.tools]
+
+    def missing_optional_tools(self) -> List[str]:
+        return [t for t in OPTIONAL_TOOLS if t not in self.tools]
 
     # ------------------------------------------------------------ flag detection
     def detect_flags(self, timeout: float = 60.0) -> Dict[str, FrozenSet[str]]:
@@ -135,7 +144,7 @@ def _run_quiet(cmd: List[str], timeout: float) -> Optional[str]:
 
 
 def detect_flags(skill: FfmpegSkill, timeout: float = 60.0) -> Tuple[Dict[str, FrozenSet[str]], Dict[str, str]]:
-    """Which CLI flags each REQUIRED_TOOLS tool of this checkout takes, and where that was read. ffmpeg-skill's own
+    """Which CLI flags each ENGINE_TOOLS tool of this checkout takes, and where that was read. ffmpeg-skill's own
     machine-readable contract first (`scripts/_contract.py --json`; `scripts/contract.py --json` in a checkout that
     names it so); for a tool the contract does not describe, its argparse `--help`. A tool neither source describes
     is left out (undetected), never guessed."""
@@ -147,12 +156,12 @@ def detect_flags(skill: FfmpegSkill, timeout: float = 60.0) -> Tuple[Dict[str, F
             continue
         out = _run_quiet([sys.executable, script, "--json"], timeout)
         found = _flags_from_contract(_parse_json(out or ""))
-        for tool in REQUIRED_TOOLS:
+        for tool in ENGINE_TOOLS:
             if tool in found and tool not in flags:
                 flags[tool], source[tool] = found[tool], "contract"
-        if all(t in flags for t in REQUIRED_TOOLS):
+        if all(t in flags for t in ENGINE_TOOLS if t in skill.tools):
             break
-    for tool in REQUIRED_TOOLS:
+    for tool in ENGINE_TOOLS:
         if tool in flags or tool not in skill.tools:
             continue
         out = _run_quiet([sys.executable, skill.script(tool), "--help"], timeout)

@@ -52,7 +52,7 @@ class OperationParamTests(unittest.TestCase):
         with self.assertRaises(EditError) as cm:
             operations.validate_params("EXPLODE", {}, "op")
         self.assertEqual(cm.exception.code, "UNSUPPORTED_OPERATION")
-        for t in ("CROP", "FREEZE", "REVERSE", "IMAGE_INSERT", "REORDER", "TRANSITION"):
+        for t in ("CROP", "IMAGE_INSERT", "POSITION", "REORDER", "TRANSITION"):
             with self.assertRaises(EditError) as cm:
                 operations.validate_params(t, {}, "op")
             self.assertEqual(cm.exception.code, "UNSUPPORTED_OPERATION")
@@ -332,6 +332,54 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(argv3, ["/x/a.mp4", "-o", "/x/o.mp4", "--method", "speed", "--max-speed", "4", "--duration", "20.000000"])
 
 
+class FreezeReverseParamTests(unittest.TestCase):
+    """ADR-014: FREEZE {hold, at?} -> ffmpeg-skill freeze.py; REVERSE {} -> reverse.py."""
+
+    def test_freeze_params(self):
+        p = operations.validate_params("FREEZE", {"hold": 1.5}, "op")
+        self.assertEqual((p["hold"].value, "at" in p), (Fraction(3, 2), False))
+        p = operations.validate_params("FREEZE", {"hold": {"frames": 30, "fps": 30}, "at": "00:02"}, "op")
+        self.assertEqual((p["hold"].value, p["at"].value), (1, 2))
+        for bad, code in (({}, "INVALID_REQUEST"), ({"hold": 0}, "INVALID_TIME_RANGE"), ({"hold": {"rational": "1/1000"}}, "INVALID_TIME_RANGE"),
+                          ({"hold": 601}, "INVALID_TIME_RANGE"), ({"hold": 1, "mode": "insert"}, "INVALID_REQUEST"), ({"hold": 1, "at": -1}, "INVALID_TIME_RANGE"),
+                          ({"hold": True}, "INVALID_REQUEST"), ({"hold": 1, "ffmpeg": "x"}, "INVALID_REQUEST")):
+            with self.assertRaises(EditError, msg=bad) as cm:
+                operations.validate_params("FREEZE", bad, "op")
+            self.assertEqual(cm.exception.code, code, bad)
+
+    def test_reverse_params(self):
+        self.assertEqual(operations.validate_params("REVERSE", {}, "op"), {})
+        self.assertEqual(operations.validate_params("REVERSE", None, "op"), {})
+        for bad in ({"audio": "drop"}, {"no_audio": True}, {"filter": "reverse"}):
+            with self.assertRaises(EditError):
+                operations.validate_params("REVERSE", bad, "op")
+
+    def test_compile(self):
+        at = operations.validate_params("FREEZE", {"at": 2.5, "hold": 1}, "op")
+        argv = compile_operation(EditOperation("f", "FREEZE", ["A"], at)).argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertEqual(argv, ["/x/a.mp4", "-o", "/x/o.mp4", "--at", "2.500000", "--hold", "1.000000", "--mode", "insert"])
+        end = operations.validate_params("FREEZE", {"hold": 2}, "op")
+        step = compile_operation(EditOperation("f", "FREEZE", ["A"], end))
+        self.assertEqual((step.tool, step.argv_for(["/x/a.mp4"], "/x/o.mp4")), ("ffmpeg-skill/freeze", ["/x/a.mp4", "-o", "/x/o.mp4", "--hold", "2.000000", "--mode", "extend"]))
+        step = compile_operation(EditOperation("r", "REVERSE", ["A"], {}, encoding={"crf": 20}))
+        self.assertEqual((step.tool, step.argv_for(["/x/a.mp4"], "/x/o.mp4")), ("ffmpeg-skill/reverse", ["/x/a.mp4", "-o", "/x/o.mp4", "--crf", "20"]))
+
+    def test_contract_names_no_missing_engine_tool(self):
+        """Roadmap step 1: the static contract never says ffmpeg-skill lacks a tool (doctor detects it); FREEZE / REVERSE are
+        operations, not gaps; video.freeze / video.reverse are provided."""
+        c = contract.skill_contract()
+        self.assertEqual(sorted(u["type"] for u in c["unsupported"]), ["CROP", "IMAGE_INSERT", "POSITION"])
+        for u in c["unsupported"]:
+            self.assertNotIn("ffmpeg-skill has no", u["reason"])
+            self.assertNotIn("no tool", u["reason"])
+        self.assertEqual({u["type"]: u["engine_tool"] for u in c["unsupported"]}, {"CROP": "ffmpeg-skill/crop", "IMAGE_INSERT": "ffmpeg-skill/insert", "POSITION": None})
+        provided = {p["id"]: p["tool_id"] for p in c["provides"]}
+        self.assertEqual((provided["video.freeze"], provided["video.reverse"]), ("video-editing/freeze", "video-editing/reverse"))
+        self.assertEqual((c["operations"]["FREEZE"]["tool"], c["operations"]["REVERSE"]["tool"]), ("ffmpeg-skill/freeze", "ffmpeg-skill/reverse"))
+        self.assertEqual(c["engine"]["tools_optional"], ["ffmpeg-skill/freeze", "ffmpeg-skill/reverse"])
+        self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.5.0"]))
+
+
 class TimelineTests(unittest.TestCase):
     def setUp(self):
         self.ws = make_workspace()
@@ -377,6 +425,46 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(seg["source_range"]["start"]["rational"], "2/1")
         self.assertEqual(seg["source_range"]["end"]["rational"], "3/1")
         self.assertEqual(clips["c"].duration.value, 5)
+
+    def test_freeze_splits_and_holds(self):
+        """FREEZE at t: [0, t) as before, a speed-0 segment holding the source instant at t for the hold, the rest later by hold."""
+        p = self.project([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 10, "end": 20}},
+                          {"id": "c", "type": "FREEZE", "input": "t", "params": {"at": 4, "hold": {"rational": "3/2"}}}])
+        clips = build_timelines(p, {"A": Time.parse(60)})
+        self.assertEqual(clips["c"].duration.value, Fraction(23, 2))
+        segs = [s.to_dict() for s in clips["c"].segments]
+        rng = [(s["source_range"]["start"]["rational"], s["source_range"]["end"]["rational"], s["timeline_range"]["start"]["rational"],
+                s["timeline_range"]["end"]["rational"], s["speed"]) for s in segs]
+        self.assertEqual(rng, [("10/1", "14/1", "0/1", "4/1", "1/1"), ("14/1", "14/1", "4/1", "11/2", "0/1"), ("14/1", "20/1", "11/2", "23/2", "1/1")])
+
+    def test_freeze_without_at_holds_the_last_frame(self):
+        p = self.project([{"id": "c", "type": "FREEZE", "input": "A", "params": {"hold": 2}}])
+        clips = build_timelines(p, {"A": Time.parse(6)})
+        self.assertEqual(clips["c"].duration.value, 8)
+        last = clips["c"].segments[-1].to_dict()
+        self.assertEqual((last["source_range"]["start"]["rational"], last["timeline_range"]["start"]["rational"], last["speed"]), ("6/1", "6/1", "0/1"))
+        p = self.project([{"id": "c", "type": "FREEZE", "input": "A", "params": {"at": 0, "hold": 1}}])
+        first = build_timelines(p, {"A": Time.parse(6)})["c"].segments[0].to_dict()
+        self.assertEqual((first["source_range"]["start"]["rational"], first["timeline_range"]["end"]["rational"], first["speed"]), ("0/1", "1/1", "0/1"))
+
+    def test_reverse_mirrors_the_mapping(self):
+        """REVERSE: segments in reverse order, each mirrored and reported reversed (ascending source_range, positive speed)."""
+        p = self.project([{"id": "k", "type": "CUT", "input": "A", "params": {"keep": [{"start": 1, "end": 3}, {"start": 10, "end": 11}]}},
+                          {"id": "c", "type": "REVERSE", "input": "k", "params": {}},
+                          {"id": "t", "type": "TRIM", "input": "c", "params": {"start": 0.5, "end": 2}}], out="t")
+        clips = build_timelines(p, {"A": Time.parse(60)})
+        self.assertEqual(clips["c"].duration.value, 3)
+        rng = [(s["source_range"]["start"]["rational"], s["source_range"]["end"]["rational"], s["timeline_range"]["start"]["rational"],
+                s["timeline_range"]["end"]["rational"], s["speed"]) for s in (x.to_dict() for x in clips["c"].segments)]
+        self.assertEqual(rng, [("10/1", "11/1", "0/1", "1/1", "1/1"), ("1/1", "3/1", "1/1", "3/1", "1/1")])
+        self.assertTrue(all(x.to_dict()["reversed"] for x in clips["c"].segments))
+        # a TRIM downstream maps back through the reversal: timeline 0.5..2 of the reversed clip is source 10.5..10 then 3..2
+        rng = [(s["source_range"]["start"]["rational"], s["source_range"]["end"]["rational"], s.get("reversed")) for s in (x.to_dict() for x in clips["t"].segments)]
+        self.assertEqual(rng, [("10/1", "21/2", True), ("2/1", "3/1", True)])
+        # reversing twice plays forwards again
+        p = self.project([{"id": "r1", "type": "REVERSE", "input": "A", "params": {}}, {"id": "c", "type": "REVERSE", "input": "r1", "params": {}}])
+        seg = build_timelines(p, {"A": Time.parse(6)})["c"].segments[0].to_dict()
+        self.assertEqual((seg["source_range"]["start"]["rational"], seg["source_range"]["end"]["rational"], seg["speed"], "reversed" in seg), ("0/1", "6/1", "1/1", False))
 
     def test_unknown_durations_are_not_guessed(self):
         p = self.project([{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}])
@@ -434,7 +522,7 @@ class ContractTests(unittest.TestCase):
             (lambda d: d["tools"][0].update(result_keys=["x"]), "result_keys changed"),
             (lambda d: d["tools"][0].update(produces_output=False), "produces_output changed"),
             (lambda d: d["tools"].pop(), "tool added"),
-            (lambda d: d["tools"].append({"tool_id": "video-editing/freeze"}), "tool removed"),
+            (lambda d: d["tools"].append({"tool_id": "video-editing/crop"}), "tool removed"),
             (lambda d: d.update(contract_version="9.9"), "pinned block contract_version changed"),
             (lambda d: d.update(skill_id="other"), "skill_id changed"),
             (lambda d: d["errors"]["exit_codes"].update(TOOL_ERROR=99), "errors (codes / exit codes / retryable) changed"),
@@ -458,10 +546,10 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(contract_check.check_saved("junk", live)["status"], "drift")
         # a contract that lies about the implementation is caught too
         lying = json.loads(json.dumps(live))
-        lying["capabilities"].append({"capability": "video.freeze", "operations": ["FREEZE"], "tool": "x"})
+        lying["capabilities"].append({"capability": "video.crop", "operations": ["CROP"], "tool": "x"})
         self.assertTrue(any("capabilities differ" in p for p in contract_check.verify_implementation(lying)))
         lying = json.loads(json.dumps(live))
-        lying["operations"]["FREEZE"] = {}
+        lying["operations"]["CROP"] = {}
         self.assertTrue(any("allowlist" in p for p in contract_check.verify_implementation(lying)))
         lying = json.loads(json.dumps(live))
         lying["execution"]["shell"] = True
@@ -688,7 +776,7 @@ class DoctorAvailabilityTests(unittest.TestCase):
         from video_editing_skill.doctor import operation_availability
         from video_editing_skill.ffmpeg_skill import FfmpegSkill
         full = {"ffmpeg": "6", "ffprobe": "6", "ok": True, "missing": [], "available": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade"]}
-        skill = FfmpegSkill("/x", "0.10.0", ["probe", "cut", "join", "fit", "overlay"])
+        skill = FfmpegSkill("/x", "0.10.0", ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse"])
         rows = {r["type"]: r for r in operation_availability(skill, full)}
         self.assertEqual(sorted(rows), sorted(operations.OPERATIONS))
         self.assertTrue(all(r["status"] == "AVAILABLE" and r["missing"] == [] for r in rows.values()), rows)
@@ -701,8 +789,11 @@ class DoctorAvailabilityTests(unittest.TestCase):
         self.assertEqual(rows["OVERLAY"]["missing"], ["tool:ffmpeg-skill/overlay"])
         # no version ceiling (ADR-013): a newer release is judged by what it offers; only the 0.10.0 floor is a version check
         for newer in ("1.2.0", "2.10.3"):
-            rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", newer, ["probe", "cut", "join", "fit", "overlay"]), full)}
+            rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", newer, ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse"]), full)}
             self.assertTrue(all(r["status"] == "AVAILABLE" for r in rows.values()), rows)
+        # a checkout without the optional tools (ffmpeg-skill 0.11.0 has no freeze.py): only the types they execute are MISSING
+        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.11.0", ["probe", "cut", "join", "fit", "overlay", "reverse"]), full)}
+        self.assertEqual({t: r["missing"] for t, r in rows.items() if r["status"] != "AVAILABLE"}, {"FREEZE": ["tool:ffmpeg-skill/freeze"]})
         rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.9.1", ["probe", "cut", "join", "fit", "overlay"]), full)}
         self.assertTrue(all(r["status"] == "MISSING" for r in rows.values()))
         rows = {r["type"]: r for r in operation_availability(None, None)}

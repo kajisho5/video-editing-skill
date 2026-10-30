@@ -17,6 +17,20 @@ name an execution escape hatch (`command`, `argv`, `shell`, `filter`, `env`, `ap
 | `RESIZE` | `input` (video) | **width** (even), fps | `ffmpeg-skill/fit` |
 | `OVERLAY` | `input` (video) + `params.image` (image source) | **image**, position (name or `{x, y}`), margin, scale, opacity, start, end, fade | `ffmpeg-skill/overlay` |
 | `ROTATE` | `input` (video) | degrees `90 \| 180 \| 270`, flip `h \| v` (at least one required) | `ffmpeg-skill/fit` |
+| `FREEZE` | `input` (video) | **hold** time 0.01..600 s, at time `< input duration` (optional) | `ffmpeg-skill/freeze` (optional tool) |
+| `REVERSE` | `input` (video) | none | `ffmpeg-skill/reverse` (optional tool) |
+
+`FREEZE` (ADR-014): with `at`, the frame shown at `at` is held for `hold` and the rest of the clip plays on after it
+(`freeze.py --at --hold --mode insert`; the hold is rounded by the engine to whole frames); without `at`, the last
+frame is held for `hold` past the end (`--mode extend`). Duration = input + hold; audio is kept and silent under the
+hold. To hold the last frame, omit `at` (`at` at or beyond the input duration is `INVALID_TIME_RANGE`). The timeline
+inserts a segment of speed `0/1` (one source instant over the hold) and shifts what follows.
+
+`REVERSE` (ADR-014): the input played backwards, audio reversed with it (`reverse.py`, without `--no-audio`). Same
+frame, fps and duration as the input. The timeline reports each segment with `reversed: true`: its `source_range`
+stays ascending and plays from `end` back to `start`. ffmpeg's `reverse` buffers the whole input in memory; keep it
+short (TRIM first). Both tools are optional: `doctor` detects them in the checkout, and without one only that type is
+MISSING (refused up front with `TOOL_ERROR`, `missing: ["tool:ffmpeg-skill/<name>"]`).
 
 Values that reach a filter graph (colours, transition names, positions, aspects) are closed vocabularies or
 integers; times are exact rationals. See `contract.operations` for the documented forms.
@@ -109,6 +123,8 @@ image must decode to a frame. Per operation:
 | `RESIZE` | video | `width` as requested, height by the source aspect; audio, fps as the input unless `fps` |
 | `OVERLAY` | video + image | frame size, fps and audio as the input |
 | `ROTATE` | video | frame size as the input, width/height swapped for a 90/270 `degrees`; audio, fps as the input |
+| `FREEZE` | video | frame size, fps as the input; audio as the input, silent under the hold; duration = input + hold |
+| `REVERSE` | video | frame size, fps, duration as the input; audio as the input, reversed |
 
 `OVERLAY` no longer requires audio (ADR-009): ffmpeg-skill 0.9.x's overlay (`-loop 1` image + `-shortest`) could run
 unbounded on a video without an audio stream, but ffmpeg-skill >=0.10.0 bounds it with an explicit `-t <video
@@ -124,7 +140,7 @@ semantics, audio presence, fps, HDR); once an intermediate exists its probe (`OB
 | no video stream (audio-only file, corrupt container) | refused: `INVALID_INPUT no_video_stream` |
 | video source without a duration (still image / broken container as video) | refused: `INVALID_INPUT no_duration` |
 | image that does not decode | refused: `INVALID_INPUT image_undecodable` |
-| TRIM / CUT / SPEED / OVERLAY / ROTATE on an input with an odd width or height | refused: `INVALID_INPUT odd_frame` (RESIZE / FIT / FILL / CONCAT normalize it) |
+| TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE on an input with an odd width or height | refused: `INVALID_INPUT odd_frame` (RESIZE / FIT / FILL / CONCAT normalize it) |
 | CONCAT of HDR and SDR inputs | refused: `INVALID_INPUT hdr_mismatch` |
 | unsupported extension / container | refused: `UNSUPPORTED_FORMAT` |
 | ranges beyond the input, transition longer than half an input | refused: `INVALID_TIME_RANGE` |
@@ -147,7 +163,7 @@ tools and capabilities (ffmpeg-skill doctor; a gap is `TOOL_ERROR`, not retryabl
 After each operation (`executor._validate`): the file exists, is non-empty and readable; the probe reports a video
 stream, a duration and a frame size; the duration is within tolerance of the timeline (0.35 s, 1.5 s for
 `keyframe` precision); the frame equals the normalized target exactly (RESIZE / FIT / FILL / CONCAT / ROTATE by the
-rules above, the input's frame for TRIM / CUT / SPEED / OVERLAY); the video codec is the engine's for the source (h264,
+rules above, the input's frame for TRIM / CUT / SPEED / OVERLAY / FREEZE / REVERSE); the video codec is the engine's for the source (h264,
 hevc for HDR) when the operation re-encodes; the frame rate is the requested one (± 0.02) when `fps` was given; an
 audio stream is present when the input(s) had one. Any failure is `VALIDATION_ERROR` with `details.reason`
 (`frame_size`, `aspect`, `codec`, `fps`, `audio_lost`, or the duration details); the partial file is deleted.
@@ -160,10 +176,10 @@ with the same probe checks; a candidate that no longer validates is discarded an
 | Situation | Code |
 |---|---|
 | unknown / forbidden key, wrong type, out-of-range parameter | `INVALID_REQUEST` |
-| `start ≥ end`, range beyond the input, transition too long, overlay start / end beyond the input | `INVALID_TIME_RANGE` |
+| `start ≥ end`, range beyond the input, transition too long, overlay start / end beyond the input, FREEZE `at` at or beyond the input / `hold` outside 0.01..600 s | `INVALID_TIME_RANGE` |
 | unknown reference, cycle, orphan, conflicting outputs, image / video slot mismatch | `DEPENDENCY_ERROR` |
 | source without video stream / duration, image that does not decode, overlay input without audio, engine says the input is unusable | `INVALID_INPUT` |
-| type not in the allowlist (`CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION`, anything unknown) | `UNSUPPORTED_OPERATION` |
+| type not in the allowlist (`CROP`, `IMAGE_INSERT`, `POSITION`, anything unknown) | `UNSUPPORTED_OPERATION` |
 | ffmpeg-skill missing / unsupported version / tool or capability missing (not retryable); ffmpeg failed (retryable) | `TOOL_ERROR` |
 | tool exited 0 but wrote nothing / empty / unreadable; output cannot be written | `OUTPUT_ERROR` |
 | output exists but is not what was requested (stream, duration, frame, aspect, fps, audio) | `VALIDATION_ERROR` |
@@ -188,6 +204,8 @@ What changed between ffmpeg-skill releases and how this Skill handles each, dete
 | Change | Where | Handling |
 |---|---|---|
 | `fit.py --rotate` / `--flip` | added in 0.11.0 | flags read from the checkout; without them `ROTATE` is MISSING in doctor and refused (`TOOL_ERROR`, `flag:--rotate`) before anything runs |
+| `reverse.py`, `freeze.py` | added in 0.11.0 and 0.16.0 | optional tools (ADR-014): without one, only `REVERSE` / `FREEZE` is MISSING in doctor (a note; `ok` stays true) and refused (`TOOL_ERROR`, `tool:ffmpeg-skill/<name>`) before anything runs |
+| `crop.py`, `insert.py` | present in 0.11.0 and later | not used yet (`CROP`, `IMAGE_INSERT` are unsupported here); `doctor` reports whether the checkout has them (`unsupported[].engine_tool_status`) |
 | `--crf` → `--quality` (same CRF scale and default) | `--quality` added in 1.10, `--crf` removed in 2.0 | `outputs[].encoding.crf` is passed as `--quality` where the tool lists it, else as `--crf` |
 | `fit.py`'s aspect-only canvas (no `width`) | 0.16.10: never exceeds the source (9:16 from 1280x720 is 406x720, was 1280x2276) | behaviour, not a flag: the expected frame follows the rule of the installed release (`fit_bounds_by_source()`) |
 | probe `hdr` narrowed to PQ/HLG; `bt2020_or_hdr` keeps the old meaning | 2.0 | `bt2020_or_hdr` is read where present, `hdr` where not: a BT.2020 SDR source still expects HEVC |

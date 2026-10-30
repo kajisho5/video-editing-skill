@@ -11,7 +11,7 @@ from . import CONTRACT_SCHEMA, CONTRACT_VERSION, SKILL_ID, VERSION
 from .compiler import ALLOWED_FLAGS, compile_operation
 from .contract import PINNED_BLOCKS, TOOL_REQUIREMENTS, ffmpeg_skill_version_range, skill_contract
 from .errors import ERROR_CODES, EXIT_CODES
-from .ffmpeg_skill import REQUIRED_TOOLS
+from .ffmpeg_skill import ENGINE_TOOLS
 from .operations import CRF_MAX, CRF_MIN, ENCODING, FRAME_SEMANTICS, MEDIA, MEDIA_POLICY, OPERATIONS, UNSUPPORTED, X264_PRESETS, capability_list, media_compatibility, validate_encoding
 from .project import EditOperation
 
@@ -37,6 +37,8 @@ def _sample_params(t: str) -> Dict[str, Any]:  # noqa: C901
         "RESIZE": {"width": 320},
         "OVERLAY": {"image": "logo", "position": {"x": -10, "y": 10}, "margin": 24, "scale": 60, "opacity": Fraction(1, 2), "start": one, "end": two, "fade": Fraction(1, 2)},
         "ROTATE": {"degrees": 90, "flip": "h"},
+        "FREEZE": {"hold": one, "at": one},
+        "REVERSE": {},
     }
     return samples[t]
 
@@ -65,8 +67,8 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
         if not ts["produces_output"] or not ts["deterministic"] or ts["kind"] != "transform":
             problems.append(f"ToolSpec {tid}: editing tools are deterministic transforms that produce output")
         script = spec["tool"].split("/", 1)[1]
-        if script not in ALLOWED_FLAGS or script not in REQUIRED_TOOLS:
-            problems.append(f"{t}: engine tool {spec['tool']} is not in ALLOWED_FLAGS / REQUIRED_TOOLS")
+        if script not in ALLOWED_FLAGS or script not in ENGINE_TOOLS:
+            problems.append(f"{t}: engine tool {spec['tool']} is not in ALLOWED_FLAGS / ENGINE_TOOLS")
         # compile with a sample and prove every flag is allowlisted for the tool
         op = EditOperation("x", t, ["a", "b", "logo"] if t == "CONCAT" else (["a", "logo"] if t == "OVERLAY" else ["a"]), _sample_params(t))
         step = compile_operation(op)
@@ -88,6 +90,9 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
             problems.append(f"{u['capability']} is both supported and unsupported")
         if u["type"] in OPERATIONS or u["type"] not in UNSUPPORTED:
             problems.append(f"unsupported entry {u['type']} is not in operations.UNSUPPORTED")
+        # which engine tools exist is detected per checkout (doctor), never asserted by the static contract (ADR-014)
+        if "ffmpeg-skill has no" in u.get("reason", "") or "no tool" in u.get("reason", ""):
+            problems.append(f"unsupported entry {u['type']} claims an engine tool is missing; that is detected, not declared")
     errs = c.get("errors", {})
     if list(errs.get("codes", [])) != list(ERROR_CODES) or errs.get("exit_codes") != EXIT_CODES:
         problems.append("contract.errors differ from errors.py")
@@ -131,7 +136,7 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
             problems.append(f"validate_encoding accepted {bad}")
         except Exception:  # noqa: BLE001
             pass
-    for script in ("cut", "join", "fit", "overlay"):
+    for script in ("cut", "join", "fit", "overlay", "freeze", "reverse"):
         if not {"crf", "preset"} <= set(ALLOWED_FLAGS[script]):
             problems.append(f"encoding flags are not allowlisted for ffmpeg-skill/{script}")
     if c.get("frame_semantics") != FRAME_SEMANTICS or set(FRAME_SEMANTICS) != {"RESIZE", "FIT", "FILL", "ROTATE", "rules"}:

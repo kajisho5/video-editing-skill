@@ -95,21 +95,34 @@ gained a key, the same shape of change ADR-009's `FILL.anchor` was) — `video-p
 / 0.3.0. Purely additive at the request level: a `SPEED` request that omits `smooth` compiles to the exact `argv`
 it always did (`--smooth` is only emitted when given).
 
-## 0.5.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011, `kajisho5/video-editing-skill#11`)
+## After 0.4.0: FREEZE, REVERSE, an engine-neutral `unsupported` list (docs/decisions.md ADR-014; version bump left to the release)
+
+`operations`, `capabilities` / `capability_names`, `tools[]` and `provides` gain `FREEZE` (`video.freeze`,
+`ffmpeg-skill/freeze`) and `REVERSE` (`video.reverse`, `ffmpeg-skill/reverse`); `unsupported` loses both, its
+remaining reasons no longer claim ffmpeg-skill lacks a tool, and each entry gains `engine_tool` (the ffmpeg-skill tool
+that would execute the type, or `null`). Whether the installed checkout has that tool is detected by `doctor --json`
+(`unsupported[].engine_tool_status`), never written into the contract. `engine` gains `tools_optional` and lists the
+two new tools in `tools_used` (non-pinned). Breaking by this repository's convention (pinned `operations`,
+`unsupported`, `capabilities` changed): the next release bumps `version` and `contract_version`, and
+`video-production-agent` re-pins. `contract_check.verify_implementation` refuses an `unsupported` reason that says an
+engine tool is missing.
+
+## 0.5.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011 / ADR-014, `kajisho5/video-editing-skill#11`)
 
 `versioning.next["0.5.0"]` lists breaking-change candidates for a future version, none currently in progress:
-`CROP` and `IMAGE_INSERT` once ffmpeg-skill ships typed tools for them, and `RESIZE.height` — found, by live
-verification against ffmpeg-skill 0.10.0, to be blocked the same way as `CROP`/`IMAGE_INSERT` (`fit.py` has no
-`--height` flag), not the small addition it was first framed as; `OVERLAY` video-layer + chroma-key parameters
+`IMAGE_INSERT` via ffmpeg-skill's `insert.py`, `CROP` via `crop.py` or left to the caller (ownership undecided,
+ADR-014), and `RESIZE.height` — found, by live verification against ffmpeg-skill 0.10.0, to be blocked on the engine
+(`fit.py` has no `--height` flag), not the small addition it was first framed as; `OVERLAY` video-layer + chroma-key parameters
 (`overlay.py --video`/`--chromakey`), per ADR-002's own "extend OVERLAY rather than add a type" prescription —
 flagged by issue #11 item 2, not decided or scheduled; and capability ownership for `stabilize` / `sequence` /
-`background` (issue #11 item 3) — undecided whether they belong here, elsewhere, or nowhere. `FREEZE`, `REVERSE`
-and `POSITION` are not planned. Until one of these actually ships, 0.4.x grows only additively.
+`background` (issue #11 item 3) — undecided whether they belong here, elsewhere, or nowhere. `POSITION` is not
+planned.
 
 ## `provides` (docs/decisions.md ADR-006)
 
-`provides` lists this Skill's nine operations by their cross-repository Capability id (`video.trim`, `video.cut`,
-`video.concat`, `video.speed`, `video.fit`, `video.fill`, `video.resize`, `video.overlay`, `video.rotate` — the same
+`provides` lists this Skill's eleven operations by their cross-repository Capability id (`video.trim`, `video.cut`,
+`video.concat`, `video.speed`, `video.fit`, `video.fill`, `video.resize`, `video.overlay`, `video.rotate`,
+`video.freeze`, `video.reverse` — the same
 `capability` string `operations.OPERATIONS` and `tools[].capability` already carry), each with its `tool_id` and a `lifecycle`.
 It exists for `kajisho5/AI-video-production-OS`'s `CapabilityContract.provides` (`docs/SPEC.md` there), so a
 registry can resolve "who provides `video.trim`" without hardcoding this repository. It is additive, not pinned,
@@ -134,4 +147,6 @@ no new guarantee over what `doctor --json` already reports; it makes an existing
 - `response_shape` and `validation.response`: every document is self-checked before it is printed
   (`response.check_response`); a document that would violate the shape is reported as `INTERNAL_ERROR` instead.
 - `doctor_shape`: `doctor --json` is the capability-discovery endpoint; `operations[].status` is `AVAILABLE` only
-  when the tool and every encoder / filter it needs are present, `supported_operations` lists exactly those.
+  when the tool and every encoder / filter it needs are present, `supported_operations` lists exactly those. A type
+  MISSING only because the checkout lacks its optional tool (`engine.tools_optional`) is listed in `notes`, not
+  `problems`: `ok` stays true. `unsupported[].engine_tool_status` says whether the checkout ships each gap's tool.

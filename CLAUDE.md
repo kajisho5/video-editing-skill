@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-013). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-014). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -184,6 +184,14 @@ exception to ADR-001.
   for 1.x+ dry runs. CI integration is a matrix over ffmpeg-skill 0.11.0 (pinned) and main, plus a daily schedule.
   Upstream defects found and not masked: 0.12.x `probe.py` deletes an unreadable input; 2.4.1+ `join.py` leaves a
   one-frame hole at some plain cuts (`test_pipeline_e2e` fails on main for that reason, `reason: fps`).
+
+- (this change, ADR-014, `ECOSYSTEM_ROADMAP.md` steps 1–3; **no version bump yet**, though breaking by convention:
+  `operations` / `unsupported` / `capabilities` changed — the release that ships it bumps `version` / `contract_version`
+  and the agent re-pins) — `unsupported` reasons no longer claim an ffmpeg-skill tool is missing (doctor detects it:
+  `unsupported[].engine_tool_status`); `FREEZE` (`freeze.py`) and `REVERSE` (`reverse.py`) are operations on optional
+  engine tools (`OPTIONAL_TOOLS`: absent → that type MISSING as a doctor note, `ok` stays true). Real-media tests on a
+  luma-ramp clip; green against ffmpeg-skill 0.11.0 (no `freeze.py`: FREEZE refused up front) and 2.21.0. Follow-ups:
+  `IMAGE_INSERT` (roadmap step 4) and the `CROP` ownership ADR (step 5).
 
 ## Picking the next task
 
