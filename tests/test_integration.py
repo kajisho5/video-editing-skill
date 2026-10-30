@@ -3,6 +3,7 @@
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,8 +23,14 @@ REASON = "needs ffmpeg/ffprobe on PATH and a supported ffmpeg-skill checkout (VI
 # Detected, not assumed from the version (ADR-013): ffmpeg-skill 0.10.0's fit.py has no --rotate / --flip (added in
 # 0.11.0). Against such a checkout ROTATE must be refused up front and reported MISSING by doctor; that is what is tested.
 HAS_ROTATE = READY and FFMPEG_SKILL.missing_flags("fit", ["--rotate", "--flip"]) == []
-ALL_OPERATIONS = ["CONCAT", "CUT", "FILL", "FIT", "OVERLAY", "RESIZE", "ROTATE", "SPEED", "TRIM"]
-AVAILABLE_OPERATIONS = ALL_OPERATIONS if HAS_ROTATE else [t for t in ALL_OPERATIONS if t != "ROTATE"]
+# Optional engine tools (ADR-014), detected the same way: ffmpeg-skill 0.11.0 (the pinned CI checkout) has reverse.py but no
+# freeze.py (from 0.16.0). Against a checkout without one, that type must be refused up front and reported MISSING by
+# doctor as a note, not a problem.
+HAS_FREEZE = READY and "freeze" in FFMPEG_SKILL.tools
+HAS_REVERSE = READY and "reverse" in FFMPEG_SKILL.tools
+ALL_OPERATIONS = ["CONCAT", "CUT", "FILL", "FIT", "FREEZE", "OVERLAY", "RESIZE", "REVERSE", "ROTATE", "SPEED", "TRIM"]
+AVAILABLE_OPERATIONS = [t for t in ALL_OPERATIONS if not ((t == "ROTATE" and not HAS_ROTATE) or (t == "FREEZE" and not HAS_FREEZE)
+                                                          or (t == "REVERSE" and not HAS_REVERSE))]
 # fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
 # exceed the source": the exact frame each rule must deliver, written out (old, bounded).
 BOUNDED = READY and FFMPEG_SKILL.fit_bounds_by_source()
@@ -217,6 +224,12 @@ class RealMediaTests(unittest.TestCase):
         self.assertEqual(out["ok"], HAS_ROTATE)
         if not HAS_ROTATE:
             self.assertEqual(out["problems"], ["operation ROTATE unavailable: flag:ffmpeg-skill/fit --rotate, flag:ffmpeg-skill/fit --flip"])
+        missing_optional = [t for t, has in (("FREEZE", HAS_FREEZE), ("REVERSE", HAS_REVERSE)) if not has]
+        self.assertEqual([n.split()[1] for n in out["notes"]], missing_optional)
+        # roadmap step 1: whether the engine ships an unsupported type's tool is read from the checkout, never declared
+        tools = set(FFMPEG_SKILL.tools)
+        self.assertEqual({u["type"]: u["engine_tool_status"] for u in out["unsupported"]},
+                         {"CROP": "AVAILABLE" if "crop" in tools else "MISSING", "IMAGE_INSERT": "AVAILABLE" if "insert" in tools else "MISSING", "POSITION": None})
         self.assertFalse(out["secrets_shown"])
         self.assertIsNone(out["engine"]["compatibility"]["upper_bound"])
         self.assertEqual({t["flags_from"] for t in out["engine"]["compatibility"]["tools"].values()} - {"contract", "help"}, set())
@@ -431,6 +444,81 @@ class OperationE2ETests(unittest.TestCase):
         self.assertEqual(size(path270), (360, 640), "270 also swaps width and height")
         self.assertEqual(out["execution"]["operations"][0]["parameters"], {"rotate": 270, "flip": "v"})
         self.assertNotEqual(sha256_file(path90), sha256_file(path270), "different rotate/flip combinations are different transforms")
+
+    @classmethod
+    def ramp(cls):
+        """A 6 s, 30 fps clip with audio whose picture brightness rises with time (luma = 16 + 35 * t): a frame's mean luma
+        says which source instant it shows, robustly through a re-encode."""
+        path = os.path.join(cls.root, "media", "ramp.mp4")
+        if not os.path.exists(path):
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=320x240:r=30:d=6,format=gray,geq=lum='16+T*35'",
+                            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "6", "-c:v", "libx264", "-preset", "veryfast",
+                            "-pix_fmt", "yuv420p", "-c:a", "aac", path], check=True)
+        return path
+
+    def luma(self, path, n):
+        """Mean luma (signalstats YAVG) of decoded frame number n."""
+        out = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vf", f"select=eq(n\\,{n}),signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-",
+                              "-frames:v", "1", "-f", "null", "-"], stdout=subprocess.PIPE, text=True, check=True).stdout
+        m = re.search(r"YAVG=([0-9.]+)", out)
+        self.assertIsNotNone(m, out)
+        return float(m.group(1))
+
+    def test_freeze(self):
+        # ECOSYSTEM_ROADMAP step 2, docs/decisions.md ADR-014: FREEZE -> ffmpeg-skill freeze.py
+        if not HAS_FREEZE:   # ffmpeg-skill 0.11.0 has no freeze.py: refused before anything runs, nothing delivered
+            out = self.one({"type": "FREEZE", "input": "A", "params": {"hold": 1}}, expect=10)
+            self.assertEqual((out["error"]["code"], out["error"]["details"]["missing"]), ("TOOL_ERROR", ["tool:ffmpeg-skill/freeze"]))
+            self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
+            return
+        ramp = [{"id": "R", "path": self.ramp()}]
+        # inside the clip: the frame at 2 s is held for 1 s, the rest plays on after it (6 s + 1 s)
+        out = self.one({"type": "FREEZE", "input": "R", "params": {"at": 2, "hold": 1}}, sources=ramp)
+        path, streams = self.facts(out, 7.0)
+        self.assertEqual(size(path), (320, 240))
+        self.assertTrue(self.has_audio(streams), "the audio stream is kept (silent under the hold)")
+        self.assertEqual(out["execution"]["operations"][0]["parameters"], {"at": "2.000000", "hold": "1.000000", "mode": "insert"})
+        segs = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
+        self.assertEqual([(s["source_range"]["start"]["rational"], s["timeline_range"]["start"]["rational"], s["speed"]) for s in segs],
+                         [("0/1", "0/1", "1/1"), ("2/1", "2/1", "0/1"), ("2/1", "3/1", "1/1")])
+        src = self.ramp()
+        held = [self.luma(path, n) for n in (62, 75, 88)]          # 2.07 s .. 2.93 s: inside the hold
+        self.assertLess(max(held) - min(held), 1.5, f"the picture does not change during the hold: {held}")
+        self.assertAlmostEqual(held[0], self.luma(src, 59), delta=1.5, msg="the held frame is the one shown just before 2 s")
+        self.assertAlmostEqual(self.luma(path, 120), self.luma(src, 90), delta=1.5, msg="after the hold the clip resumes where it stopped, 1 s later")
+        self.assertGreater(self.luma(path, 40) - self.luma(path, 20), 15, "outside the hold the picture moves")
+        # without `at`: the last frame is held past the end (6 s + 1.5 s)
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out = self.one({"type": "FREEZE", "input": "R", "params": {"hold": 1.5}}, sources=ramp)
+        path, streams = self.facts(out, 7.5)
+        self.assertTrue(self.has_audio(streams))
+        self.assertEqual(out["execution"]["operations"][0]["parameters"], {"hold": "1.500000", "mode": "extend"})
+        tail = [self.luma(path, n) for n in (179, 195, 215)]
+        self.assertLess(max(tail) - min(tail), 1.5, f"the last frame is held: {tail}")
+        self.assertAlmostEqual(tail[0], self.luma(src, 179), delta=1.5)
+        # `at` at the end is refused up front (the last frame is held by omitting it)
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out = self.one({"type": "FREEZE", "input": "R", "params": {"at": 6, "hold": 1}}, expect=8, sources=ramp)
+        self.assertEqual(out["error"]["code"], "INVALID_TIME_RANGE")
+
+    def test_reverse(self):
+        # ECOSYSTEM_ROADMAP step 3, docs/decisions.md ADR-014: REVERSE -> ffmpeg-skill reverse.py
+        if not HAS_REVERSE:
+            out = self.one({"type": "REVERSE", "input": "A"}, expect=10)
+            self.assertEqual((out["error"]["code"], out["error"]["details"]["missing"]), ("TOOL_ERROR", ["tool:ffmpeg-skill/reverse"]))
+            return
+        src = self.ramp()
+        out = self.one({"type": "REVERSE", "input": "R"}, sources=[{"id": "R", "path": src}])
+        path, streams = self.facts(out, 6.0)
+        self.assertEqual(size(path), (320, 240))
+        self.assertTrue(self.has_audio(streams), "the audio is reversed with the picture, not dropped")
+        self.assertEqual(out["execution"]["operations"][0]["parameters"], {})
+        seg = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"][0]
+        self.assertEqual((seg["source_range"]["start"]["rational"], seg["source_range"]["end"]["rational"], seg["speed"], seg["reversed"]), ("0/1", "6/1", "1/1", True))
+        # frame n of the output is frame 179 - n of the source: the picture plays backwards
+        for n in (0, 30, 90, 150, 179):
+            self.assertAlmostEqual(self.luma(path, n), self.luma(src, 179 - n), delta=1.5, msg=f"output frame {n} vs source frame {179 - n}")
+        self.assertGreater(self.luma(path, 0) - self.luma(path, 179), 150, "brightness falls: the ramp runs backwards")
 
     def test_overlay(self):
         out = self.one({"type": "OVERLAY", "input": "A", "params": {"image": "logo", "position": "bottom-left", "start": 1, "end": 3, "fade": 0.25, "opacity": 0.8}})

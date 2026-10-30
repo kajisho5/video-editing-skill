@@ -6,6 +6,7 @@ installed checkout, never inferred from its version number:
   - --crf (0.x, 1.x) vs --quality (1.10+; the only spelling from 2.0)
   - probe's `hdr` (wide meaning before 2.0) vs `bt2020_or_hdr` (the same wide meaning from 2.0)
   - fit.py --rotate / --flip (absent from 0.10.0)
+  - freeze.py (absent before 0.16.0) and reverse.py (absent from 0.10.0): optional tools (ADR-014)
 Each layout is a fake checkout (fake_engine.py `layout=`) whose tools reject a flag they do not list, so a wrong
 spelling fails here exactly as it would against the real release.
 """
@@ -131,6 +132,39 @@ class Engine2xTests(LayoutCase):
             self.assertEqual([self.delivered_header()["width"], self.delivered_header()["height"]], frame)
 
 
+    def test_freeze_and_reverse_run(self):
+        rc, res = self.run_([{"id": "f", "type": "FREEZE", "input": "A", "params": {"at": 1, "hold": 0.5}}], encoding={"crf": 22})
+        self.assertTrue(res["ok"], res)
+        h = self.delivered_header()
+        self.assertEqual((h["tool"], h["duration"]), ("freeze", 2.5))
+        self.assertEqual(h["args"][h["args"].index("--mode") + 1], "insert")
+        self.assertIn("--quality", h["args"])
+        self.assertEqual(res["execution"]["operations"][0]["normalized"]["target_duration"]["rational"], "5/2")
+        rc, res = self.run_([{"id": "r", "type": "REVERSE", "input": "A"}], options={"overwrite": True})
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.delivered_header()["tool"], "reverse")
+        self.assertNotIn("--no-audio", self.delivered_header()["args"])
+
+    def test_freeze_at_the_end_is_refused_before_execution(self):
+        rc, res = self.run_([{"id": "f", "type": "FREEZE", "input": "A", "params": {"at": 2, "hold": 1}}])
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["error"]["code"], "INVALID_TIME_RANGE")
+        self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
+
+    def test_unsupported_engine_tools_are_detected(self):
+        """Roadmap step 1: whether the checkout ships the engine tool of an unsupported type is detected, not declared."""
+        rc, rep, err = cli(["doctor", "--json"], env=self.env)
+        self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"CROP": "MISSING", "IMAGE_INSERT": "MISSING", "POSITION": None})
+        root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-crop-")
+        try:
+            make_fake_skill(root, version=self.version, layout=self.layout, extra=("crop", "insert"))
+            rc, rep, err = cli(["doctor", "--json"], env={"VIDEO_EDITING_FFMPEG_SKILL_DIR": root})
+            self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"CROP": "AVAILABLE", "IMAGE_INSERT": "AVAILABLE", "POSITION": None})
+            self.assertTrue(all(u["status"] == "NOT_IMPLEMENTED" for u in rep["unsupported"]))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
 class Engine1xTests(Engine2xTests):
     """1.10+ accepts both spellings: --quality (the non-deprecated one) is chosen; probe still has the wide hdr."""
     layout = "1.x"
@@ -167,6 +201,27 @@ class Engine0xTests(LayoutCase):
         rc, res = self.run_([{"id": "r", "type": "ROTATE", "input": "A", "params": {"degrees": 90}}])
         self.assertTrue(res["ok"], res)
 
+    def test_freeze_needs_freeze_py(self):
+        """0.11.0 ships reverse.py but no freeze.py (from 0.16.0): FREEZE is refused before anything runs, doctor marks it
+        MISSING as a note (the Skill is otherwise ready, exit 0), REVERSE runs with --crf."""
+        rc, res = self.run_([{"id": "f", "type": "FREEZE", "input": "A", "params": {"hold": 1}}])
+        self.assertFalse(res["ok"])
+        self.assertEqual((res["error"]["code"], res["error"]["details"]["missing"], res["error"]["retryable"]), ("TOOL_ERROR", ["tool:ffmpeg-skill/freeze"], False))
+        self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
+        rc, rep, err = cli(["doctor", "--json"], env=self.env)
+        self.assertEqual(rc, 0, err)
+        self.assertTrue(rep["ok"], rep["problems"])
+        self.assertNotIn("FREEZE", rep["supported_operations"])
+        self.assertIn("REVERSE", rep["supported_operations"])
+        self.assertEqual(rep["engine"]["tools_optional_missing"], ["freeze"])
+        self.assertEqual(len(rep["notes"]), 1)
+        self.assertIn("FREEZE", rep["summary"])
+        rows = {c["check"]: c for c in rep["checks"]}
+        self.assertEqual((rows["tool:ffmpeg-skill/freeze"]["status"], rows["tool:ffmpeg-skill/freeze"]["optional"]), ("MISSING", True))
+        rc, res = self.run_([{"id": "r", "type": "REVERSE", "input": "A"}], encoding={"crf": 21})
+        self.assertTrue(res["ok"], res)
+        self.assertIn("--crf", self.delivered_header()["args"])
+
 
 class Engine010Tests(LayoutCase):
     """0.10.0's fit.py has no --rotate / --flip: ROTATE is MISSING in doctor and refused before anything runs; the
@@ -189,7 +244,12 @@ class Engine010Tests(LayoutCase):
         rows = {r["type"]: r for r in rep["operations"]}
         self.assertEqual(rows["ROTATE"]["status"], "MISSING")
         self.assertEqual(rows["ROTATE"]["missing"], ["flag:ffmpeg-skill/fit --rotate", "flag:ffmpeg-skill/fit --flip"])
-        self.assertEqual(sorted(t for t, r in rows.items() if r["status"] == "AVAILABLE"), sorted(set(OPERATION_FLAGS) - {"ROTATE"}))
+        # 0.10.0 ships neither freeze.py nor reverse.py: those two types are MISSING by the absent tool, a note, not a problem
+        self.assertEqual((rows["FREEZE"]["missing"], rows["REVERSE"]["missing"]), (["tool:ffmpeg-skill/freeze"], ["tool:ffmpeg-skill/reverse"]))
+        self.assertEqual(sorted(t for t, r in rows.items() if r["status"] == "AVAILABLE"), sorted(set(OPERATION_FLAGS) - {"ROTATE", "FREEZE", "REVERSE"}))
+        self.assertTrue(any("ROTATE" in p for p in rep["problems"]))
+        self.assertFalse(any("FREEZE" in p or "REVERSE" in p for p in rep["problems"]), rep["problems"])
+        self.assertEqual(sorted(n.split()[1] for n in rep["notes"]), ["FREEZE", "REVERSE"])
 
     def test_trim_still_runs(self):
         rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}])

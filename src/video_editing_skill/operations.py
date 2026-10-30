@@ -70,9 +70,9 @@ FRAME_SEMANTICS = {
     "rules": ["a source whose rotation metadata is ±90 / 270 is measured with width and height swapped (as the engine does)",
               "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)",
               "CONCAT (ffmpeg-skill join.py): params.width x params.height; only one given -> the other from the first input's aspect (round); none -> the first input's frame; then floored to even",
-              "TRIM / CUT / SPEED / OVERLAY / ROTATE keep the input frame -- losslessly, no filter maths beyond a turn or a mirror for ROTATE, whose target frame is the source's "
-              "width x height, swapped for a 90 / 270 degrees turn; an input with an odd width or height is refused before execution (INVALID_INPUT odd_frame) because the "
-              "engine's encoders need even sizes",
+              "TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE keep the input frame -- losslessly, no filter maths beyond a turn or a mirror for ROTATE, whose target "
+              "frame is the source's width x height, swapped for a 90 / 270 degrees turn; an input with an odd width or height is refused before execution (INVALID_INPUT "
+              "odd_frame) because the engine's encoders need even sizes",
               "no operation stretches (distorts) the picture; anamorphic output is not provided",
               "the normalized target frame is reported in plan.steps[].normalized and execution.operations[].normalized and verified on the output exactly"],
 }
@@ -83,18 +83,19 @@ MEDIA_POLICY = {
         "source with no video stream (audio-only files, corrupt containers): INVALID_INPUT no_video_stream",
         "video source without a duration (a still image or a broken container declared as video): INVALID_INPUT no_duration",
         "image source that does not decode to a frame: INVALID_INPUT image_undecodable",
-        "TRIM / CUT / SPEED / OVERLAY / ROTATE on an input whose frame has an odd width or height: INVALID_INPUT odd_frame (the encoder needs even sizes; RESIZE / FIT / FILL / CONCAT normalize to even)",
+        "TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE on an input whose frame has an odd width or height: INVALID_INPUT odd_frame (the encoder needs even sizes; "
+        "RESIZE / FIT / FILL / CONCAT normalize to even)",
         "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
         "unsupported input extension / output container: UNSUPPORTED_FORMAT", "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
-        "engine tool / encoder / filter missing: TOOL_ERROR (not retryable)",
+        "engine tool / encoder / filter missing: TOOL_ERROR (not retryable); FREEZE / REVERSE need ffmpeg-skill/freeze / reverse, detected per checkout",
     ],
     "normalized_by_skill": [
         "times in any accepted form -> exact rational seconds", "target frame of RESIZE / FIT / FILL / CONCAT (frame_semantics)",
-        "target duration of SPEED (input duration / factor)", "encoding profile -> typed engine flags (crf, preset)", "audio expectation per operation (kept / added / none)",
+        "target duration of SPEED (input duration / factor) and FREEZE (input duration + hold)", "encoding profile -> typed engine flags (crf, preset)", "audio expectation per operation (kept / added / none)",
     ],
     "delegated_to_engine": [
         "scaling, padding, cropping filters and their exact pixel maths", "constant-frame-rate conform of variable-frame-rate sources (a warning is reported)",
-        "resampling, silence insertion and stereo layout in CONCAT", "HDR sources encoded HEVC 10-bit (the output codec is hevc; a warning is reported)",
+        "resampling, silence insertion and stereo layout in CONCAT", "silence under a FREEZE hold; reversing the audio with the picture in REVERSE", "HDR sources encoded HEVC 10-bit (the output codec is hevc; a warning is reported)",
         "audio codec / bitrate / sample rate (AAC 192 kb/s)", "keyframe snapping for precision keyframe TRIM / CUT",
     ],
     "by_stream": {
@@ -108,10 +109,12 @@ MEDIA_POLICY = {
         "variable_frame_rate": "allowed; conformed to constant fps by the engine (warning)",
         "hdr": "allowed alone (output hevc, warning); not mixed with SDR in CONCAT",
         "rotation_metadata": "honoured (a display matrix): the frame is measured as displayed; a legacy `rotate` tag is ignored by ffmpeg >= 5 and therefore by the probe",
-        "odd_frame": "RESIZE / FIT / FILL / CONCAT normalize to even sizes; TRIM / CUT / SPEED / OVERLAY / ROTATE refuse it up front (odd_frame)",
+        "odd_frame": "RESIZE / FIT / FILL / CONCAT normalize to even sizes; TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE refuse it up front (odd_frame)",
     },
 }
 
+MIN_HOLD = Fraction(1, 100)
+MAX_HOLD = Fraction(600)
 MAX_SPEED = Fraction(4)
 MIN_SPEED = Fraction(1, 4)
 MAX_DIMENSION = 8192
@@ -136,6 +139,10 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
                 "summary": "composite a still image (logo, lower-third PNG) at a named position for a time range"},
     "ROTATE": {"arity": "one", "tool": "ffmpeg-skill/fit", "capability": "video.rotate",
                "summary": "turn the picture clockwise by 90/180/270 and/or mirror it horizontally or vertically (no scaling, padding or cropping)"},
+    "FREEZE": {"arity": "one", "tool": "ffmpeg-skill/freeze", "capability": "video.freeze",
+               "summary": "hold one frame for a number of seconds: at a time (the rest of the clip plays on after the hold) or, without one, the last frame at the end"},
+    "REVERSE": {"arity": "one", "tool": "ffmpeg-skill/reverse", "capability": "video.reverse",
+                "summary": "play the input backwards, picture and audio"},
 }
 
 # Media compatibility per operation: what every input must be, what the output keeps, and which mismatches are
@@ -172,18 +179,32 @@ MEDIA: Dict[str, Dict[str, Any]] = {
     "ROTATE": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
                "output": {"frame_size": "as input, with width and height swapped when params.degrees is 90 or 270", "audio": "as input", "fps": "as input"},
                "refused_before_execution": ["source without a video stream or duration", "input frame with an odd width or height (odd_frame)"]},
+    "FREEZE": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+               "output": {"frame_size": "as input", "audio": "as input, silent during the hold", "fps": "as input",
+                          "duration": "input duration + params.hold (the hold is a whole number of frames when params.at is given)"},
+               "refused_before_execution": ["source without a video stream or duration", "params.at at or beyond the input duration",
+                                            "input frame with an odd width or height (odd_frame)", "an ffmpeg-skill checkout without freeze.py (TOOL_ERROR)"]},
+    "REVERSE": {"inputs": "one video (the engine buffers the whole input in memory: keep it short, TRIM first)", "requires": {"video": True, "audio": False, "image": False},
+                "output": {"frame_size": "as input", "audio": "as input, reversed", "fps": "as input", "duration": "as input"},
+                "refused_before_execution": ["source without a video stream or duration", "input frame with an odd width or height (odd_frame)",
+                                             "an ffmpeg-skill checkout without reverse.py (TOOL_ERROR)"]},
 }
 
-# capabilities that video editing normally has but ffmpeg-skill 0.9.x has no tool for: declared as gaps,
-# never as capabilities.
-UNSUPPORTED: Dict[str, Dict[str, str]] = {
-    "CROP": {"capability": "video.crop", "reason": "ffmpeg-skill has no pixel-rectangle crop tool (fit.py only crops to an aspect ratio); use FILL for aspect-ratio crops"},
-    "FREEZE": {"capability": "video.freeze", "reason": "ffmpeg-skill has no freeze-frame tool"},
-    "REVERSE": {"capability": "video.reverse", "reason": "ffmpeg-skill has no reverse tool"},
-    "IMAGE_INSERT": {"capability": "video.image_insert", "reason": "ffmpeg-skill has no still-image-to-clip tool (join.py needs video inputs)"},
-    "POSITION": {"capability": "video.position", "reason": "free placement of a video layer is not provided (overlay.py composites images only)"},
-    "REORDER": {"capability": "video.reorder", "reason": "not a separate type: give CONCAT its inputs in the wanted order, or CUT its keep ranges in the wanted order"},
-    "TRANSITION": {"capability": "video.transition", "reason": "not a separate type: set CONCAT params.transition"},
+# capabilities video editing normally has that this Skill does not map to a typed operation: declared as gaps, never as
+# capabilities. A reason states what *this Skill* does not do, never what the engine lacks: which ffmpeg-skill tools exist
+# is detected from the installed checkout (doctor: unsupported[].engine_tool_status), not written into the contract
+# (ADR-014). `engine_tool` names the ffmpeg-skill tool that would execute the type, when there is one.
+UNSUPPORTED: Dict[str, Dict[str, Any]] = {
+    "CROP": {"capability": "video.crop", "engine_tool": "ffmpeg-skill/crop",
+             "reason": "not mapped to a typed operation here: whether this Skill or its caller owns pixel-rectangle crops is not decided yet (ADR-014); "
+                       "use FILL for crops to an aspect ratio"},
+    "IMAGE_INSERT": {"capability": "video.image_insert", "engine_tool": "ffmpeg-skill/insert",
+                     "reason": "not mapped to a typed operation here yet: a still as a CONCAT input needs an image-fed video-producing operation in the graph (ADR-014)"},
+    "POSITION": {"capability": "video.position", "engine_tool": None,
+                 "reason": "free placement of a video layer is not provided: OVERLAY composites still images only; a video layer would extend OVERLAY (ADR-002)"},
+    "REORDER": {"capability": "video.reorder", "engine_tool": None,
+                "reason": "not a separate type: give CONCAT its inputs in the wanted order, or CUT its keep ranges in the wanted order"},
+    "TRANSITION": {"capability": "video.transition", "engine_tool": None, "reason": "not a separate type: set CONCAT params.transition"},
 }
 
 
@@ -372,6 +393,16 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
             p["flip"] = _enum(params["flip"], what + ".flip", FLIPS)
         if "degrees" not in p and "flip" not in p:
             raise EditError("INVALID_REQUEST", f"{what}: give degrees and/or flip; nothing to do")
+    elif op_type == "FREEZE":
+        _keys(params, what, ("hold", "at"), ("hold",))
+        hold = Time.parse(params["hold"], what + ".hold")
+        if not (MIN_HOLD <= hold.value <= MAX_HOLD):
+            raise EditError("INVALID_TIME_RANGE", f"{what}.hold: must be between {float(MIN_HOLD):g} and {float(MAX_HOLD):g} seconds")
+        p["hold"] = hold
+        if "at" in params:
+            p["at"] = Time.parse(params["at"], what + ".at")
+    elif op_type == "REVERSE":
+        _keys(params, what, ())
     return p
 
 
@@ -427,6 +458,6 @@ def media_compatibility() -> Dict[str, Dict[str, Any]]:
                 "refused_before_execution": list(m["refused_before_execution"])} for t, m in sorted(MEDIA.items())}
 
 
-def unsupported_list() -> List[Dict[str, str]]:
-    return [{"type": t, "capability": u["capability"], "status": "NOT_IMPLEMENTED", "reason": u["reason"]}
+def unsupported_list() -> List[Dict[str, Any]]:
+    return [{"type": t, "capability": u["capability"], "status": "NOT_IMPLEMENTED", "reason": u["reason"], "engine_tool": u["engine_tool"]}
             for t, u in sorted(UNSUPPORTED.items()) if t not in ("REORDER", "TRANSITION")]

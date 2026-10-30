@@ -20,6 +20,8 @@ ALLOWED_FLAGS: Dict[str, tuple] = {
     "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color") + ENCODING_FLAGS,
     "fit": ("duration", "method", "max_speed", "smooth", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps", "rotate", "flip") + ENCODING_FLAGS,
     "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
+    "freeze": ("at", "hold", "mode") + ENCODING_FLAGS,
+    "reverse": ENCODING_FLAGS,
     "probe": (),
 }
 
@@ -30,6 +32,7 @@ OPERATION_FLAGS: Dict[str, tuple] = {
     "TRIM": ("--start", "--end"), "CUT": ("--segments",), "CONCAT": ("--transition", "--duration", "--fit", "--pad-color"),
     "SPEED": ("--duration", "--method", "--max-speed"), "FIT": ("--aspect", "--fit", "--pad-color"), "FILL": ("--aspect", "--fit"),
     "RESIZE": ("--width",), "ROTATE": ("--rotate", "--flip"), "OVERLAY": ("--image", "--position", "--margin"),
+    "FREEZE": ("--hold", "--mode"), "REVERSE": (),
 }
 
 
@@ -161,6 +164,16 @@ def _compile(op: EditOperation) -> Step:
         if "flip" in p:
             args["flip"] = p["flip"]
         return Step(op, "ffmpeg-skill/fit", args, video_inputs)
+    if op.type == "FREEZE":
+        # freeze.py: --at + --mode insert holds the frame at `at` and pushes the rest later; no --at + --mode extend holds the
+        # last frame past the end. Audio is padded with silence for the hold either way (the engine's choice, not ours).
+        if "at" in p:
+            args = {"at": p["at"].tool_arg(), "hold": p["hold"].tool_arg(), "mode": "insert"}
+        else:
+            args = {"hold": p["hold"].tool_arg(), "mode": "extend"}
+        return Step(op, "ffmpeg-skill/freeze", args, video_inputs)
+    if op.type == "REVERSE":
+        return Step(op, "ffmpeg-skill/reverse", {}, video_inputs)   # audio is reversed with the picture (no --no-audio)
     if op.type == "OVERLAY":
         pos = p["position"]
         args = {"position": pos if isinstance(pos, str) else f"{pos['x']},{pos['y']}", "margin": p["margin"]}

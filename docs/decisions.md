@@ -446,3 +446,67 @@ MP4), which the integration suite's fixture-integrity check catches (`broken.mp4
 0.16.0. From ffmpeg-skill 2.4.1 (PR #302) `join.py` can leave a one-frame timestamp hole at a plain cut whose first
 clip's audio outruns its picture; this Skill's output validation refuses the file (`reason: fps`). Both are engine
 defects; neither is masked by loosening a check here.
+
+## ADR-014 — FREEZE and REVERSE via ffmpeg-skill's own tools; the `unsupported` list stops describing the engine
+
+**Context.** `ECOSYSTEM_ROADMAP.md` steps 1–3. The contract's `unsupported` list said "ffmpeg-skill has no
+pixel-rectangle crop tool", "no freeze-frame tool", "no reverse tool", "no still-image-to-clip tool" — written against
+0.9.x (ADR-002) and never re-read. Checked directly against real checkouts, not the CHANGELOG: `reverse.py`, `crop.py`
+and `insert.py` are already in 0.11.0 (the commit CI pins), `freeze.py` arrived in 0.16.0, and current main (2.21.0)
+has all four. So the static contract was asserting engine gaps the installed engine did not have — the same mistake
+ADR-013 removed for flags and versions.
+
+**Decision 1 — a gap is this Skill's, never the engine's.** `operations.UNSUPPORTED` reasons now say what this Skill
+does not map (and why), and each entry carries `engine_tool`: the ffmpeg-skill tool that would execute it
+(`ffmpeg-skill/crop`, `ffmpeg-skill/insert`, or `null`). Whether the installed checkout has that tool is detected by
+`doctor --json` (`unsupported[].engine_tool_status`: `AVAILABLE` / `MISSING`, read from `scripts/<tool>.py`), the
+same way every other engine fact is (ADR-013). `contract_check.verify_implementation` refuses an `unsupported` reason
+that claims an engine tool is missing, so it cannot come back.
+
+**Decision 2 — `FREEZE` and `REVERSE` become operations**, reversing ADR-002's "not planned" verdict, which rested on
+"no tool" (and, for FREEZE, on composing it from a future IMAGE_INSERT). Both now have a typed, single-call engine tool,
+so the five questions answer yes: generic (an end-card hold, a beat; a rewind effect), safe at the boundary (typed
+flags, no filter string from a request), a small typed model, one video in / one out, disjoint from every existing
+type.
+
+- `FREEZE {hold, at?}` → `freeze.py`. `hold` is a time, 0.01..600 s. With `at` (`0 <= at < input duration`, else
+  `INVALID_TIME_RANGE` before execution): `--at <at> --hold <hold> --mode insert` — the frame shown at `at` is held
+  and the rest plays on `hold` later. Without `at`: `--hold <hold> --mode extend` — the last frame is held past the
+  end. `freeze.py`'s other combinations (`--mode extend` with an explicit `at` at the end, `insert` at the end) are
+  not separately expressible: one way to say "hold the last frame". Duration = input + hold (the engine rounds an
+  inserted hold to whole frames, inside the 0.35 s validation tolerance); audio is kept, silent under the hold (the
+  engine's choice). The timeline splits at `at` and inserts a segment of speed `0/1` (one source instant over the
+  hold), shifting what follows.
+- `REVERSE {}` → `reverse.py` without `--no-audio`: picture and audio backwards, same frame / fps / duration. The
+  timeline reports each segment with `reversed: true` (an additive key; `source_range` stays ascending and `speed`
+  non-negative, so the response shape's `N/D` speed rule is unchanged); internally a reversed segment carries a
+  negative speed, so TRIM / CUT / SPEED downstream map back to source time through the same formula. ffmpeg's
+  `reverse` buffers the whole input in memory; the engine deliberately imposes no length limit, and neither does
+  this Skill (a limit would be an editing judgement about what is "too long", ADR-001) — the cost is documented.
+- Both keep the input frame, so they join the `odd_frame` refusal group (TRIM / CUT / SPEED / OVERLAY / ROTATE).
+
+**Decision 3 — optional engine tools.** `freeze` and `reverse` are `ffmpeg_skill.OPTIONAL_TOOLS`: a checkout
+without one (0.11.0 has no `freeze.py`) still runs every other operation. `doctor` marks only that type MISSING
+(`tool:ffmpeg-skill/freeze`) and lists it in a new `notes` array, not in `problems`, so `ok` stays true and the
+pinned-0.11.0 CI job's `doctor` step still passes; a request using it is refused before anything runs (`TOOL_ERROR`,
+not retryable). Flags are detected for them like for the required tools (`ENGINE_TOOLS`). A *missing flag* on a
+present tool (ROTATE on 0.10.0) is unchanged: still a problem.
+
+**Not done here (follow-ups, roadmap steps 4 and 5).** `IMAGE_INSERT` via `insert.py` is not the same size: an image
+source must feed a video-producing operation and then CONCAT, which changes the graph's image/video slot rules
+(`DEPENDENCY_ERROR kind_mismatch`) and the media model. `CROP` via `crop.py` is a one-tool mapping, but
+video-production-agent already calls `ffmpeg-skill/crop` itself, so which repository owns pixel crops is an
+ownership decision to record first, not a mapping to add silently. Both stay in `unsupported`, now with an
+engine-neutral reason and `engine_tool`.
+
+**Versioning.** `operations`, `unsupported` and `capabilities` are pinned blocks, so this is breaking by ADR-007's
+convention and needs a `contract_version` / `version` bump and an agent re-pin. The bump is deliberately left to the
+release that ships it (this change was asked not to move the package version); the golden copy
+`tests/contract/contract.json` is regenerated so `contract --check` describes the code as it is.
+
+**Verified directly, not assumed:** `freeze.py` / `reverse.py` argparse definitions and their `_contract.py --json`
+`input_schema` (`--at`, `--hold`, `--mode {insert,extend}`; `--no-audio`), their filter graphs (`tpad` / `trim` /
+`concat` and `apad` for freeze; `reverse` / `areverse`), and which releases ship which script were read from the real
+checkouts (2.21.0 and the pinned 0.11.0 commit `b388035`). The real-media tests use a luma-ramp clip whose frame
+brightness encodes its source time: the held frames are constant and equal to the source frame before `at`, the clip
+resumes `hold` later where it stopped, and output frame `n` of REVERSE matches source frame `179 - n`.

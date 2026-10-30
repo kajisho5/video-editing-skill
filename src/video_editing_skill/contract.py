@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 
 from . import CONTRACT_SCHEMA, CONTRACT_VERSION, DOCTOR_SCHEMA, PACKAGE_NAME, PLAN_SCHEMA, REQUEST_SCHEMA, RESPONSE_SCHEMA, SKILL_ID, VERSION
 from .errors import DEFAULT_RETRYABLE, ERROR_CODES, EXIT_CODES
-from .ffmpeg_skill import MIN_VERSION, REQUIRED_TOOLS
+from .ffmpeg_skill import ENGINE_TOOLS, MIN_VERSION, OPTIONAL_TOOLS
 from .operations import (ENCODING, FORBIDDEN_KEYS, FRAME_SEMANTICS, MEDIA, MEDIA_POLICY, OPERATIONS, POSITIONS, TRANSITIONS, capability_list,
                          media_compatibility, unsupported_list)
 from .paths import IMAGE_EXTENSIONS, OUTPUT_EXTENSIONS, VIDEO_EXTENSIONS
@@ -24,6 +24,8 @@ TOOL_REQUIREMENTS = {
     "ffmpeg-skill/join": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade"],
     "ffmpeg-skill/fit": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
     "ffmpeg-skill/overlay": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
+    "ffmpeg-skill/freeze": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
+    "ffmpeg-skill/reverse": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
     "ffmpeg-skill/probe": ["ffprobe"],
 }
 
@@ -42,6 +44,9 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
     "OVERLAY": {"image": "image source id", "position": "|".join(POSITIONS) + " or {x, y} px", "margin": "int px", "scale": "image width px (optional)",
                 "opacity": "(0, 1]", "start": "time (optional)", "end": "time (optional)", "fade": "seconds 0..10 (optional)"},
     "ROTATE": {"degrees": "90 | 180 | 270, clockwise (optional)", "flip": "h | v, mirror horizontal/vertical (optional; at least one of degrees/flip is required)"},
+    "FREEZE": {"hold": "time 0.01..600 s: how long the frame is held",
+               "at": "time, < input duration (optional): hold the frame shown at `at` and play the rest after the hold; omitted: hold the last frame at the end"},
+    "REVERSE": {},
 }
 
 
@@ -96,7 +101,7 @@ def skill_contract() -> Dict[str, Any]:
         "schema": CONTRACT_SCHEMA,
         "skill_id": SKILL_ID, "name": "Video Editing Skill", "package": PACKAGE_NAME, "version": VERSION, "contract_version": CONTRACT_VERSION,
         "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, rotate/flip, "
-                       "image overlay) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no "
+                       "image overlay, freeze frame, reverse) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no "
                        "editing decisions, no LLM, no commands.",
         "role": "execution",
         "repository": "https://github.com/kajisho5/video-editing-skill",
@@ -108,12 +113,15 @@ def skill_contract() -> Dict[str, Any]:
         "tools": tool_specs(),
         "operations": {t: {"capability": s["capability"], "tool": s["tool"], "arity": s["arity"], "parameters": PARAM_DOCS[t]} for t, s in sorted(OPERATIONS.items())},
         "engine": {"id": "ffmpeg-skill", "version_range": ffmpeg_skill_version_range(),
-                   "tools_used": [f"ffmpeg-skill/{t}" for t in REQUIRED_TOOLS],
+                   "tools_used": [f"ffmpeg-skill/{t}" for t in ENGINE_TOOLS],
+                   "tools_optional": [f"ffmpeg-skill/{t}" for t in OPTIONAL_TOOLS],
                    "location": "VIDEO_EDITING_FFMPEG_SKILL_DIR | --ffmpeg-skill-dir | ~/.claude/skills/ffmpeg-skill | ./vendor/ffmpeg-skill | ../ffmpeg-skill",
                    "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout",
                    "compatibility": {"upper_bound": None,
                                      "detected": ["tools present (scripts/<tool>.py)",
                                                   "CLI flags per tool (scripts/_contract.py --json input_schema, else <tool>.py --help)",
+                                                  "optional tools (tools_optional): a checkout without one leaves only the operation it executes MISSING",
+                                                  "the ffmpeg-skill tool of each unsupported type (doctor: unsupported[].engine_tool_status)",
                                                   "encoding quality flag: --quality where offered, else --crf (same CRF scale)",
                                                   "probe colour key: video.bt2020_or_hdr where present, else video.hdr (same meaning)"],
                                      "floor_reason": "overlay.py bounds a looped-image composite with -t only from 0.10.0 (behaviour, not a flag)"}},
@@ -170,7 +178,7 @@ def skill_contract() -> Dict[str, Any]:
                                             "ranges against probed durations", "media compatibility (operations.MEDIA)", "engine tools and capabilities (ffmpeg-skill doctor)"],
                        "after_each_operation": ["file exists, non-empty, readable", "probe: video stream, duration, frame size",
                                                 "duration within tolerance of the timeline (frame 0.35 s, keyframe 1.5 s)",
-                                                "frame size / aspect / width as requested, or equal to the input for TRIM / CUT / SPEED / OVERLAY",
+                                                "frame size / aspect / width as requested, or equal to the input for TRIM / CUT / SPEED / OVERLAY / FREEZE / REVERSE",
                                                 "frame rate as requested", "audio stream kept when the input(s) had one"],
                        "on_reuse": "the candidate is re-validated with the same checks (hash, size, probe); a stale record is discarded and the operation runs again",
                        "response": "every document is checked against the response shape before it is printed (self-check); a violation is INTERNAL_ERROR"},
@@ -189,11 +197,12 @@ def skill_contract() -> Dict[str, Any]:
                        "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
                        "next": {"0.5.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
                                          "(docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
-                                         "CROP (pixel rectangle) once ffmpeg-skill provides a typed crop tool", "IMAGE_INSERT (still -> timed clip) once ffmpeg-skill provides a typed tool",
+                                         "CROP (pixel rectangle) via ffmpeg-skill/crop, or left to the caller -- ownership to be decided (ADR-014)",
+                                         "IMAGE_INSERT (still -> timed clip that CONCAT can take) via ffmpeg-skill/insert (ADR-014)",
                                          "OVERLAY video-layer + chroma-key params (ffmpeg-skill overlay.py --video/--chromakey), per ADR-002's own \"extend OVERLAY rather than add a "
                                          "type\" prescription -- flagged, not decided or scheduled here (see kajisho5/video-editing-skill#11 item 2)",
                                          "stabilize / sequence / background: capability ownership (here, elsewhere, or nowhere) not yet decided (see kajisho5/video-editing-skill#11 item 3)",
-                                         "FREEZE / REVERSE / POSITION: not planned (see docs/decisions.md ADR-002)"]}},
+                                         "POSITION: not planned as a type (see docs/decisions.md ADR-002)"]}},
         # ---- 0.1.x additive blocks: encoding profile, frame semantics, media policy (docs/decisions.md ADR-003 .. ADR-005)
         "encoding": ENCODING,
         "frame_semantics": FRAME_SEMANTICS,

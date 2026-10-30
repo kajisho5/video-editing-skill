@@ -63,6 +63,13 @@ Provided (capabilities are declared only where an implementation exists):
 | `video.resize` | `RESIZE` change the size, keep the aspect (`width`, height follows; nothing padded / cropped / stretched) | `ffmpeg-skill/fit` |
 | `video.overlay` | `OVERLAY` still image at a position for a time range | `ffmpeg-skill/overlay` |
 | `video.rotate` | `ROTATE` turn 90/180/270 clockwise and/or mirror horizontal/vertical (no scaling, padding or cropping) | `ffmpeg-skill/fit` |
+| `video.freeze` | `FREEZE` hold one frame for `hold` seconds: at `at` (the rest plays on after the hold) or, without `at`, the last frame at the end | `ffmpeg-skill/freeze` |
+| `video.reverse` | `REVERSE` play the input backwards, picture and audio | `ffmpeg-skill/reverse` |
+
+`FREEZE` and `REVERSE` run on ffmpeg-skill tools older checkouts do not ship (`freeze.py` from 0.16.0, `reverse.py`
+from 0.11.0). Whether the installed checkout has them is detected: without one, `doctor` reports that type MISSING
+(a note, not a problem — every other operation still runs) and a request using it is refused before anything runs
+(`TOOL_ERROR`, `missing: ["tool:ffmpeg-skill/freeze"]`). ADR-014.
 
 Plus: timeline assembly (segments with source and timeline ranges, a second track for overlays), deterministic
 operation identity, dry run, reuse of identical earlier results, output validation, provenance, an optional typed
@@ -78,9 +85,11 @@ no ProductionPlan / Project IR / policy / preference / constraint model, no LLM,
 no scripting, no raw ffmpeg or filter interface. See "Explicit non-goals" in the contract (`not_provided`).
 
 **Not implemented in this version** (declared as gaps in `contract.unsupported`, refused with
-`UNSUPPORTED_OPERATION`): `CROP` (pixel rectangle), `FREEZE`, `REVERSE`, `IMAGE_INSERT` (still → clip),
-`POSITION` (free video-layer placement). ffmpeg-skill has no tool for them and this skill does not run
-ffmpeg itself. Multi-track assembly is limited to one video track plus image overlays.
+`UNSUPPORTED_OPERATION`): `CROP` (pixel rectangle), `IMAGE_INSERT` (still → clip), `POSITION` (free video-layer
+placement). These are gaps in this Skill's typed model, not claims about the engine: each entry names the
+ffmpeg-skill tool that would execute it (`engine_tool`), and `doctor --json` reports whether the installed checkout
+ships it (`unsupported[].engine_tool_status`, detected, ADR-014) — current ffmpeg-skill has `crop.py` and
+`insert.py`. Multi-track assembly is limited to one video track plus image overlays.
 
 ## Architecture
 
@@ -410,7 +419,7 @@ integration on Ubuntu with apt ffmpeg and a checkout of kajisho5/ffmpeg-skill.
 ## ffmpeg-skill relationship
 
 ffmpeg-skill is the media execution engine. This skill uses five of its tools (`probe`, `cut`, `join`, `fit`,
-`overlay`) through their public CLI contract (`python3 scripts/<tool>.py … --json`, `status: completed | failed`,
+`overlay`), plus two optional ones whose presence is detected (`freeze`, `reverse`; ADR-014), through their public CLI contract (`python3 scripts/<tool>.py … --json`, `status: completed | failed`,
 `error.kind`) and its doctor (`scripts/_contract.py doctor --json`: ffmpeg / ffprobe versions, available encoders
 and filters), located from the environment, never from the request. There is no version window: what differs between
 ffmpeg-skill releases is detected from the installed checkout (ADR-013) — each tool's flags from its
@@ -419,8 +428,8 @@ and `hdr` where not — and `doctor --json` reports what was detected (`engine.c
 the installed release lacks (ROTATE on 0.10.0, which has no `fit.py --rotate`) is reported MISSING and refused up front.
 The one version number kept is the `>=0.10.0` floor, for a behaviour no flag reveals (ADR-010's `overlay.py -t` bound).
 Nothing here builds ffmpeg command lines or filter strings; what ffmpeg-skill ran is reported verbatim in
-`commands`. Gaps in ffmpeg-skill (pixel crop, freeze, reverse, image-to-clip) are reported as gaps, not worked
-around with a direct ffmpeg call. ffmpeg-skill's `render.py` project format is not used: it has a fixed stage
+`commands`. A type this Skill does not map (pixel crop, image-to-clip) is reported as a gap, never worked around with
+a direct ffmpeg call; whether ffmpeg-skill has a tool for it is detected, not declared. ffmpeg-skill's `render.py` project format is not used: it has a fixed stage
 order, no schema validation and no path policy.
 
 ## video-production-agent relationship
@@ -436,9 +445,14 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 
 ## Current limitations
 
-- Operations beyond ffmpeg-skill's tools: `CROP`, `FREEZE`, `REVERSE`, `IMAGE_INSERT`, `POSITION` are not implemented.
+- `CROP`, `IMAGE_INSERT`, `POSITION` are not implemented (ADR-014: CROP's ownership is undecided, IMAGE_INSERT needs
+  an image-fed operation in the graph).
+- `REVERSE` is executed by ffmpeg's `reverse` / `areverse`, which buffer the whole input in memory: keep its input
+  short (TRIM first). No length limit is imposed here, as none is in the engine.
+- A `FREEZE` hold inside the clip (`at` given) is a whole number of frames (the engine rounds `hold × fps`); the
+  timeline reports the requested hold, within the 0.35 s validation tolerance.
 - The encoding surface is `crf` + `preset`; codec, bitrate modes, audio and pixel format are the engine's.
-- `TRIM` / `CUT` / `SPEED` / `OVERLAY` / `ROTATE` refuse an input whose frame has an odd width or height
+- `TRIM` / `CUT` / `SPEED` / `OVERLAY` / `ROTATE` / `FREEZE` / `REVERSE` refuse an input whose frame has an odd width or height
   (`odd_frame`); the frame-changing operations normalize it to even first.
 - The integration HDR fixture is an SDR pattern flagged as HDR (colour tags); real HDR10 / HLG content and tone
   mapping are not covered. The real-media integration suite runs in CI against ffmpeg-skill 0.11.0 (pinned commit)
@@ -474,12 +488,17 @@ ffmpeg-skill `fit.py`'s pre-existing `--smooth` flag — no new engine capabilit
 convention as 0.2.0 / 0.3.0 (`operations.SPEED.parameters` gained a key); `video-production-agent` must widen
 `SUPPORTED_SKILL_VERSIONS` again. Omitting `smooth` compiles to the exact `argv` a `SPEED` request always produced.
 
-Contract 0.5.0 candidates, none scheduled (ADR-002 / ADR-003, `contract.versioning.next`, `kajisho5/video-editing-skill#11`):
-`CROP` (pixel rectangle), `IMAGE_INSERT` (still → timed clip), and `RESIZE.height` all wait on ffmpeg-skill shipping
-a typed tool/flag they need — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be
+**Added after 0.4.0** (ADR-014, `ECOSYSTEM_ROADMAP.md` steps 1–3; the version bump is left to the release): the
+`unsupported` list no longer says ffmpeg-skill lacks a tool — that is detected per checkout — and `FREEZE`
+(`ffmpeg-skill/freeze`) and `REVERSE` (`ffmpeg-skill/reverse`) are operations. Breaking by this repository's pinning
+convention (`operations`, `unsupported`, `capabilities` all changed): `video-production-agent` must re-pin.
+
+Contract 0.5.0 candidates, none scheduled (ADR-002 / ADR-003 / ADR-014, `contract.versioning.next`, `kajisho5/video-editing-skill#11`):
+`IMAGE_INSERT` (still → timed clip) via ffmpeg-skill's `insert.py`, `CROP` (pixel rectangle) via `crop.py` or left to
+the caller (ownership to be decided), and `RESIZE.height`, which waits on a `fit.py` flag — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be
 blocked this way too (`fit.py` has no `--height` flag), not the small addition ADR-003 first described. Flagged but
 not decided or scheduled (issue #11 items 2 and 3): `OVERLAY` video-layer + chroma-key parameters
 (`overlay.py --video`/`--chromakey`, per ADR-002's own "extend OVERLAY rather than add a type" prescription), and
 capability ownership for `stabilize` / `sequence` / `background` (here, elsewhere, or nowhere — no decision yet).
-Not planned: `FREEZE` (compose from IMAGE_INSERT), `REVERSE`, `POSITION` (would extend OVERLAY with a video layer).
+Not planned: `POSITION` (would extend OVERLAY with a video layer).
 Also: an `OVERLAY` that tolerates silent inputs once ffmpeg-skill's overlay terminates on them.
