@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.1 - 2026-10-31
+
+- CROP via ffmpeg-skill crop.py: pixel-rectangle crops are owned here, not by the caller (roadmap step 5) (#25) (36f0092)
+
 ## v0.4.0 - 2026-10-31
 
 - IMAGE_INSERT via ffmpeg-skill/insert; CHANGELOG, release workflow, dependabot (roadmap 4, 6) (#21) (f6e13a9)

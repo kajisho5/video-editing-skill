@@ -3,7 +3,7 @@
   "skill_id": "video-editing",
   "name": "Video Editing Skill",
   "package": "video-editing-skill",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "contract_version": "4.0",
   "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, rotate/flip, image overlay, freeze frame, reverse, still image to clip) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing decisions, no LLM, no commands.",
   "role": "execution",
@@ -159,7 +159,7 @@
     {
       "tool_id": "video-editing/concat",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "CONCAT",
       "capability": "video.concat",
       "description": "join two or more inputs in order, optionally with a transition, conforming size / fps",
@@ -213,7 +213,7 @@
     {
       "tool_id": "video-editing/crop",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "CROP",
       "capability": "video.crop",
       "description": "keep exactly the pixel rectangle {x, y, width, height} the caller gives (no scaling, padding or aspect maths; FILL crops to an aspect ratio)",
@@ -264,7 +264,7 @@
     {
       "tool_id": "video-editing/cut",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "CUT",
       "capability": "video.cut",
       "description": "keep several ranges of one input, joined in the order given (removes everything else)",
@@ -312,7 +312,7 @@
     {
       "tool_id": "video-editing/fill",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "FILL",
       "capability": "video.fill",
       "description": "centre-crop into an aspect ratio (edges are lost)",
@@ -362,7 +362,7 @@
     {
       "tool_id": "video-editing/fit",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "FIT",
       "capability": "video.fit",
       "description": "letterbox / pillarbox into an aspect ratio (nothing is cropped)",
@@ -412,7 +412,7 @@
     {
       "tool_id": "video-editing/freeze",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "FREEZE",
       "capability": "video.freeze",
       "description": "hold one frame for a number of seconds: at a time (the rest of the clip plays on after the hold) or, without one, the last frame at the end",
@@ -461,7 +461,7 @@
     {
       "tool_id": "video-editing/image_insert",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "IMAGE_INSERT",
       "capability": "video.image_insert",
       "description": "turn a still image (title card, end slate) into a silent video clip of a set duration that CONCAT and every other type can take",
@@ -511,7 +511,7 @@
     {
       "tool_id": "video-editing/overlay",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "OVERLAY",
       "capability": "video.overlay",
       "description": "composite a still image (logo, lower-third PNG) at a named position for a time range",
@@ -565,7 +565,7 @@
     {
       "tool_id": "video-editing/resize",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "RESIZE",
       "capability": "video.resize",
       "description": "scale to a width keeping the aspect ratio",
@@ -613,7 +613,7 @@
     {
       "tool_id": "video-editing/reverse",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "REVERSE",
       "capability": "video.reverse",
       "description": "play the input backwards, picture and audio",
@@ -659,7 +659,7 @@
     {
       "tool_id": "video-editing/rotate",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "ROTATE",
       "capability": "video.rotate",
       "description": "turn the picture clockwise by 90/180/270 and/or mirror it horizontally or vertically (no scaling, padding or cropping)",
@@ -707,7 +707,7 @@
     {
       "tool_id": "video-editing/speed",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "SPEED",
       "capability": "video.speed",
       "description": "retime by a constant factor (video and pitch-preserved audio)",
@@ -756,7 +756,7 @@
     {
       "tool_id": "video-editing/trim",
       "skill_id": "video-editing",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "operation_type": "TRIM",
       "capability": "video.trim",
       "description": "keep one source time range [start, end)",
@@ -1161,7 +1161,7 @@
     "schema": "video-editing/response@1",
     "skill": {
       "id": "video-editing",
-      "version": "0.4.0"
+      "version": "0.4.1"
     },
     "status": "completed | reused",
     "project": "...",
@@ -1566,7 +1566,7 @@
     "ok": "bool",
     "skill": {
       "id": "video-editing",
-      "version": "0.4.0"
+      "version": "0.4.1"
     },
     "contract": "schema ids",
     "engine": "ffmpeg-skill location, version, ffmpeg / ffprobe, missing capabilities",
@@ -1586,7 +1586,7 @@
     "problems": "…"
   },
   "versioning": {
-    "version": "0.4.0",
+    "version": "0.4.1",
     "contract_version": "4.0",
     "pinned_blocks": [
       "schema",
