@@ -968,7 +968,8 @@
         "optional tools (tools_optional): a checkout without one leaves only the operation it executes MISSING",
         "the ffmpeg-skill tool of each unsupported type (doctor: unsupported[].engine_tool_status)",
         "encoding quality flag: --quality where offered, else --crf (same CRF scale)",
-        "probe colour key: video.bt2020_or_hdr where present, else video.hdr (same meaning)"
+        "probe colour key: video.bt2020_or_hdr where present, else video.hdr (same meaning)",
+        "cut.py's SDR HEVC re-encode codec: --no-keep-hevc passed where offered (3.0+), so a frame-precision TRIM / CUT writes H.264 for SDR like every other operation"
       ],
       "floor_reason": "overlay.py bounds a looped-image composite with -t only from 0.10.0 (behaviour, not a flag)"
     }

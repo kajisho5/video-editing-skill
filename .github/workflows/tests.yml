@@ -60,6 +60,9 @@ jobs:
       matrix:
         engine:
           - {name: "0.11.0", ref: b388035b66b3a4c370be57078ff42b115987f76c, os: ubuntu-24.04}
+          # the last 2.x and the first 3.x, pinned: 3.0 changed cut.py's defaults (ADR-017), so both sides are checked
+          - {name: "2.24.1", ref: a2c8433b2441b52b4fe16ce3525100d892ee047f, os: ubuntu-latest}
+          - {name: "3.0.0", ref: 1dc2f52013956daa1d97fd9d9d53c79b9305bc43, os: ubuntu-latest}
           - {name: main, ref: main, os: ubuntu-latest}
     steps:
       - uses: actions/checkout@v4

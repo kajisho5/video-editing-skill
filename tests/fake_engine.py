@@ -34,8 +34,11 @@ Layouts (make_fake_skill(layout=...), written to <root>/LAYOUT; ADR-013's capabi
   2.x         2.0+: --crf removed (unknown argument, exit 2), --quality; an existing output is refused (kind: input)
               unless --overwrite; probe's hdr is PQ/HLG only and bt2020_or_hdr carries the old meaning
   help-only   2.x flags, but contract --json describes no tools: flags are only readable from each tool's --help
+  3.x         3.0+: 2.x plus cut.py --keep-hevc / --no-keep-hevc / --edit-list / --no-edit-list / --vfr-guard; cut.py
+              re-encodes an SDR HEVC source as HEVC unless --no-keep-hevc (every other tool, and 2.x cut.py: H.264)
 With a layout, a tool exits 2 (argparse "unrecognized arguments") on any flag its layout does not list. A source whose
 name contains "bt2020" is BT.2020 SDR: the engine routes it like HDR (hevc), and only 2.x/help-only probe say hdr: false.
+A source whose name contains "sdrhevc" is an SDR HEVC file (codec hevc, hdr false: a phone clip).
 """
 import json
 import os
@@ -50,7 +53,7 @@ SCRIPT = textwrap.dedent('''
     dry = "--dry-run" in args
     LAYOUT = open(os.path.join(ROOT, "LAYOUT")).read().strip() if os.path.exists(os.path.join(ROOT, "LAYOUT")) else None
     FLAGS = json.load(open(os.path.join(ROOT, "FLAGS.json"))).get(name, []) if LAYOUT else None
-    NEW_PROBE = LAYOUT in ("2.x", "help-only")
+    NEW_PROBE = LAYOUT in ("2.x", "help-only", "3.x")
     if LAYOUT and "--help" in args:
         sys.stdout.write("usage: " + name + ".py [-h] input [-o OUTPUT] " + " ".join("[" + f + "]" for f in FLAGS) + "\\n"); sys.exit(0)
     if LAYOUT:
@@ -86,7 +89,7 @@ SCRIPT = textwrap.dedent('''
         wide = "wide" in base and not h
         hdr = h.get("hdr", "hdr" in base or "bt2020" in base)            # the wide (1.x) meaning: what the encoders route on
         signal = h.get("signal", "hdr" in base)                           # PQ / HLG only
-        video = {"codec": h.get("codec", "hevc" if hdr else "h264"), "width": h.get("width", 1280 if wide else 640), "height": h.get("height", 720 if wide else 360),
+        video = {"codec": h.get("codec", "hevc" if (hdr or "sdrhevc" in base) else "h264"), "width": h.get("width", 1280 if wide else 640), "height": h.get("height", 720 if wide else 360),
                  "fps": h.get("fps", 25.0 if wide else 30.0), "rotation": 90 if ("rot90" in base and not h) else 0, "hdr": signal if NEW_PROBE else hdr,
                  "variable_frame_rate_suspected": ("vfr" in base and not h)}
         if NEW_PROBE:
@@ -140,7 +143,7 @@ SCRIPT = textwrap.dedent('''
     if name == "probe":
         emit(probe_doc(args[0])); sys.exit(0)
     out = args[args.index("-o") + 1]
-    if LAYOUT in ("1.x", "2.x", "help-only") and not os.path.isdir(os.path.dirname(os.path.abspath(out))):
+    if LAYOUT in ("1.x", "2.x", "help-only", "3.x") and not os.path.isdir(os.path.dirname(os.path.abspath(out))):
         emit({"status": "failed", "error": {"kind": "input", "message": "output directory does not exist; create it first (this tool never creates directories)"}}); sys.exit(1)
     if NEW_PROBE and os.path.exists(out) and "--overwrite" not in args:
         emit({"status": "failed", "error": {"kind": "input", "message": "output exists; pass --overwrite"}}); sys.exit(1)
@@ -204,10 +207,13 @@ SCRIPT = textwrap.dedent('''
         if name == "fit" and flag("--rotate") in ("90", "270"):   # fit.py: a 90/270 turn swaps the displayed frame
             width, height = height, width
         encoding = {"crf": int(flag("--quality", flag("--crf", 18))), "preset": flag("--preset", "medium")}
+        codec = "hevc" if first_wide else "h264"
+        if LAYOUT == "3.x" and name == "cut" and first.get("codec") == "hevc" and "--no-keep-hevc" not in args:
+            codec = "hevc"   # cut.py 3.0: an SDR HEVC source stays HEVC (a stream copy keeps it in every release)
         with open(out, "wb") as fh:
             fh.write(b"FAKE" + json.dumps({"duration": expected_duration(), "tool": name, "args": args, "noaudio": noaudio,
                                            "width": width, "height": height, "fps": fps, "hdr": first_wide, "signal": first_signal,
-                                           "codec": "hevc" if first_wide else "h264", "encoding": encoding}).encode())
+                                           "codec": codec, "encoding": encoding}).encode())
     if mode == "noisy":
         sys.stdout.write("some junk line\\n")
     emit({"status": "completed", "output": out, "dry_run": False, "commands": ["ffmpeg -i x " + out]})
@@ -244,7 +250,9 @@ _BASE_FLAGS = {"probe": [], "cut": ["--start", "--end", "--segments", "--accurat
 # tools a layout's checkout does not ship (ffmpeg-skill: reverse.py, insert.py and crop.py from 0.11.0, freeze.py from 0.16.0)
 _LAYOUT_ABSENT = {"0.10": ("freeze", "reverse", "insert", "crop"), "0.x": ("freeze",)}
 _LAYOUT_FLAGS = {"0.10": ["--crf", "--preset"], "0.x": ["--crf", "--preset"], "1.x": ["--crf", "--quality", "--preset", "--overwrite"],
-                 "2.x": ["--quality", "--preset", "--overwrite"], "help-only": ["--quality", "--preset", "--overwrite"]}
+                 "2.x": ["--quality", "--preset", "--overwrite"], "help-only": ["--quality", "--preset", "--overwrite"],
+                 "3.x": ["--quality", "--preset", "--overwrite"]}
+_LAYOUT_EXTRA = {"3.x": {"cut": ["--keep-hevc", "--no-keep-hevc", "--edit-list", "--no-edit-list", "--vfr-guard"]}}
 
 
 def layout_flags(layout: str) -> dict:
@@ -255,7 +263,8 @@ def layout_flags(layout: str) -> dict:
         flags = list(base) + ([] if tool == "probe" else _LAYOUT_FLAGS[layout])
         if layout == "0.10" and tool == "fit":
             flags = [f for f in flags if f not in ("--rotate", "--flip")]
-        if tool == "probe" and layout in ("1.x", "2.x", "help-only"):
+        flags += _LAYOUT_EXTRA.get(layout, {}).get(tool, [])
+        if tool == "probe" and layout in ("1.x", "2.x", "help-only", "3.x"):
             flags.append("--overwrite")
         out[tool] = flags
     return out

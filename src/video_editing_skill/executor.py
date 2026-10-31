@@ -460,7 +460,16 @@ class Executor:
                 dur = self._probe_duration(inputs[0])
             if dur is None:
                 dur = Time.from_float(10.0)  # dry-run placeholder only; the real run probes
-        return st.argv_for(inputs, out, image, dur, resolve=lambda flag: self.skill.resolve_flag(st.script, flag))
+        return st.argv_for(inputs, out, image, dur, resolve=lambda flag: self.skill.resolve_flag(st.script, flag), engine_args=self._engine_args(op))
+
+    def _engine_args(self, op) -> Dict[str, Any]:
+        """Flags that depend on the installed release, not on the request. ffmpeg-skill 3.0 made cut.py keep an SDR HEVC
+        source as HEVC when it re-encodes; every other re-encoding tool (and cut.py before 3.0) writes H.264 for SDR, which
+        is what output validation and the contract's one-codec-per-colour rule expect. A re-encoding TRIM / CUT on such a
+        checkout passes --no-keep-hevc (ADR-017); a keyframe-precision one stream-copies and keeps the source codec."""
+        if op.tool == "ffmpeg-skill/cut" and self._reencodes(op) and self.skill.cut_keeps_hevc_by_default():
+            return {"no_keep_hevc": True}
+        return {}
 
     def _partial(self, ref: str) -> str:
         op = self.project.operations[ref]

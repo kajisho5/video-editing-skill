@@ -204,8 +204,8 @@ with the same probe checks; a candidate that no longer validates is discarded an
 ## Engine versions and what the tests prove
 
 Originally verified against ffmpeg-skill 0.9.0, 0.9.1 and 0.10.0 with ffmpeg 6.1.1; since ADR-013 there is no upper
-bound (`>=0.10.0`) and the real-media suite runs against 0.11.0 and ffmpeg-skill main (see "Across ffmpeg-skill
-releases" below). 0.9.1
+bound (`>=0.10.0`) and the real-media suite runs against 0.11.0, 2.24.1, 3.0.0 and ffmpeg-skill main (see "Across
+ffmpeg-skill releases" below; 3.0's `cut.py` defaults: ADR-017). 0.9.1
 adds audio-only cut / join modes and a three-state capability doctor (`available` / `missing` / `unknown`); this
 Skill uses none of the audio-only modes and treats a capability absent from `available` as missing (conservative: a
 detection failure refuses rather than guesses). 0.10.0 bounds `overlay.py --image` with an explicit `-t <video
