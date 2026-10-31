@@ -510,3 +510,53 @@ release that ships it (this change was asked not to move the package version); t
 checkouts (2.21.0 and the pinned 0.11.0 commit `b388035`). The real-media tests use a luma-ramp clip whose frame
 brightness encodes its source time: the held frames are constant and equal to the source frame before `at`, the clip
 resumes `hold` later where it stopped, and output frame `n` of REVERSE matches source frame `179 - n`.
+
+## ADR-015 — IMAGE_INSERT via ffmpeg-skill's `insert.py`: a still becomes a clip the graph can join
+
+**Context.** `ECOSYSTEM_ROADMAP.md` step 4 ("a still can join CONCAT"), the follow-up ADR-014 left open because it is
+not a one-tool mapping like FREEZE / REVERSE: every slot in the graph was a video slot except OVERLAY's
+`params.image`, and an image source given to CONCAT is refused (`DEPENDENCY_ERROR kind_mismatch`). `insert.py` takes
+one still and writes a silent, constant-rate clip; read from ffmpeg-skill main's own contract
+(`scripts/_contract.py --json`, 2.22.2: positional `input`, `--duration`, `--width`, `--height`, `--fps` default 30,
+`--zoom` / `--zoom-amount` / `--pan`, `--quality` / `--preset`) and from the pinned 0.11.0 commit `b388035` (the same
+flags with `--crf`, no `--quality`).
+
+**Decision 1 — a new type, `IMAGE_INSERT {duration, width?, height?, fps?}`, arity one, whose input is an image
+source.** It is the one operation that produces video from no video: `parse_request` treats its input as an image
+slot (an image source, never a video source or an operation, `kind_mismatch` otherwise), and every other slot
+accepts its result like any operation's. CONCAT keeps its video-only slots; an image source given to it directly is
+still refused, now with a hint naming IMAGE_INSERT. ADR-002's five questions: generic (title card, end slate,
+placeholder), safe (typed flags; the image is a positional path that went through the path policy), small model,
+one input / one output, disjoint from OVERLAY (a still *over* video) and from every other type.
+
+- `duration`: a time, 0.01..600 s (the FREEZE.hold bounds — both hold a picture). The clip lasts exactly that, and
+  the timeline says so: one segment from the image source, `source_range` 0..0, speed `0/1`, over the duration. Every
+  downstream mapping (TRIM, SPEED, REVERSE, FREEZE, CONCAT offsets) already handles a speed-0 segment.
+- `width` / `height`: even, as everywhere here; the target frame is insert.py's own rule, computed before execution
+  and verified after (both → that frame, the still scaled to cover it and centre-cropped; one → the other from the
+  image aspect, `even()`; none → the image size, `even()`). Recorded as a `frame_semantics.rules` entry.
+- `fps`: 1..240, default 30 — insert.py's default, but stored in the canonical params and always passed, so the
+  clip's rate (and its operation_id) never depends on what an engine release defaults to.
+- Not mapped: `--zoom` / `--zoom-amount` / `--pan` (Ken Burns). A motion move is a later, additive parameter if a
+  caller needs it; leaving it out keeps the type to "a still as a clip", and the zoompan filter out of
+  `required_capabilities`.
+- The output is silent and SDR H.264 whatever the image is (insert.py's choice): `profile()` derives `audio: false`,
+  `hdr: false`; validation expects exactly that. CONCAT already inserts silence for an input without audio, so a
+  card in front of footage with sound keeps the sound (verified on real media below).
+
+**Decision 2 — gated on the detected tool, not on a raised floor.** `insert` joins `ffmpeg_skill.OPTIONAL_TOOLS`
+(ADR-014's mechanism): a checkout without `insert.py` (0.10.0) still runs every other type, doctor lists IMAGE_INSERT
+MISSING as a note, and a request using it is refused before anything runs (`TOOL_ERROR`,
+`tool:ffmpeg-skill/insert`). `MIN_VERSION` stays 0.10.0 — ADR-013: no version window, detect instead. The
+encoding profile reaches it as `--crf` or `--quality`, whichever the checkout lists (`FLAG_SPELLINGS`).
+
+**Versioning.** `operations`, `unsupported`, `capabilities` change (pinned), and `media_compatibility` gains the
+first `requires.video: false` entry. Breaking by ADR-007's convention, shipped in the same unreleased batch as
+ADR-014, so one `version` / `contract_version` bump at release covers both; `video-production-agent` re-pins once.
+The golden copy `tests/contract/contract.json` is regenerated.
+
+**Verified directly, not assumed:** the flags above from both checkouts' code and ffmpeg-skill main's contract
+output; a real-media test (`tests/test_integration.py::OperationE2ETests::test_image_insert`) against ffmpeg-skill
+2.22.2: a 120x40 PNG with `height: 120` becomes a 360x120, 30 fps, silent H.264 clip of 2.0 s whose picture does not
+change, and an IMAGE_INSERT 640x360 card CONCATed in front of a 6 s clip with audio gives 7.5 s, 640x360, with audio,
+the card then the footage. CI runs the same test against the pinned 0.11.0 checkout.

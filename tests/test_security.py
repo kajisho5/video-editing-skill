@@ -284,6 +284,9 @@ class InjectionTests(unittest.TestCase):
         self.refused(self.doc({"image": "logo"}, t="FREEZE"))
         self.refused(self.doc({"hold": 1, "at": 0, "command": "x"}, t="FREEZE"))
         self.refused(self.doc({"filter": "reverse"}, t="REVERSE"))
+        self.refused(self.doc({"duration": 1, "zoom": "in"}, t="IMAGE_INSERT"))
+        self.refused(self.doc({"duration": 1, "filter_complex": "zoompan"}, t="IMAGE_INSERT"))
+        self.refused(self.doc({"duration": "1;rm -rf /"}, t="IMAGE_INSERT"))
         self.refused(self.doc({"image": "logo"}, t="overlay"), "UNSUPPORTED_OPERATION")
 
 

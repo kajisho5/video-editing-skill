@@ -9,7 +9,8 @@ segment plays its source range backwards and is reported with `reversed: true` (
 stays non-negative). In a segment, source time = source_range.start + (t - timeline_range.start) * speed, or, when
 reversed, source_range.end - (t - timeline_range.start) * speed. Internally a reversed segment carries a negative
 speed and its source_start is the source time at its timeline start, so the same formula maps through every
-operation downstream.
+operation downstream. IMAGE_INSERT starts a clip from a still: one segment of speed 0 whose source is the image source
+(source_range 0..0) over params.duration.
 
 Durations of untrimmed sources come from a probe when one is available; otherwise the clip is marked
 duration_known: false and downstream timeline ranges are omitted (never guessed).
@@ -81,6 +82,10 @@ def build_timelines(project: EditProject, durations: Dict[str, Optional[Time]]) 
 
     for ref in project.order:
         op = project.operations[ref]
+        if op.type == "IMAGE_INSERT":   # a still held for params.duration: one segment of speed 0 from the image source
+            d = op.params["duration"]
+            clips[ref] = Clip(d, [Segment(op.inputs[0], ZERO, ZERO, ZERO, d, Fraction(0))])
+            continue
         clips[ref] = _apply(op, [clip_of(r) for r in op.inputs[: (len(op.inputs) - 1 if op.type == "OVERLAY" else None)]], durations)
     return clips
 

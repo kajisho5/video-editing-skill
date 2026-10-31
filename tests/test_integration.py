@@ -28,9 +28,10 @@ HAS_ROTATE = READY and FFMPEG_SKILL.missing_flags("fit", ["--rotate", "--flip"])
 # doctor as a note, not a problem.
 HAS_FREEZE = READY and "freeze" in FFMPEG_SKILL.tools
 HAS_REVERSE = READY and "reverse" in FFMPEG_SKILL.tools
-ALL_OPERATIONS = ["CONCAT", "CUT", "FILL", "FIT", "FREEZE", "OVERLAY", "RESIZE", "REVERSE", "ROTATE", "SPEED", "TRIM"]
+HAS_INSERT = READY and "insert" in FFMPEG_SKILL.tools   # IMAGE_INSERT (ADR-015): insert.py, in 0.11.0 and later
+ALL_OPERATIONS = ["CONCAT", "CUT", "FILL", "FIT", "FREEZE", "IMAGE_INSERT", "OVERLAY", "RESIZE", "REVERSE", "ROTATE", "SPEED", "TRIM"]
 AVAILABLE_OPERATIONS = [t for t in ALL_OPERATIONS if not ((t == "ROTATE" and not HAS_ROTATE) or (t == "FREEZE" and not HAS_FREEZE)
-                                                          or (t == "REVERSE" and not HAS_REVERSE))]
+                                                          or (t == "REVERSE" and not HAS_REVERSE) or (t == "IMAGE_INSERT" and not HAS_INSERT))]
 # fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
 # exceed the source": the exact frame each rule must deliver, written out (old, bounded).
 BOUNDED = READY and FFMPEG_SKILL.fit_bounds_by_source()
@@ -224,12 +225,12 @@ class RealMediaTests(unittest.TestCase):
         self.assertEqual(out["ok"], HAS_ROTATE)
         if not HAS_ROTATE:
             self.assertEqual(out["problems"], ["operation ROTATE unavailable: flag:ffmpeg-skill/fit --rotate, flag:ffmpeg-skill/fit --flip"])
-        missing_optional = [t for t, has in (("FREEZE", HAS_FREEZE), ("REVERSE", HAS_REVERSE)) if not has]
+        missing_optional = [t for t, has in (("FREEZE", HAS_FREEZE), ("IMAGE_INSERT", HAS_INSERT), ("REVERSE", HAS_REVERSE)) if not has]
         self.assertEqual([n.split()[1] for n in out["notes"]], missing_optional)
         # roadmap step 1: whether the engine ships an unsupported type's tool is read from the checkout, never declared
         tools = set(FFMPEG_SKILL.tools)
         self.assertEqual({u["type"]: u["engine_tool_status"] for u in out["unsupported"]},
-                         {"CROP": "AVAILABLE" if "crop" in tools else "MISSING", "IMAGE_INSERT": "AVAILABLE" if "insert" in tools else "MISSING", "POSITION": None})
+                         {"CROP": "AVAILABLE" if "crop" in tools else "MISSING", "POSITION": None})
         self.assertFalse(out["secrets_shown"])
         self.assertIsNone(out["engine"]["compatibility"]["upper_bound"])
         self.assertEqual({t["flags_from"] for t in out["engine"]["compatibility"]["tools"].values()} - {"contract", "help"}, set())
@@ -519,6 +520,40 @@ class OperationE2ETests(unittest.TestCase):
         for n in (0, 30, 90, 150, 179):
             self.assertAlmostEqual(self.luma(path, n), self.luma(src, 179 - n), delta=1.5, msg=f"output frame {n} vs source frame {179 - n}")
         self.assertGreater(self.luma(path, 0) - self.luma(path, 179), 150, "brightness falls: the ramp runs backwards")
+
+    def test_image_insert(self):
+        # ECOSYSTEM_ROADMAP step 4, docs/decisions.md ADR-015: IMAGE_INSERT -> ffmpeg-skill insert.py; a still joins CONCAT
+        if not HAS_INSERT:
+            out = self.one({"type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 1}}, expect=10)
+            self.assertEqual((out["error"]["code"], out["error"]["details"]["missing"]), ("TOOL_ERROR", ["tool:ffmpeg-skill/insert"]))
+            self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
+            return
+        # alone: a silent clip of exactly the asked length; height only -> width from the 120x40 image's aspect (3:1)
+        out = self.one({"type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 2, "height": 120}})
+        path, streams = self.facts(out, 2.0)
+        self.assertEqual(size(path), (360, 120))
+        self.assertFalse(self.has_audio(streams), "insert.py writes a silent clip")
+        v = next(x for x in streams if x["codec_type"] == "video")
+        self.assertEqual(v["codec_name"], "h264")
+        self.assertEqual(v["r_frame_rate"], "30/1", "fps is always passed (default 30)")
+        rec = out["execution"]["operations"][0]
+        self.assertEqual((rec["tool"], rec["parameters"]), ("ffmpeg-skill/insert", {"duration": "2.000000", "height": 120, "fps": "30"}))
+        self.assertEqual(rec["inputs"][0]["sha256"], sha256_file(self.media["logo"]))
+        self.assertLess(abs(self.luma(path, 0) - self.luma(path, 59)), 1.0, "a still: the picture does not change")
+        # the point of the type: a title card in front of footage with audio, through CONCAT (silence is inserted under the still)
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        doc = request(self.sources(), [{"id": "card", "type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 1.5, "width": 640, "height": 360}},
+                                       {"id": "x", "type": "CONCAT", "inputs": ["card", "A"], "params": {"fps": 30}}],
+                      [{"id": "o", "operation": "x", "path": "out/o.mp4"}])
+        out = self.run_cli("run", doc)
+        path, streams = self.facts(out, 7.5)
+        self.assertEqual(size(path), (640, 360))
+        self.assertTrue(self.has_audio(streams), "CONCAT keeps the footage's audio and puts silence under the still")
+        segs = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
+        self.assertEqual([(s["source"], s["speed"], s["timeline_range"]["start"]["rational"]) for s in segs], [("logo", "0/1", "0/1"), ("A", "1/1", "3/2")])
+        recs = {r["operation"]: r for r in out["execution"]["operations"]}
+        self.assertEqual(recs["x"]["inputs"][0], {"ref": "card", "kind": "operation", "operation_id": recs["card"]["operation_id"], "sha256": recs["card"]["output"]["sha256"]})
+        self.assertGreater(abs(self.luma(path, 10) - self.luma(path, 100)), 5, "the card, then the footage")
 
     def test_overlay(self):
         out = self.one({"type": "OVERLAY", "input": "A", "params": {"image": "logo", "position": "bottom-left", "start": 1, "end": 3, "fade": 0.25, "opacity": 0.8}})

@@ -150,6 +150,8 @@ class Executor:
             ins = [self.profile(r) for r in op.inputs]
             audios = [i["audio"] for i in ins]
             prof["audio"] = True if any(a is True for a in audios) else (False if all(a is False for a in audios) else None)
+        if op.type == "IMAGE_INSERT":   # insert.py writes a silent SDR clip whatever the still is
+            prof["audio"], prof["hdr"] = False, False
         frame = self.target_frame(ref)
         if frame is not None:
             prof["width"], prof["height"] = frame
@@ -161,12 +163,20 @@ class Executor:
     # ------------------------------------------------------------ normalization (frame_semantics)
     def target_frame(self, ref: str) -> Optional[tuple]:
         """The frame an operation must deliver, computed before execution from its parameters and the (measured or expected)
-        input frame with ffmpeg-skill's own rule; None when it is the input's frame (TRIM / CUT / SPEED / OVERLAY / FREEZE / REVERSE) and
-        that is not known yet."""
+        input frame (the image's, for IMAGE_INSERT) with ffmpeg-skill's own rule; None when it is the input's frame (TRIM / CUT / SPEED /
+        OVERLAY / FREEZE / REVERSE) and that is not known yet."""
         op = self.project.operations[ref]
         p = op.params
         first = self.profile(op.inputs[0])
         sw, sh = first["width"], first["height"]
+        if op.type == "IMAGE_INSERT":   # insert.py: both given -> as given; one given -> the other from the image aspect; none -> the image; each even()
+            if "width" in p and "height" in p:
+                return (even(p["width"]), even(p["height"]))
+            if "width" in p:
+                return (even(p["width"]), even(p["width"] * sh / sw) if sw and sh else None)
+            if "height" in p:
+                return (even(p["height"] * sw / sh) if sw and sh else None, even(p["height"]))
+            return (even(sw), even(sh)) if sw and sh else None
         if op.type == "ROTATE":
             if p.get("degrees") in (90, 270) and sw and sh:
                 return (sh, sw)
@@ -258,7 +268,7 @@ class Executor:
         for ref in self.project.order:
             op = self.project.operations[ref]
             req = MEDIA[op.type]["requires"]
-            video_inputs = op.inputs[:-1] if op.type == "OVERLAY" else op.inputs
+            video_inputs = op.inputs[:-1] if op.type == "OVERLAY" else ([] if op.type == "IMAGE_INSERT" else op.inputs)
             if op.type == "CONCAT":
                 hdrs = {r: self.profile(r).get("hdr") for r in video_inputs}
                 if any(h is True for h in hdrs.values()) and any(h is False for h in hdrs.values()):
@@ -276,7 +286,7 @@ class Executor:
                     raise EditError("INVALID_INPUT", f"operation {ref!r} ({op.type}): input {r!r} has no audio stream and {op.type} needs one; "
                                     "add audio upstream or use a source with audio",
                                     {"operation": ref, "input": r, "reason": "audio_required"})
-            if op.type == "OVERLAY":
+            if op.type in ("OVERLAY", "IMAGE_INSERT"):
                 img = self.profile(op.inputs[-1])
                 if img["width"] is None:
                     raise EditError("INVALID_INPUT", f"operation {ref!r}: image {op.inputs[-1]!r} has no frame size", {"reason": "image_undecodable"})
@@ -603,6 +613,8 @@ class Executor:
             raise EditError("VALIDATION_ERROR", f"{what}: the audio stream was lost", {"reason": "audio_lost"})
 
     def profile_expected_audio(self, op) -> Optional[bool]:
+        if op.type == "IMAGE_INSERT":
+            return False
         if op.type == "CONCAT":
             audios = [self.profile(r).get("audio") for r in op.inputs]
             return True if any(a is True for a in audios) else (False if all(a is False for a in audios) else None)

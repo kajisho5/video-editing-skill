@@ -30,9 +30,11 @@ ffmpeg-skill tool, encoder or filter) are refused before execution as `TOOL_ERRO
 Operation types (the allowlist): `TRIM`, `CUT`, `CONCAT` (with `params.transition`), `SPEED` (`factor`, optional
 `smooth: blend | interpolate` for slow-motion), `FIT`, `FILL`, `RESIZE`, `OVERLAY`, `ROTATE` (turn 90/180/270
 clockwise and/or mirror `h`/`v`), `FREEZE` (`hold` seconds of one frame: at `at`, or the last frame when `at` is
-omitted), `REVERSE` (backwards, picture and audio). `FREEZE` / `REVERSE` need ffmpeg-skill's `freeze.py` /
-`reverse.py`; `doctor --json` says whether the installed checkout has them. Anything else (`CROP`, `IMAGE_INSERT`,
-`POSITION` included) is refused with `UNSUPPORTED_OPERATION`; the contract's `unsupported` list says why.
+omitted), `REVERSE` (backwards, picture and audio), `IMAGE_INSERT` (one `kind: "image"` source → a silent clip of
+`duration` seconds, optional `width` / `height` / `fps`, that `CONCAT` can join: a title card or end slate).
+`FREEZE` / `REVERSE` / `IMAGE_INSERT` need ffmpeg-skill's `freeze.py` / `reverse.py` / `insert.py`; `doctor --json`
+says whether the installed checkout has them. Anything else (`CROP`, `POSITION` included) is refused with
+`UNSUPPORTED_OPERATION`; the contract's `unsupported` list says why.
 
 Times are exact: `"1:30"`, `"00:01:30.250"`, `{"frames": 300, "fps": "30000/1001"}` or a number of seconds.
 
