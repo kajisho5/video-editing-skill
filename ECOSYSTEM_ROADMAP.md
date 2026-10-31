@@ -36,6 +36,8 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay. Not 
   - Done when: no duplicate ownership
 - [x] **6. CHANGELOG, release workflow, dependabot** — [#21](https://github.com/kajisho5/video-editing-skill/pull/21) — align with sibling repos
   - Done when: a tag produces a release
+- [x] **7. ffmpeg-skill 3.0.0** — [#26](https://github.com/kajisho5/video-editing-skill/pull/26) — cut.py's new defaults checked against TRIM / CUT; ADR-017
+  - Done when: the real-media suite passes against 3.0.0 and 2.x in CI
 
 ## Boundaries
 

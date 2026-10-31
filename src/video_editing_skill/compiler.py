@@ -16,7 +16,7 @@ from .timebase import Time, fraction_text
 ENCODING_FLAGS = ("crf", "preset")   # the typed encoding profile (operations.validate_encoding): every re-encoding tool takes them
                                      # (crf is passed as --quality where the engine has it: ffmpeg_skill.FLAG_SPELLINGS)
 ALLOWED_FLAGS: Dict[str, tuple] = {
-    "cut": ("start", "end", "segments", "accurate") + ENCODING_FLAGS,
+    "cut": ("start", "end", "segments", "accurate", "no_keep_hevc") + ENCODING_FLAGS,   # no_keep_hevc: set by the executor only (ADR-017)
     "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color") + ENCODING_FLAGS,
     "fit": ("duration", "method", "max_speed", "smooth", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps", "rotate", "flip") + ENCODING_FLAGS,
     "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
@@ -68,12 +68,15 @@ class Step:
         return ["--" + k.replace("_", "-") for k in keys] + (["--image"] if self.image_input else [])
 
     def argv_for(self, inputs: List[str], output: str, image: Optional[str] = None, input_duration: Optional[Time] = None,
-                 resolve: Optional[Callable[[str], Optional[str]]] = None) -> List[str]:
+                 resolve: Optional[Callable[[str], Optional[str]]] = None, engine_args: Optional[Dict[str, Any]] = None) -> List[str]:
         """Materialise argv from resolved paths. Paths are positional / -o / --image only. `resolve` maps a flag to the
-        spelling the installed engine accepts (FfmpegSkill.resolve_flag); None when it accepts no spelling of it."""
+        spelling the installed engine accepts (FfmpegSkill.resolve_flag); None when it accepts no spelling of it.
+        `engine_args`: flags the executor adds for the installed release only (e.g. cut.py --no-keep-hevc on 3.x, ADR-017),
+        held to ALLOWED_FLAGS like every other."""
         allowed = ALLOWED_FLAGS[self.script]
         argv: List[str] = list(inputs) + ["-o", output]
         args = dict(self.args)
+        args.update(engine_args or {})
         if self.needs_input_duration:
             if input_duration is None:
                 raise EditError("INTERNAL_ERROR", "SPEED needs the input duration")

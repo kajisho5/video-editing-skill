@@ -307,6 +307,65 @@ class Engine010Tests(LayoutCase):
         self.assertTrue(res["ok"], res)
 
 
+class Engine3xTests(LayoutCase):
+    """ffmpeg-skill 3.0: cut.py re-encodes an SDR HEVC source as HEVC by default; --no-keep-hevc restores H.264 (ADR-017)."""
+    layout = "3.x"
+    version = "3.0.0"
+
+    def setUp(self):
+        super().setUp()
+        write_fake_media(os.path.join(self.ws, "in", "sdrhevc.mp4"))
+
+    def test_detected_from_the_flag(self):
+        self.assertTrue(locate(self.root).cut_keeps_hevc_by_default())
+
+    def test_frame_trim_of_sdr_hevc_passes_no_keep_hevc(self):
+        for ops in ([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "frame"}}],
+                    [{"id": "t", "type": "CUT", "input": "A", "params": {"keep": [{"start": 0, "end": 1}], "precision": "frame"}}]):
+            rc, res = self.run_(ops, src="in/sdrhevc.mp4", options={"overwrite": True, "reuse": False})
+            self.assertTrue(res["ok"], res)
+            h = self.delivered_header()
+            self.assertIn("--no-keep-hevc", h["args"])
+            self.assertEqual(h["codec"], "h264")
+
+    def test_keyframe_trim_stream_copies_without_it(self):
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "keyframe"}}], src="in/sdrhevc.mp4")
+        self.assertTrue(res["ok"], res)
+        self.assertNotIn("--no-keep-hevc", self.delivered_header()["args"])
+
+    def test_only_cut_gets_it(self):
+        rc, res = self.run_([{"id": "f", "type": "FIT", "input": "A", "params": {"aspect": "1:1"}}], src="in/sdrhevc.mp4")
+        self.assertTrue(res["ok"], res)
+        self.assertNotIn("--no-keep-hevc", self.delivered_header()["args"])
+
+    def test_hdr_still_hevc(self):
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "frame"}}], src="in/bt2020.mp4")
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.delivered_header()["codec"], "hevc")
+
+    def test_plan_preview_carries_it(self):
+        doc = request([{"id": "A", "path": "in/sdrhevc.mp4"}], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}],
+                      [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        rc, res, err = cli(["plan", "-", "--json", "--workspace", self.ws], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(all(s["preview"]["ok"] for s in res["plan"]["steps"]), res["plan"]["steps"])
+
+
+class Engine2xSdrHevcTests(LayoutCase):
+    """2.x cut.py already writes H.264 for SDR HEVC and has no --no-keep-hevc: it is not passed (the tool would refuse it)."""
+
+    def setUp(self):
+        super().setUp()
+        write_fake_media(os.path.join(self.ws, "in", "sdrhevc.mp4"))
+
+    def test_not_passed(self):
+        self.assertFalse(locate(self.root).cut_keeps_hevc_by_default())
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "frame"}}], src="in/sdrhevc.mp4")
+        self.assertTrue(res["ok"], res)
+        self.assertNotIn("--no-keep-hevc", self.delivered_header()["args"])
+        self.assertEqual(self.delivered_header()["codec"], "h264")
+
+
 class EngineHelpOnlyTests(LayoutCase):
     """A checkout whose contract describes no tools: flags are read from each tool's --help."""
     layout = "help-only"
@@ -333,6 +392,10 @@ class VersionPolicyTests(unittest.TestCase):
         for v in ("0.16.10", "1.26.0", "2.10.3", "unknown"):
             self.assertTrue(FfmpegSkill("/x", v, []).fit_bounds_by_source(), v)
         self.assertNotIn("<", ffmpeg_skill_version_range())
+
+    def test_keep_hevc_default_by_version_when_flags_are_undetected(self):
+        for v, keeps in (("2.24.1", False), ("3.0.0", True), ("3.4.2", True), ("unknown", False)):
+            self.assertEqual(FfmpegSkill("/nonexistent", v, ["cut"]).cut_keeps_hevc_by_default(), keeps, v)
 
     def test_floor_refusal_names_the_reason(self):
         root = tempfile.mkdtemp(prefix="fake-old-")

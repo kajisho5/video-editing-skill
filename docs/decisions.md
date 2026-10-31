@@ -616,3 +616,48 @@ against both. On a 320x240 clip whose left half is white and right half black:
 - `{176, 40, 120x160}` gives a 120x160 black clip, with audio and the same duration.
 - `{0, 0, 160x240}` gives the white half.
 - `{200, 0, 160x240}` is refused before anything runs.
+
+## ADR-017 — ffmpeg-skill 3.0.0: cut.py's new defaults against TRIM / CUT
+
+**Context.** ffmpeg-skill 3.0.0 (`1dc2f52`, its CHANGELOG "3.0.0" and `docs/contract.md` "What 3.0 changed") drops
+Python 3.9 and FFmpeg 5.x and changes four `cut.py` defaults; `contract_version` stays 2.0 and no tool or flag this
+Skill passes was removed. TRIM and CUT are `cut.py` calls, so each change was checked against them, on real media with
+ffmpeg 6.1.1, against 3.0.0, 2.24.1 and the pinned 0.11.0:
+
+- **SDR HEVC is re-encoded as HEVC** (2.x: x264; `--no-keep-hevc` restores x264). A frame-precision TRIM / CUT of an
+  SDR HEVC clip (a phone recording) came out HEVC, and output validation refused it: `VALIDATION_ERROR`, "video codec
+  hevc is not the engine's h264 for this source" (`reason: codec`). Every other re-encoding tool still writes H.264
+  for SDR, so a 3.x TRIM followed by FIT would also have changed codec mid-graph. **This one needed a change.**
+- **The MP4 edit list is kept on a stream copy** (2.x shifted timestamps and showed the keyframe's pre-roll). Only a
+  keyframe-precision TRIM / CUT stream-copies. Its output now starts at the requested time instead of the earlier
+  keyframe. That is the timeline this Skill already reports, and the duration check (1.5 s tolerance for keyframe)
+  passes either way. Kept, no flag.
+- **`--vfr-guard sampled`**: a copy is judged on measured packet timing instead of the average rate. This is the
+  engine's call about whether it may copy. Re-encoding instead of copying is always within a keyframe TRIM's contract
+  ("lossless when possible"). Kept, no flag.
+- **`precision` / `keyframe_snapped` result keys**: this Skill reads neither from cut.py's reply (it probes the output
+  itself). No effect.
+
+**Decision.** Keep this Skill's codec rule (H.264 for SDR, HEVC for HDR, never mixed) rather than adopt cut.py's new
+default for one operation type. A re-encoding (frame-precision) TRIM / CUT passes `--no-keep-hevc`, but only where the
+installed cut.py offers it (`FfmpegSkill.cut_keeps_hevc_by_default()`: the flag as detected per ADR-013, or, where
+flags were not detected, version `>= 3.0.0`). 2.x cut.py has no such flag and would reject it as an unknown argument, so it
+is never passed there. A keyframe-precision TRIM / CUT does not get it: a stream copy keeps the source codec in every
+release, and any re-encode there is the engine's fallback. The flag is added at argv time (`Executor._engine_args`,
+held to `compiler.ALLOWED_FLAGS`), not in the compiled step, because it depends on the checkout and not on the request.
+`--no-edit-list` / `--vfr-guard average` are not passed: 3.0's behaviour is the better one for both, and nothing here
+depends on 2.x's.
+
+**Version range.** `>=0.10.0` with no ceiling (ADR-013) already admits 3.x, so the range and `dependencies` are
+unchanged and video-production-agent need not re-pin for this. `engine.compatibility.detected` (non-pinned) gains one
+line; the golden `tests/contract/contract.json` is regenerated.
+
+**Python / FFmpeg.** This Skill stays Python 3.9+. Its unit jobs never run ffmpeg-skill, and its integration jobs
+already run Python 3.11 with the runner's apt ffmpeg (6.1 on ubuntu-24.04, 8.0 on ubuntu-latest), both inside 3.0's
+floors. No job combined 3.0 with Python 3.9 or FFmpeg 5.x, so no job had to be split.
+
+**CI.** The integration matrix adds 2.24.1 (`a2c8433`, the last 2.x) and 3.0.0 (`1dc2f52`), each pinned by commit, next to
+0.11.0 and main. `tests/test_integration.py::MediaMatrixE2ETests::test_sdr_hevc_source_is_reencoded_h264_on_every_engine`
+(a libx265 SDR fixture) fails on 3.0.0 without this change and passes on all three. `tests/test_engine_compat.py` gains
+a fake `3.x` layout whose cut.py keeps HEVC unless `--no-keep-hevc` is passed, and a 2.x case where the flag must not
+be passed.

@@ -679,6 +679,9 @@ class MediaMatrixE2ETests(unittest.TestCase):
         tags = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_primaries,color_transfer",
                                           "-of", "json", cls.media["hdr"]], check=True, capture_output=True, text=True).stdout)["streams"][0]
         assert (tags.get("color_primaries"), tags.get("color_transfer")) == ("bt2020", "smpte2084"), f"the HDR fixture is not tagged BT.2020 / PQ: {tags}"
+        cls.media["sdr_hevc"] = os.path.join(media, "sdr_hevc.mp4")   # an SDR HEVC phone-style clip (ffmpeg-skill 3.0 cut.py keeps HEVC by default)
+        run("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4",
+            "-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-c:a", "aac", cls.media["sdr_hevc"])
         cls.media["odd"] = os.path.join(media, "odd.mp4")   # 641x361: only mpeg4 stores an odd frame (libx264 yuv420p refuses it)
         run("-f", "lavfi", "-i", "testsrc2=size=642x362:rate=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "2", "-vf", "scale=641:361",
             "-c:v", "mpeg4", "-q:v", "3", "-c:a", "aac", cls.media["odd"])
@@ -948,6 +951,22 @@ class MediaMatrixE2ETests(unittest.TestCase):
         out = self.run_cli("run", doc)
         path, streams, rec = self.facts(out, "o", 6.0, (180, 320), audio=True)
         self.assertEqual(rec["normalized"]["source_frame"], [360, 640])
+
+    def test_sdr_hevc_source_is_reencoded_h264_on_every_engine(self):
+        """A frame-precision TRIM / CUT re-encodes an SDR source as H.264 like every other operation, also on ffmpeg-skill 3.x
+        whose cut.py keeps HEVC by default (--no-keep-hevc is passed there, ADR-017); a keyframe TRIM is left to the engine."""
+        for op in ({"type": "TRIM", "input": "S", "params": {"start": 1, "end": 3}},
+                   {"type": "CUT", "input": "S", "params": {"keep": [{"start": 0, "end": 1}, {"start": 2, "end": 3}]}}):
+            self.setUp()
+            doc = request([self.src("sdr_hevc", "S")], [dict(op, id="t")], [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+            out = self.run_cli("run", doc)
+            path, streams, rec = self.facts(out, "o", 2.0, (640, 360), audio=True)
+            self.assertEqual(next(s for s in streams if s["codec_type"] == "video")["codec_name"], "h264", op["type"])
+        self.setUp()
+        doc = request([self.src("sdr_hevc", "S")], [{"id": "t", "type": "TRIM", "input": "S", "params": {"start": 1, "end": 3, "precision": "keyframe"}}],
+                      [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        out = self.run_cli("run", doc)
+        self.facts(out, "o", 2.0, (640, 360), audio=True, tol=1.5)   # copy or not is the engine's call; the result is validated either way
 
     def test_hdr_source_is_encoded_hevc_and_never_mixed(self):
         doc = request([self.src("hdr", "H")], [{"id": "t", "type": "TRIM", "input": "H", "params": {"start": 0, "end": 2}}], [{"id": "o", "operation": "t", "path": "out/o.mp4"}])

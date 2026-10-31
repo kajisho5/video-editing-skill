@@ -30,6 +30,7 @@ ENV_DIR = "VIDEO_EDITING_FFMPEG_SKILL_DIR"
 # old release and is not refused for it.
 MIN_VERSION = (0, 10, 0)
 FIT_BOUNDED_SINCE = (0, 16, 10)   # fit.py's aspect-only canvas rule changed here (FfmpegSkill.fit_bounds_by_source)
+KEEP_HEVC_DEFAULT_SINCE = (3, 0, 0)   # cut.py re-encodes SDR HEVC as HEVC by default from here (FfmpegSkill.cut_keeps_hevc_by_default)
 REQUIRED_TOOLS = ("probe", "cut", "join", "fit", "overlay")
 # Tools only their own operation type needs (ADR-014): FREEZE -> freeze.py (shipped from ffmpeg-skill 0.16.0; the
 # pinned 0.11.0 has none), REVERSE -> reverse.py (from 0.11.0), IMAGE_INSERT -> insert.py (from 0.11.0, ADR-015). A
@@ -80,6 +81,16 @@ class FfmpegSkill:
         the release that changed it; a version that does not parse gets the current rule."""
         v = parse_version(self.version)
         return v is None or v >= FIT_BOUNDED_SINCE
+
+    def cut_keeps_hevc_by_default(self) -> bool:
+        """cut.py re-encodes an SDR HEVC source as HEVC by default from 3.0.0 (before: x264, like every other re-encoding
+        tool), and 3.0.0 added `--no-keep-hevc` to restore x264 (ADR-017). Read from the flag where flags were detected;
+        where they were not, from the version (a version that does not parse is not evidence of 3.x)."""
+        known = self.cli_flags("cut")
+        if known is not None:
+            return "--no-keep-hevc" in known
+        v = parse_version(self.version)
+        return v is not None and v >= KEEP_HEVC_DEFAULT_SINCE
 
     def missing_tools(self) -> List[str]:
         return [t for t in REQUIRED_TOOLS if t not in self.tools]

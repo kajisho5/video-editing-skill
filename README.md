@@ -467,12 +467,14 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 - `TRIM` / `CUT` / `SPEED` / `OVERLAY` / `ROTATE` / `FREEZE` / `REVERSE` refuse an input whose frame has an odd width or height
   (`odd_frame`); the frame-changing operations normalize it to even first.
 - The integration HDR fixture is an SDR pattern flagged as HDR (colour tags); real HDR10 / HLG content and tone
-  mapping are not covered. The real-media integration suite runs in CI against ffmpeg-skill 0.11.0 (pinned commit)
-  and ffmpeg-skill main, daily as well as on every change (ADR-013).
+  mapping are not covered. The real-media integration suite runs in CI against ffmpeg-skill 0.11.0, 2.24.1 and 3.0.0
+  (each pinned by commit) and ffmpeg-skill main, daily as well as on every change (ADR-013, ADR-017).
 - Real rotation metadata (a display matrix) is honoured; a legacy `rotate` tag is ignored by ffmpeg ≥ 5 and therefore
   by this Skill's probe-based normalization (the frame is then the stored one).
 - One video track plus image overlays; no picture-in-picture of video, no audio-only sources, no per-track audio.
-- Encoding parameters are ffmpeg-skill's defaults (x264 CRF 18 medium, AAC 192k; HDR sources become HEVC 10-bit).
+- Encoding parameters are ffmpeg-skill's defaults (x264 CRF 18 medium, AAC 192k; HDR sources become HEVC 10-bit). An SDR
+  HEVC source re-encoded by a frame-precision TRIM / CUT is H.264 on every ffmpeg-skill release (3.x: `--no-keep-hevc`
+  is passed, ADR-017).
   A `keyframe` precision `TRIM` / `CUT` may stream-copy and land on a keyframe (tolerance 1.5 s in validation).
 - Source durations come from the container; ranges are checked against them with 0.1 s slack.
 - `SPEED` computes its target duration from the timeline; the tool retimes to that duration (audio via `atempo`).
