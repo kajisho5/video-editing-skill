@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.2 - 2026-10-31
+
+- Support ffmpeg-skill 3.0.0: keep SDR HEVC TRIM/CUT re-encodes on H.264 (#26) (5f6e88d)
+
 ## v0.4.1 - 2026-10-31
 
 - CROP via ffmpeg-skill crop.py: pixel-rectangle crops are owned here, not by the caller (roadmap step 5) (#25) (36f0092)

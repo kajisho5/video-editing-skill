@@ -8,7 +8,7 @@ caller (video-production-agent). See README.md.
 
 SKILL_ID = "video-editing"
 PACKAGE_NAME = "video-editing-skill"
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 
 # Two independent axes (docs/decisions.md ADR-007): VERSION is this package's own release
 # version and can move on any release, including one that adds nothing a dependent needs to
