@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-014). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-015). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -60,6 +60,21 @@ the standard library. `test_integration.py`'s real-media matrix (scenarios A–O
 a well-known relative path — it's skipped, not failed, when one isn't found, which is normal for a
 sandboxed session. `.github/workflows/tests.yml` runs both, matrixed across OS/Python, plus
 `ruff check`, `mypy`, and `contract --check`.
+
+## Releases (ECOSYSTEM_ROADMAP step 6; same pattern as audio-production-skill / qc-skill)
+
+Every push to `main` runs `.github/workflows/release.yml`, one job: `compute_version.sh` decides the version, and
+only when that tag does not exist yet it bumps `pyproject.toml` + `src/video_editing_skill/__init__.py`
+(`bump_version_files.sh`), regenerates `tests/contract/contract.json`, prepends `CHANGELOG.md`
+(`render_changelog.sh`, from `git log`, never from interpolated PR text), commits `chore(release): vX.Y.Z`, pushes
+an annotated tag and creates the GitHub Release (PyPI only if `PYPI_API_TOKEN` is set). The rule: auto-bump only
+when `pyproject.toml` equals the latest tag (patch by default, minor for `feature`/`enhancement`, major only for a
+hand-applied `major`/`breaking` label — release-drafter's labels, `.github/release-drafter.yml`, applied by
+`autolabel.yml`); otherwise the version in `pyproject.toml` is released as written. So the **first release (no tag
+yet) is `v<pyproject version>` unchanged**, and a breaking contract change is released by bumping `version` /
+`contract_version` by hand in its PR. Third-party actions are pinned by commit SHA (tag in a comment), copied from
+the sibling skills; dependabot (`github-actions`, `pip`) keeps them current. `tests/test_release_scripts.py` checks
+the version rule on throwaway git repos.
 
 ## Ecosystem relationships (verify live, never assume — these repos evolve independently)
 
@@ -192,6 +207,14 @@ exception to ADR-001.
   engine tools (`OPTIONAL_TOOLS`: absent → that type MISSING as a doctor note, `ok` stays true). Real-media tests on a
   luma-ramp clip; green against ffmpeg-skill 0.11.0 (no `freeze.py`: FREEZE refused up front) and 2.21.0. Follow-ups:
   `IMAGE_INSERT` (roadmap step 4) and the `CROP` ownership ADR (step 5).
+
+- (this change, ADR-015, `ECOSYSTEM_ROADMAP.md` step 4; same unreleased breaking batch as ADR-014) — `IMAGE_INSERT
+  {duration, width?, height?, fps? (default 30, always passed)}` on one image source → `insert.py`; its result is an
+  ordinary operation, so CONCAT (and every other type) can take a still. `insert` is an optional engine tool (absent
+  in 0.10.0): the floor stays 0.10.0. `media_compatibility.IMAGE_INSERT.requires.video` is `false`, the first such
+  entry. No Ken Burns (`--zoom` / `--pan`) yet. Real-media test green against ffmpeg-skill 2.22.2.
+  Also in the same PR (roadmap step 6): `CHANGELOG.md`, release workflow (release-drafter + autolabel + tag-based
+  release, as in the sibling skills), dependabot, actions pinned by SHA.
 
 ## Picking the next task
 
