@@ -16,7 +16,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -35,7 +35,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.9", "3.11"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -65,12 +65,12 @@ jobs:
           - {name: "3.0.0", ref: 1dc2f52013956daa1d97fd9d9d53c79b9305bc43, os: ubuntu-latest}
           - {name: main, ref: main, os: ubuntu-latest}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: kajisho5/ffmpeg-skill
           ref: ${{ matrix.engine.ref }}
