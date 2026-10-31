@@ -14,7 +14,7 @@ v0.4.0, Python 3.9+ stdlib. TRIM, CUT, CONCAT (+transition), SPEED, FIT, FILL, R
 | Owned job | Status | Note |
 |---|---|---|
 | カット・連結 | done |  |
-| 尺・画角合わせ | done |  |
+| 尺・画角合わせ | done | pixel-rectangle CROP included ([#25](https://github.com/kajisho5/video-editing-skill/pull/25), ADR-016) |
 | トランジション | done | CONCAT transition |
 | 静止画オーバーレイ | done |  |
 
@@ -32,7 +32,7 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay. Not 
   - Done when: integration test
 - [x] **4. IMAGE_INSERT via ffmpeg-skill/insert** — [#21](https://github.com/kajisho5/video-editing-skill/pull/21) — a still can join CONCAT
   - Done when: integration test
-- [ ] **5. CROP: implement or leave to the agent** — ADR either way (the agent already calls ffmpeg-skill/crop)
+- [x] **5. CROP: implement or leave to the agent** — ADR either way (the agent already calls ffmpeg-skill/crop) — implemented here: [#25](https://github.com/kajisho5/video-editing-skill/pull/25), ADR-016
   - Done when: no duplicate ownership
 - [x] **6. CHANGELOG, release workflow, dependabot** — [#21](https://github.com/kajisho5/video-editing-skill/pull/21) — align with sibling repos
   - Done when: a tag produces a release

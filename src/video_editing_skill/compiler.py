@@ -23,6 +23,7 @@ ALLOWED_FLAGS: Dict[str, tuple] = {
     "freeze": ("at", "hold", "mode") + ENCODING_FLAGS,
     "reverse": ENCODING_FLAGS,
     "insert": ("duration", "width", "height", "fps") + ENCODING_FLAGS,
+    "crop": ("x", "y", "width", "height") + ENCODING_FLAGS,
     "probe": (),
 }
 
@@ -33,7 +34,7 @@ OPERATION_FLAGS: Dict[str, tuple] = {
     "TRIM": ("--start", "--end"), "CUT": ("--segments",), "CONCAT": ("--transition", "--duration", "--fit", "--pad-color"),
     "SPEED": ("--duration", "--method", "--max-speed"), "FIT": ("--aspect", "--fit", "--pad-color"), "FILL": ("--aspect", "--fit"),
     "RESIZE": ("--width",), "ROTATE": ("--rotate", "--flip"), "OVERLAY": ("--image", "--position", "--margin"),
-    "FREEZE": ("--hold", "--mode"), "REVERSE": (), "IMAGE_INSERT": ("--duration", "--fps"),
+    "FREEZE": ("--hold", "--mode"), "REVERSE": (), "IMAGE_INSERT": ("--duration", "--fps"), "CROP": ("--x", "--y", "--width", "--height"),
 }
 
 
@@ -175,6 +176,9 @@ def _compile(op: EditOperation) -> Step:
         return Step(op, "ffmpeg-skill/freeze", args, video_inputs)
     if op.type == "REVERSE":
         return Step(op, "ffmpeg-skill/reverse", {}, video_inputs)   # audio is reversed with the picture (no --no-audio)
+    if op.type == "CROP":
+        # crop.py: the rectangle in source pixels of the frame as displayed, exactly as given (ADR-016); no --fps (the input's rate)
+        return Step(op, "ffmpeg-skill/crop", {"x": p["x"], "y": p["y"], "width": p["width"], "height": p["height"]}, video_inputs)
     if op.type == "IMAGE_INSERT":
         # insert.py: the still is the positional input; --fps is always passed (a still has no rate of its own), --width /
         # --height only when asked (insert.py's rule fills the other from the image aspect). No --zoom / --pan (ADR-015).

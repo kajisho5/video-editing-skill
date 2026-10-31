@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-015). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-016). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -213,6 +213,11 @@ exception to ADR-001.
   ordinary operation, so CONCAT (and every other type) can take a still. `insert` is an optional engine tool (absent
   in 0.10.0): the floor stays 0.10.0. `media_compatibility.IMAGE_INSERT.requires.video` is `false`, the first such
   entry. No Ken Burns (`--zoom` / `--pan`) yet. Real-media test green against ffmpeg-skill 2.22.2.
+
+- (this change, ADR-016, `ECOSYSTEM_ROADMAP.md` step 5; same convention: breaking, version / contract_version not
+  bumped here, the agent re-pins) — `CROP {x, y, width, height}` → `crop.py`, an optional engine tool (absent in 0.10.0).
+  Ownership decided: pixel-rectangle crops are this Skill's (ecosystem.json gives it 尺・画角合わせ); the agent's own
+  `video_crop` SkillSpec that calls `ffmpeg-skill/crop` directly is the duplicate to retire on the agent side.
   Also in the same PR (roadmap step 6): `CHANGELOG.md`, release workflow (release-drafter + autolabel + tag-based
   release, as in the sibling skills), dependabot, actions pinned by SHA.
 

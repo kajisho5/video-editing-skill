@@ -181,14 +181,19 @@ class Engine2xTests(LayoutCase):
         self.assertIn("IMAGE_INSERT", res["error"]["message"])
 
     def test_unsupported_engine_tools_are_detected(self):
-        """Roadmap step 1: whether the checkout ships the engine tool of an unsupported type is detected, not declared."""
+        """Roadmap step 1: whether the checkout ships an engine tool is detected, not declared. CROP is an operation since
+        roadmap step 5 (ADR-016): a checkout without crop.py makes only CROP MISSING, as a note."""
         rc, rep, err = cli(["doctor", "--json"], env=self.env)
-        self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"CROP": "MISSING", "POSITION": None})
-        root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-crop-")
+        self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"POSITION": None})
+        self.assertIn("CROP", rep["supported_operations"])
+        root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-nocrop-")
         try:
-            make_fake_skill(root, version=self.version, layout=self.layout, extra=("crop",))
+            make_fake_skill(root, version=self.version, layout=self.layout, absent=("crop",))
             rc, rep, err = cli(["doctor", "--json"], env={"VIDEO_EDITING_FFMPEG_SKILL_DIR": root})
-            self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"CROP": "AVAILABLE", "POSITION": None})
+            self.assertEqual(rc, 0, err)
+            rows = {r["type"]: r for r in rep["operations"]}
+            self.assertEqual((rows["CROP"]["status"], rows["CROP"]["missing"]), ("MISSING", ["tool:ffmpeg-skill/crop"]))
+            self.assertTrue(rep["ok"], rep["problems"])
             self.assertTrue(all(u["status"] == "NOT_IMPLEMENTED" for u in rep["unsupported"]))
         finally:
             shutil.rmtree(root, ignore_errors=True)
@@ -281,13 +286,13 @@ class Engine010Tests(LayoutCase):
         rows = {r["type"]: r for r in rep["operations"]}
         self.assertEqual(rows["ROTATE"]["status"], "MISSING")
         self.assertEqual(rows["ROTATE"]["missing"], ["flag:ffmpeg-skill/fit --rotate", "flag:ffmpeg-skill/fit --flip"])
-        # 0.10.0 ships none of freeze.py / reverse.py / insert.py: those types are MISSING by the absent tool, a note, not a problem
-        self.assertEqual((rows["FREEZE"]["missing"], rows["REVERSE"]["missing"], rows["IMAGE_INSERT"]["missing"]),
-                         (["tool:ffmpeg-skill/freeze"], ["tool:ffmpeg-skill/reverse"], ["tool:ffmpeg-skill/insert"]))
-        self.assertEqual(sorted(t for t, r in rows.items() if r["status"] == "AVAILABLE"), sorted(set(OPERATION_FLAGS) - {"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT"}))
+        # 0.10.0 ships none of freeze.py / reverse.py / insert.py / crop.py: those types are MISSING by the absent tool, a note, not a problem
+        self.assertEqual((rows["FREEZE"]["missing"], rows["REVERSE"]["missing"], rows["IMAGE_INSERT"]["missing"], rows["CROP"]["missing"]),
+                         (["tool:ffmpeg-skill/freeze"], ["tool:ffmpeg-skill/reverse"], ["tool:ffmpeg-skill/insert"], ["tool:ffmpeg-skill/crop"]))
+        self.assertEqual(sorted(t for t, r in rows.items() if r["status"] == "AVAILABLE"), sorted(set(OPERATION_FLAGS) - {"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT", "CROP"}))
         self.assertTrue(any("ROTATE" in p for p in rep["problems"]))
-        self.assertFalse(any("FREEZE" in p or "REVERSE" in p or "IMAGE_INSERT" in p for p in rep["problems"]), rep["problems"])
-        self.assertEqual(sorted(n.split()[1] for n in rep["notes"]), ["FREEZE", "IMAGE_INSERT", "REVERSE"])
+        self.assertFalse(any("FREEZE" in p or "REVERSE" in p or "IMAGE_INSERT" in p or "CROP" in p for p in rep["problems"]), rep["problems"])
+        self.assertEqual(sorted(n.split()[1] for n in rep["notes"]), ["CROP", "FREEZE", "IMAGE_INSERT", "REVERSE"])
 
     def test_image_insert_refused_up_front(self):
         """No insert.py in this checkout: IMAGE_INSERT is refused before anything runs (the floor is not raised for it)."""

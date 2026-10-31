@@ -120,8 +120,7 @@ one `version` / `contract_version` bump and one agent re-pin cover both.
 ## 0.5.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011 / ADR-014, `kajisho5/video-editing-skill#11`)
 
 `versioning.next["0.5.0"]` lists breaking-change candidates for a future version, none currently in progress:
-`CROP` via `crop.py` or left to the caller (ownership undecided,
-ADR-014), and `RESIZE.height` — found, by live verification against ffmpeg-skill 0.10.0, to be blocked on the engine
+`RESIZE.height` — found, by live verification against ffmpeg-skill 0.10.0, to be blocked on the engine
 (`fit.py` has no `--height` flag), not the small addition it was first framed as; `OVERLAY` video-layer + chroma-key parameters
 (`overlay.py --video`/`--chromakey`), per ADR-002's own "extend OVERLAY rather than add a type" prescription —
 flagged by issue #11 item 2, not decided or scheduled; and capability ownership for `stabilize` / `sequence` /

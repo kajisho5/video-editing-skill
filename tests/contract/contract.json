@@ -30,6 +30,13 @@
       "tool": "ffmpeg-skill/join"
     },
     {
+      "capability": "video.crop",
+      "operations": [
+        "CROP"
+      ],
+      "tool": "ffmpeg-skill/crop"
+    },
+    {
       "capability": "video.cut",
       "operations": [
         "CUT"
@@ -124,6 +131,7 @@
   ],
   "capability_names": [
     "video.concat",
+    "video.crop",
     "video.cut",
     "video.fill",
     "video.fit",
@@ -139,13 +147,6 @@
     "video.trim"
   ],
   "unsupported": [
-    {
-      "type": "CROP",
-      "capability": "video.crop",
-      "status": "NOT_IMPLEMENTED",
-      "reason": "not mapped to a typed operation here: whether this Skill or its caller owns pixel-rectangle crops is not decided yet (ADR-014); use FILL for crops to an aspect ratio",
-      "engine_tool": "ffmpeg-skill/crop"
-    },
     {
       "type": "POSITION",
       "capability": "video.position",
@@ -207,6 +208,57 @@
         "provenance"
       ],
       "executed_by": "ffmpeg-skill/join",
+      "kind": "transform"
+    },
+    {
+      "tool_id": "video-editing/crop",
+      "skill_id": "video-editing",
+      "version": "0.4.0",
+      "operation_type": "CROP",
+      "capability": "video.crop",
+      "description": "keep exactly the pixel rectangle {x, y, width, height} the caller gives (no scaling, padding or aspect maths; FILL crops to an aspect ratio)",
+      "required_capabilities": [
+        "ffmpeg",
+        "ffprobe",
+        "encoder:libx264",
+        "encoder:aac"
+      ],
+      "inputs": [
+        "input"
+      ],
+      "input_arity": "one",
+      "parameters": {
+        "x": "int px >= 0: left edge in the input frame as displayed",
+        "y": "int px >= 0: top edge",
+        "width": "even int px: the rectangle's width (x + width <= input width)",
+        "height": "even int px: the rectangle's height (y + height <= input height)"
+      },
+      "media": {
+        "inputs": "one video",
+        "requires": {
+          "video": true,
+          "audio": false,
+          "image": false
+        },
+        "output": {
+          "frame_size": "params.width x params.height (each even)",
+          "audio": "as input",
+          "fps": "as input",
+          "duration": "as input"
+        }
+      },
+      "produces_output": true,
+      "writes_media": true,
+      "deterministic": true,
+      "idempotency_hint": "content_equivalent",
+      "result_keys": [
+        "operation_id",
+        "output",
+        "probe",
+        "commands",
+        "provenance"
+      ],
+      "executed_by": "ffmpeg-skill/crop",
       "kind": "transform"
     },
     {
@@ -765,6 +817,17 @@
         "pad_color": "named colour or 0xRRGGBB"
       }
     },
+    "CROP": {
+      "capability": "video.crop",
+      "tool": "ffmpeg-skill/crop",
+      "arity": "one",
+      "parameters": {
+        "x": "int px >= 0: left edge in the input frame as displayed",
+        "y": "int px >= 0: top edge",
+        "width": "even int px: the rectangle's width (x + width <= input width)",
+        "height": "even int px: the rectangle's height (y + height <= input height)"
+      }
+    },
     "CUT": {
       "capability": "video.cut",
       "tool": "ffmpeg-skill/cut",
@@ -886,12 +949,14 @@
       "ffmpeg-skill/overlay",
       "ffmpeg-skill/freeze",
       "ffmpeg-skill/reverse",
-      "ffmpeg-skill/insert"
+      "ffmpeg-skill/insert",
+      "ffmpeg-skill/crop"
     ],
     "tools_optional": [
       "ffmpeg-skill/freeze",
       "ffmpeg-skill/reverse",
-      "ffmpeg-skill/insert"
+      "ffmpeg-skill/insert",
+      "ffmpeg-skill/crop"
     ],
     "location": "VIDEO_EDITING_FFMPEG_SKILL_DIR | --ffmpeg-skill-dir | ~/.claude/skills/ffmpeg-skill | ./vendor/ffmpeg-skill | ../ffmpeg-skill",
     "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout",
@@ -1116,6 +1181,11 @@
       "tool_id": "video-editing/concat"
     },
     {
+      "id": "video.crop",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/crop"
+    },
+    {
       "id": "video.cut",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "video-editing/cut"
@@ -1193,6 +1263,25 @@
       "refused_before_execution": [
         "source without a video stream or duration",
         "an input shorter than twice the transition"
+      ]
+    },
+    "CROP": {
+      "inputs": "one video",
+      "requires": {
+        "video": true,
+        "audio": false,
+        "image": false
+      },
+      "output": {
+        "frame_size": "params.width x params.height (each even)",
+        "audio": "as input",
+        "fps": "as input",
+        "duration": "as input"
+      },
+      "refused_before_execution": [
+        "source without a video stream or duration",
+        "a rectangle that does not lie inside the input frame as displayed (INVALID_REQUEST crop_outside_frame)",
+        "an ffmpeg-skill checkout without crop.py (TOOL_ERROR)"
       ]
     },
     "CUT": {
@@ -1522,7 +1611,6 @@
     "next": {
       "0.5.0": [
         "RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag (docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
-        "CROP (pixel rectangle) via ffmpeg-skill/crop, or left to the caller -- ownership to be decided (ADR-014)",
         "OVERLAY video-layer + chroma-key params (ffmpeg-skill overlay.py --video/--chromakey), per ADR-002's own \"extend OVERLAY rather than add a type\" prescription -- flagged, not decided or scheduled here (see kajisho5/video-editing-skill#11 item 2)",
         "stabilize / sequence / background: capability ownership (here, elsewhere, or nowhere) not yet decided (see kajisho5/video-editing-skill#11 item 3)",
         "POSITION: not planned as a type (see docs/decisions.md ADR-002)"
@@ -1586,6 +1674,12 @@
       "target": "width, height = source width, height (already measured as displayed); swapped when params.degrees is 90 or 270",
       "when": "a source was recorded or tagged with the wrong orientation, or needs mirroring, and no aspect or size change is wanted"
     },
+    "CROP": {
+      "changes": "frame size, by cutting away everything outside one pixel rectangle",
+      "keeps": "the pixels inside the rectangle exactly (no scaling, padding or stretching); the aspect becomes the rectangle's",
+      "target": "width, height = params.width, params.height (even); x, y are offsets in the input frame as displayed, and the rectangle must lie inside it",
+      "when": "the caller already knows the exact region to keep (a measured letterbox, a saved crop, a region it chose); FILL when the goal is an aspect ratio"
+    },
     "rules": [
       "a source whose rotation metadata is ±90 / 270 is measured with width and height swapped (as the engine does)",
       "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)",
@@ -1605,11 +1699,12 @@
       "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
       "unsupported input extension / output container: UNSUPPORTED_FORMAT",
       "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
-      "engine tool / encoder / filter missing: TOOL_ERROR (not retryable); FREEZE / REVERSE / IMAGE_INSERT need ffmpeg-skill/freeze / reverse / insert, detected per checkout"
+      "CROP rectangle outside the input frame as displayed: INVALID_REQUEST crop_outside_frame",
+      "engine tool / encoder / filter missing: TOOL_ERROR (not retryable); FREEZE / REVERSE / IMAGE_INSERT / CROP need ffmpeg-skill/freeze / reverse / insert / crop, detected per checkout"
     ],
     "normalized_by_skill": [
       "times in any accepted form -> exact rational seconds",
-      "target frame of RESIZE / FIT / FILL / CONCAT (frame_semantics)",
+      "target frame of RESIZE / FIT / FILL / CONCAT / CROP (frame_semantics)",
       "target duration of SPEED (input duration / factor), FREEZE (input duration + hold) and IMAGE_INSERT (params.duration)",
       "encoding profile -> typed engine flags (crf, preset)",
       "audio expectation per operation (kept / added / none)"

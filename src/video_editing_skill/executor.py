@@ -177,6 +177,8 @@ class Executor:
             if "height" in p:
                 return (even(p["height"] * sw / sh) if sw and sh else None, even(p["height"]))
             return (even(sw), even(sh)) if sw and sh else None
+        if op.type == "CROP":   # crop.py: exactly the rectangle (ADR-016)
+            return (p["width"], p["height"])
         if op.type == "ROTATE":
             if p.get("degrees") in (90, 270) and sw and sh:
                 return (sh, sw)
@@ -286,6 +288,14 @@ class Executor:
                     raise EditError("INVALID_INPUT", f"operation {ref!r} ({op.type}): input {r!r} has no audio stream and {op.type} needs one; "
                                     "add audio upstream or use a source with audio",
                                     {"operation": ref, "input": r, "reason": "audio_required"})
+            if op.type == "CROP":   # crop.py refuses a rectangle outside the frame; refuse it here before anything runs
+                prof = self.profile(op.inputs[0])
+                p = op.params
+                if prof["width"] and prof["height"] and (p["x"] + p["width"] > prof["width"] or p["y"] + p["height"] > prof["height"]):
+                    raise EditError("INVALID_REQUEST", f"operation {ref!r} (CROP): rectangle ({p['x']},{p['y']},{p['width']}x{p['height']}) does not lie inside the "
+                                    f"input frame {prof['width']}x{prof['height']} of {op.inputs[0]!r}",
+                                    {"operation": ref, "input": op.inputs[0], "frame": [prof["width"], prof["height"]],
+                                     "rectangle": {k: p[k] for k in ("x", "y", "width", "height")}, "reason": "crop_outside_frame"})
             if op.type in ("OVERLAY", "IMAGE_INSERT"):
                 img = self.profile(op.inputs[-1])
                 if img["width"] is None:

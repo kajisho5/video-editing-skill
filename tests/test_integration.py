@@ -29,9 +29,11 @@ HAS_ROTATE = READY and FFMPEG_SKILL.missing_flags("fit", ["--rotate", "--flip"])
 HAS_FREEZE = READY and "freeze" in FFMPEG_SKILL.tools
 HAS_REVERSE = READY and "reverse" in FFMPEG_SKILL.tools
 HAS_INSERT = READY and "insert" in FFMPEG_SKILL.tools   # IMAGE_INSERT (ADR-015): insert.py, in 0.11.0 and later
-ALL_OPERATIONS = ["CONCAT", "CUT", "FILL", "FIT", "FREEZE", "IMAGE_INSERT", "OVERLAY", "RESIZE", "REVERSE", "ROTATE", "SPEED", "TRIM"]
+HAS_CROP = READY and "crop" in FFMPEG_SKILL.tools       # CROP (ADR-016): crop.py, in 0.11.0 and later
+ALL_OPERATIONS = ["CONCAT", "CROP", "CUT", "FILL", "FIT", "FREEZE", "IMAGE_INSERT", "OVERLAY", "RESIZE", "REVERSE", "ROTATE", "SPEED", "TRIM"]
 AVAILABLE_OPERATIONS = [t for t in ALL_OPERATIONS if not ((t == "ROTATE" and not HAS_ROTATE) or (t == "FREEZE" and not HAS_FREEZE)
-                                                          or (t == "REVERSE" and not HAS_REVERSE) or (t == "IMAGE_INSERT" and not HAS_INSERT))]
+                                                          or (t == "REVERSE" and not HAS_REVERSE) or (t == "IMAGE_INSERT" and not HAS_INSERT)
+                                                          or (t == "CROP" and not HAS_CROP))]
 # fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
 # exceed the source": the exact frame each rule must deliver, written out (old, bounded).
 BOUNDED = READY and FFMPEG_SKILL.fit_bounds_by_source()
@@ -225,12 +227,10 @@ class RealMediaTests(unittest.TestCase):
         self.assertEqual(out["ok"], HAS_ROTATE)
         if not HAS_ROTATE:
             self.assertEqual(out["problems"], ["operation ROTATE unavailable: flag:ffmpeg-skill/fit --rotate, flag:ffmpeg-skill/fit --flip"])
-        missing_optional = [t for t, has in (("FREEZE", HAS_FREEZE), ("IMAGE_INSERT", HAS_INSERT), ("REVERSE", HAS_REVERSE)) if not has]
-        self.assertEqual([n.split()[1] for n in out["notes"]], missing_optional)
-        # roadmap step 1: whether the engine ships an unsupported type's tool is read from the checkout, never declared
-        tools = set(FFMPEG_SKILL.tools)
-        self.assertEqual({u["type"]: u["engine_tool_status"] for u in out["unsupported"]},
-                         {"CROP": "AVAILABLE" if "crop" in tools else "MISSING", "POSITION": None})
+        missing_optional = [t for t, has in (("CROP", HAS_CROP), ("FREEZE", HAS_FREEZE), ("IMAGE_INSERT", HAS_INSERT), ("REVERSE", HAS_REVERSE)) if not has]
+        self.assertEqual(sorted(n.split()[1] for n in out["notes"]), missing_optional)
+        # roadmap step 1: whether the engine ships a tool is read from the checkout, never declared; CROP is an operation (ADR-016)
+        self.assertEqual({u["type"]: u["engine_tool_status"] for u in out["unsupported"]}, {"POSITION": None})
         self.assertFalse(out["secrets_shown"])
         self.assertIsNone(out["engine"]["compatibility"]["upper_bound"])
         self.assertEqual({t["flags_from"] for t in out["engine"]["compatibility"]["tools"].values()} - {"contract", "help"}, set())
@@ -520,6 +520,39 @@ class OperationE2ETests(unittest.TestCase):
         for n in (0, 30, 90, 150, 179):
             self.assertAlmostEqual(self.luma(path, n), self.luma(src, 179 - n), delta=1.5, msg=f"output frame {n} vs source frame {179 - n}")
         self.assertGreater(self.luma(path, 0) - self.luma(path, 179), 150, "brightness falls: the ramp runs backwards")
+
+    def test_crop(self):
+        # ECOSYSTEM_ROADMAP step 5, docs/decisions.md ADR-016: CROP -> ffmpeg-skill crop.py, exactly the given rectangle
+        if not HAS_CROP:
+            out = self.one({"type": "CROP", "input": "A", "params": {"x": 0, "y": 0, "width": 320, "height": 180}}, expect=10)
+            self.assertEqual((out["error"]["code"], out["error"]["details"]["missing"]), ("TOOL_ERROR", ["tool:ffmpeg-skill/crop"]))
+            self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
+            return
+        # a 320x240 clip with audio: the left half white, the right half black
+        halves = os.path.join(self.root, "media", "halves.mp4")
+        if not os.path.exists(halves):
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=white:s=160x240:r=30:d=3",
+                            "-f", "lavfi", "-i", "color=c=black:s=160x240:r=30:d=3", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                            "-filter_complex", "[0:v][1:v]hstack=inputs=2[v]", "-map", "[v]", "-map", "2:a", "-t", "3",
+                            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", halves], check=True)
+        src = [{"id": "H", "path": halves}]
+        out = self.one({"type": "CROP", "input": "H", "params": {"x": 176, "y": 40, "width": 120, "height": 160}}, sources=src)
+        path, streams = self.facts(out, 3.0)
+        self.assertEqual(size(path), (120, 160), "exactly the rectangle's size")
+        self.assertTrue(self.has_audio(streams), "the audio is kept")
+        self.assertEqual(out["execution"]["operations"][0]["parameters"], {"x": 176, "y": 40, "width": 120, "height": 160})
+        self.assertEqual(out["execution"]["operations"][0]["normalized"]["target_frame"], [120, 160])
+        self.assertLess(self.luma(path, 30), 30, "a rectangle inside the black half is black")
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out = self.one({"type": "CROP", "input": "H", "params": {"x": 0, "y": 0, "width": 160, "height": 240}}, sources=src)
+        path, _ = self.facts(out, 3.0)
+        self.assertEqual(size(path), (160, 240))
+        self.assertGreater(self.luma(path, 30), 220, "the left half is white")
+        # a rectangle outside the frame is refused before anything runs
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out = self.one({"type": "CROP", "input": "H", "params": {"x": 200, "y": 0, "width": 160, "height": 240}}, expect=2, sources=src)
+        self.assertEqual((out["error"]["code"], out["error"]["details"]["reason"]), ("INVALID_REQUEST", "crop_outside_frame"))
+        self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
 
     def test_image_insert(self):
         # ECOSYSTEM_ROADMAP step 4, docs/decisions.md ADR-015: IMAGE_INSERT -> ffmpeg-skill insert.py; a still joins CONCAT
