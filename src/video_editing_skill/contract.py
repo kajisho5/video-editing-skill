@@ -27,6 +27,7 @@ TOOL_REQUIREMENTS = {
     "ffmpeg-skill/freeze": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
     "ffmpeg-skill/insert": ["ffmpeg", "ffprobe", "encoder:libx264"],   # a silent clip: no audio encoder
     "ffmpeg-skill/reverse": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
+    "ffmpeg-skill/crop": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
     "ffmpeg-skill/probe": ["ffprobe"],
 }
 
@@ -52,6 +53,8 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
                      "width": "even int px (optional; alone: height follows the image aspect)",
                      "height": "even int px (optional; alone: width follows the image aspect; both: exact frame, the image covers it, centre-cropped)",
                      "fps": "1..240 (optional, default 30)"},
+    "CROP": {"x": "int px >= 0: left edge in the input frame as displayed", "y": "int px >= 0: top edge",
+             "width": "even int px: the rectangle's width (x + width <= input width)", "height": "even int px: the rectangle's height (y + height <= input height)"},
 }
 
 
@@ -202,7 +205,6 @@ def skill_contract() -> Dict[str, Any]:
                        "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
                        "next": {"0.5.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
                                          "(docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
-                                         "CROP (pixel rectangle) via ffmpeg-skill/crop, or left to the caller -- ownership to be decided (ADR-014)",
                                          "OVERLAY video-layer + chroma-key params (ffmpeg-skill overlay.py --video/--chromakey), per ADR-002's own \"extend OVERLAY rather than add a "
                                          "type\" prescription -- flagged, not decided or scheduled here (see kajisho5/video-editing-skill#11 item 2)",
                                          "stabilize / sequence / background: capability ownership (here, elsewhere, or nowhere) not yet decided (see kajisho5/video-editing-skill#11 item 3)",

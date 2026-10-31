@@ -560,3 +560,59 @@ output; a real-media test (`tests/test_integration.py::OperationE2ETests::test_i
 2.22.2: a 120x40 PNG with `height: 120` becomes a 360x120, 30 fps, silent H.264 clip of 2.0 s whose picture does not
 change, and an IMAGE_INSERT 640x360 card CONCATed in front of a 6 s clip with audio gives 7.5 s, 640x360, with audio,
 the card then the footage. CI runs the same test against the pinned 0.11.0 checkout.
+
+## ADR-016 — CROP is this Skill's: a typed operation on ffmpeg-skill's `crop.py`, not left to the caller
+
+**Context.** `ECOSYSTEM_ROADMAP.md` step 5 ("CROP: implement or leave to the agent", done when there is no duplicate
+ownership). ADR-014 left `CROP` in `unsupported` because video-production-agent already calls `ffmpeg-skill/crop`
+itself (its `video_crop` SkillSpec, fed by the `cropdetect_analysis` measurement and a CONFIRM decision), so who owns
+pixel-rectangle crops had to be decided before a mapping was added. Two facts decide it:
+- `AI-video-production-OS`'s `ecosystem.json`, which gives each job to exactly one repository, gives **尺・画角合わせ**
+  (duration and framing) to video-editing-skill. Its roadmap says "Work outside this list belongs to its owner and is
+  handed over, not re-implemented". Cutting the frame down to a rectangle is framing, like `FILL`'s aspect crop and
+  `RESIZE`, which already live here.
+- ADR-001 puts judgement with the caller and execution here. Choosing the rectangle (letterbox detection, a face box)
+  is judgement, and the agent keeps it: `cropdetect` stays a measurement it runs. Applying a given rectangle is
+  execution, which is this Skill's job.
+
+**Decision 1 — implement `CROP`; the agent's direct `ffmpeg-skill/crop` call is the duplicate.**
+`CROP {x, y, width, height}` → `crop.py --x --y --width --height` (+ the typed encoding profile). Retiring
+`video_crop` in the agent, or making it lower onto `video-editing/crop` the way it lowers `video.trim` onto `CUT`, is
+an agent-side change. It is not made here (this repository never edits the agent), but this ADR is the decision the
+agent can follow. Until then the agent's path keeps working: this change removes nothing it uses.
+
+**Decision 2 — exactly the rectangle, or a refusal; never rounded.** This follows crop.py's own contract, read from
+the code of both checkouts (2.21.0 and the pinned 0.11.0 `b388035`): `x, y >= 0`, `width, height > 0` and even (4:2:0),
+and the rectangle inside the source frame *as displayed* (rotation ±90/270 swaps the measured width and height).
+- Here: `x`, `y` are integers `0..8192`; `width`, `height` are even integers `2..8192` (`_even`, the same validator as
+  every other frame size).
+- *Inside the frame* is checked in `Executor._check_media`, before anything runs, against the input's measured or
+  expected frame (an operation's output frame when the input is another operation). An outside rectangle is
+  `INVALID_REQUEST`, `details.reason: crop_outside_frame`, with the frame and the rectangle. A request is malformed
+  for its input, and nothing about the input is unusable, so it is not `INVALID_INPUT`.
+- The output frame is `width × height` exactly (`target_frame`, verified after the run like every frame).
+- fps, duration and audio are as the input: crop.py adds no `--fps` unless asked, and none is exposed.
+- The timeline mapping is unchanged (a frame-only operation, like `RESIZE` / `ROTATE`).
+- An odd input frame is not refused: crop.py writes even output whatever the input, so `CROP` is not in the
+  `odd_frame` group.
+
+**Decision 3 — an optional engine tool.** `crop` joins `OPTIONAL_TOOLS` (`crop.py` ships from 0.11.0; the 0.10.0
+floor has none). A checkout without it makes only `CROP` MISSING (a doctor note, `ok` stays true), and a request using
+it is refused before anything runs (`TOOL_ERROR`, `tool:ffmpeg-skill/crop`, not retryable). `outputs[].encoding.crf`
+is passed under the detected spelling, `--crf` on 0.11.0 and `--quality` on 2.x (ADR-013).
+
+**Not done.** No `--fps` on CROP; no automatic rectangle of any kind. `cropdetect` is a measurement, and an
+aspect-ratio crop is `FILL`. `POSITION` remains the only `unsupported` entry.
+
+**Versioning.** `operations`, `unsupported` and `capabilities` change (pinned), as do `capability_names` and `tools`
+(a new `video-editing/crop`): breaking by ADR-007's convention. As with ADR-014 / ADR-015, the `version` /
+`contract_version` bump is left to the release that ships it (this change was asked not to move the package version).
+`video-production-agent` must re-pin; its `check_contract()` accepts the new contract. The golden copy
+`tests/contract/contract.json` is regenerated.
+
+**Verified directly, not assumed:** crop.py's flags and checks from both checkouts' code (`--x --y --width --height`,
+`--crf` on 0.11.0, `--quality` on 2.21.0), and a real-media test (`tests/test_integration.py::OperationE2ETests::test_crop`)
+against both. On a 320x240 clip whose left half is white and right half black:
+- `{176, 40, 120x160}` gives a 120x160 black clip, with audio and the same duration.
+- `{0, 0, 160x240}` gives the white half.
+- `{200, 0, 160x240}` is refused before anything runs.

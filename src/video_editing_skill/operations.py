@@ -67,6 +67,10 @@ FRAME_SEMANTICS = {
                "keeps": "every source pixel losslessly; no scaling, padding or cropping (like TRIM / CUT / SPEED / OVERLAY, unlike RESIZE / FIT / FILL)",
                "target": "width, height = source width, height (already measured as displayed); swapped when params.degrees is 90 or 270",
                "when": "a source was recorded or tagged with the wrong orientation, or needs mirroring, and no aspect or size change is wanted"},
+    "CROP": {"changes": "frame size, by cutting away everything outside one pixel rectangle",
+             "keeps": "the pixels inside the rectangle exactly (no scaling, padding or stretching); the aspect becomes the rectangle's",
+             "target": "width, height = params.width, params.height (even); x, y are offsets in the input frame as displayed, and the rectangle must lie inside it",
+             "when": "the caller already knows the exact region to keep (a measured letterbox, a saved crop, a region it chose); FILL when the goal is an aspect ratio"},
     "rules": ["a source whose rotation metadata is ±90 / 270 is measured with width and height swapped (as the engine does)",
               "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)",
               "CONCAT (ffmpeg-skill join.py): params.width x params.height; only one given -> the other from the first input's aspect (round); none -> the first input's frame; then floored to even",
@@ -89,10 +93,11 @@ MEDIA_POLICY = {
         "RESIZE / FIT / FILL / CONCAT / IMAGE_INSERT normalize to even)",
         "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
         "unsupported input extension / output container: UNSUPPORTED_FORMAT", "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
-        "engine tool / encoder / filter missing: TOOL_ERROR (not retryable); FREEZE / REVERSE / IMAGE_INSERT need ffmpeg-skill/freeze / reverse / insert, detected per checkout",
+        "CROP rectangle outside the input frame as displayed: INVALID_REQUEST crop_outside_frame",
+        "engine tool / encoder / filter missing: TOOL_ERROR (not retryable); FREEZE / REVERSE / IMAGE_INSERT / CROP need ffmpeg-skill/freeze / reverse / insert / crop, detected per checkout",
     ],
     "normalized_by_skill": [
-        "times in any accepted form -> exact rational seconds", "target frame of RESIZE / FIT / FILL / CONCAT (frame_semantics)",
+        "times in any accepted form -> exact rational seconds", "target frame of RESIZE / FIT / FILL / CONCAT / CROP (frame_semantics)",
         "target duration of SPEED (input duration / factor), FREEZE (input duration + hold) and IMAGE_INSERT (params.duration)", "encoding profile -> typed engine flags (crf, preset)", "audio expectation per operation (kept / added / none)",
     ],
     "delegated_to_engine": [
@@ -150,6 +155,8 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
                 "summary": "play the input backwards, picture and audio"},
     "IMAGE_INSERT": {"arity": "one", "tool": "ffmpeg-skill/insert", "capability": "video.image_insert",
                      "summary": "turn a still image (title card, end slate) into a silent video clip of a set duration that CONCAT and every other type can take"},
+    "CROP": {"arity": "one", "tool": "ffmpeg-skill/crop", "capability": "video.crop",
+             "summary": "keep exactly the pixel rectangle {x, y, width, height} the caller gives (no scaling, padding or aspect maths; FILL crops to an aspect ratio)"},
 }
 
 # Media compatibility per operation: what every input must be, what the output keeps, and which mismatches are
@@ -202,6 +209,11 @@ MEDIA: Dict[str, Dict[str, Any]] = {
                                 "duration": "params.duration"},
                      "refused_before_execution": ["input that is not an image source (DEPENDENCY_ERROR kind_mismatch)", "image that does not decode",
                                                   "an ffmpeg-skill checkout without insert.py (TOOL_ERROR)"]},
+    "CROP": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+             "output": {"frame_size": "params.width x params.height (each even)", "audio": "as input", "fps": "as input", "duration": "as input"},
+             "refused_before_execution": ["source without a video stream or duration",
+                                          "a rectangle that does not lie inside the input frame as displayed (INVALID_REQUEST crop_outside_frame)",
+                                          "an ffmpeg-skill checkout without crop.py (TOOL_ERROR)"]},
 }
 
 # capabilities video editing normally has that this Skill does not map to a typed operation: declared as gaps, never as
@@ -209,9 +221,6 @@ MEDIA: Dict[str, Dict[str, Any]] = {
 # is detected from the installed checkout (doctor: unsupported[].engine_tool_status), not written into the contract
 # (ADR-014). `engine_tool` names the ffmpeg-skill tool that would execute the type, when there is one.
 UNSUPPORTED: Dict[str, Dict[str, Any]] = {
-    "CROP": {"capability": "video.crop", "engine_tool": "ffmpeg-skill/crop",
-             "reason": "not mapped to a typed operation here: whether this Skill or its caller owns pixel-rectangle crops is not decided yet (ADR-014); "
-                       "use FILL for crops to an aspect ratio"},
     "POSITION": {"capability": "video.position", "engine_tool": None,
                  "reason": "free placement of a video layer is not provided: OVERLAY composites still images only; a video layer would extend OVERLAY (ADR-002)"},
     "REORDER": {"capability": "video.reorder", "engine_tool": None,
@@ -415,6 +424,14 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
             p["at"] = Time.parse(params["at"], what + ".at")
     elif op_type == "REVERSE":
         _keys(params, what, ())
+    elif op_type == "CROP":
+        # crop.py's own rules: x, y >= 0, width / height even (4:2:0); inside the frame is checked once the input frame is
+        # known (Executor._check_media), before anything runs. Never rounded: a given rectangle is kept exactly or refused.
+        _keys(params, what, ("x", "y", "width", "height"), ("x", "y", "width", "height"))
+        p["x"] = _int(params["x"], what + ".x", 0, MAX_DIMENSION)
+        p["y"] = _int(params["y"], what + ".y", 0, MAX_DIMENSION)
+        p["width"] = _even(params["width"], what + ".width")
+        p["height"] = _even(params["height"], what + ".height")
     elif op_type == "IMAGE_INSERT":
         _keys(params, what, ("duration", "width", "height", "fps"), ("duration",))
         dur = Time.parse(params["duration"], what + ".duration")

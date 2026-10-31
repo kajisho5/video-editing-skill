@@ -66,9 +66,10 @@ Provided (capabilities are declared only where an implementation exists):
 | `video.freeze` | `FREEZE` hold one frame for `hold` seconds: at `at` (the rest plays on after the hold) or, without `at`, the last frame at the end | `ffmpeg-skill/freeze` |
 | `video.reverse` | `REVERSE` play the input backwards, picture and audio | `ffmpeg-skill/reverse` |
 | `video.image_insert` | `IMAGE_INSERT` turn one image source into a silent clip of `duration` seconds (`width` / `height` / `fps` optional) that `CONCAT` and every other type can take | `ffmpeg-skill/insert` |
+| `video.crop` | `CROP` keep exactly the pixel rectangle `{x, y, width, height}` the caller gives (even sizes, inside the frame as displayed; no scaling or padding) | `ffmpeg-skill/crop` |
 
-`FREEZE`, `REVERSE` and `IMAGE_INSERT` run on ffmpeg-skill tools older checkouts do not ship (`freeze.py` from 0.16.0,
-`reverse.py` and `insert.py` from 0.11.0). Whether the installed checkout has them is detected: without one, `doctor`
+`FREEZE`, `REVERSE`, `IMAGE_INSERT` and `CROP` run on ffmpeg-skill tools older checkouts do not ship (`freeze.py` from 0.16.0,
+`reverse.py`, `insert.py` and `crop.py` from 0.11.0). Whether the installed checkout has them is detected: without one, `doctor`
 reports that type MISSING (a note, not a problem — every other operation still runs) and a request using it is refused
 before anything runs (`TOOL_ERROR`, `missing: ["tool:ffmpeg-skill/freeze"]`). The `>=0.10.0` floor is not raised for
 them. ADR-014, ADR-015.
@@ -95,9 +96,10 @@ no ProductionPlan / Project IR / policy / preference / constraint model, no LLM,
 no scripting, no raw ffmpeg or filter interface. See "Explicit non-goals" in the contract (`not_provided`).
 
 **Not implemented in this version** (declared as gaps in `contract.unsupported`, refused with
-`UNSUPPORTED_OPERATION`): `CROP` (pixel rectangle), `POSITION` (free video-layer placement). These are gaps in this Skill's typed model, not claims about the engine: each entry names the
+`UNSUPPORTED_OPERATION`): `POSITION` (free video-layer placement). These are gaps in this Skill's typed model, not claims about the engine: each entry names the
 ffmpeg-skill tool that would execute it (`engine_tool`), and `doctor --json` reports whether the installed checkout
-ships it (`unsupported[].engine_tool_status`, detected, ADR-014) — current ffmpeg-skill has `crop.py`. Multi-track assembly is limited to one video track plus image overlays.
+ships it (`unsupported[].engine_tool_status`, detected, ADR-014). `CROP` was the other gap; it is an operation since
+ADR-016, which records that pixel-rectangle crops are this Skill's job (尺・画角合わせ), not the caller's. Multi-track assembly is limited to one video track plus image overlays.
 
 ## Architecture
 
@@ -436,7 +438,7 @@ and `hdr` where not — and `doctor --json` reports what was detected (`engine.c
 the installed release lacks (ROTATE on 0.10.0, which has no `fit.py --rotate`) is reported MISSING and refused up front.
 The one version number kept is the `>=0.10.0` floor, for a behaviour no flag reveals (ADR-010's `overlay.py -t` bound).
 Nothing here builds ffmpeg command lines or filter strings; what ffmpeg-skill ran is reported verbatim in
-`commands`. A type this Skill does not map (pixel crop, image-to-clip) is reported as a gap, never worked around with
+`commands`. A type this Skill does not map (free video-layer placement) is reported as a gap, never worked around with
 a direct ffmpeg call; whether ffmpeg-skill has a tool for it is detected, not declared. ffmpeg-skill's `render.py` project format is not used: it has a fixed stage
 order, no schema validation and no path policy.
 
@@ -453,7 +455,8 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 
 ## Current limitations
 
-- `CROP`, `POSITION` are not implemented (ADR-014: CROP's ownership is undecided).
+- `POSITION` is not implemented. `CROP` takes exactly the rectangle it is given: choosing it (detecting black bars,
+  a face, a region of interest) is the caller's, and the measurement it can use is ffmpeg-skill's `cropdetect` (ADR-016).
 - `IMAGE_INSERT` makes a static clip: insert.py's Ken Burns `--zoom` / `--pan` are not mapped (ADR-015). Its input is an
   image source only (not an operation's output), and the clip is silent and SDR H.264 whatever the image is.
 - `REVERSE` is executed by ffmpeg's `reverse` / `areverse`, which buffer the whole input in memory: keep its input
@@ -504,9 +507,10 @@ convention (`operations`, `unsupported`, `capabilities` all changed): `video-pro
 Then (ADR-015, step 4): `IMAGE_INSERT` (`ffmpeg-skill/insert`), a still as a clip `CONCAT` can take — same convention,
 same re-pin, in the same release.
 
+Then (ADR-016, step 5): `CROP` (`ffmpeg-skill/crop`): pixel-rectangle crops are owned here — same convention, same re-pin.
+
 Contract 0.5.0 candidates, none scheduled (ADR-002 / ADR-003 / ADR-014, `contract.versioning.next`, `kajisho5/video-editing-skill#11`):
-`CROP` (pixel rectangle) via `crop.py` or left to
-the caller (ownership to be decided), and `RESIZE.height`, which waits on a `fit.py` flag — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be
+`RESIZE.height`, which waits on a `fit.py` flag — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be
 blocked this way too (`fit.py` has no `--height` flag), not the small addition ADR-003 first described. Flagged but
 not decided or scheduled (issue #11 items 2 and 3): `OVERLAY` video-layer + chroma-key parameters
 (`overlay.py --video`/`--chromakey`, per ADR-002's own "extend OVERLAY rather than add a type" prescription), and

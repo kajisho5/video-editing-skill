@@ -1,6 +1,6 @@
 """A fake ffmpeg-skill checkout for error-contract tests (no ffmpeg needed).
 
-It is a test double for the *engine boundary only*: scripts/probe.py, cut.py, join.py, fit.py, overlay.py, freeze.py, reverse.py, insert.py that
+It is a test double for the *engine boundary only*: scripts/probe.py, cut.py, join.py, fit.py, overlay.py, freeze.py, reverse.py, insert.py, crop.py that
 speak ffmpeg-skill's --json protocol and behave according to a MODE file. It is never used to claim real
 integration; tests/test_integration.py runs the real ffmpeg-skill.
 
@@ -26,8 +26,9 @@ exactly (even(): round then up to even), including fit.py's aspect-only canvas r
 Layouts (make_fake_skill(layout=...), written to <root>/LAYOUT; ADR-013's capability detection is tested against them):
   None        the original fake: _contract.py answers every call with the doctor document and the tools take any
               flag, so nothing is detected and every flag passes under its historical spelling
-  0.10        a 0.10.0-shaped checkout: contract --json lists flags; --crf; fit.py has no --rotate / --flip; no freeze.py, no reverse.py, no insert.py
-  0.x         0.11+ (and every 0.x after): as 0.10 plus fit.py --rotate / --flip, reverse.py and insert.py (still no freeze.py, as in 0.11.0)
+  0.10        a 0.10.0-shaped checkout: contract --json lists flags; --crf; fit.py has no --rotate / --flip; no freeze.py, no reverse.py, no insert.py,
+              no crop.py
+  0.x         0.11+ (and every 0.x after): as 0.10 plus fit.py --rotate / --flip, reverse.py, insert.py and crop.py (still no freeze.py, as in 0.11.0)
   1.x         1.10+: --crf and --quality both accepted, --overwrite exists (an existing output is replaced); a tool
               (dry runs included) refuses an output directory that does not exist
   2.x         2.0+: --crf removed (unknown argument, exit 2), --quality; an existing output is refused (kind: input)
@@ -198,6 +199,8 @@ SCRIPT = textwrap.dedent('''
                 height = even(int(flag("--height"))); width = even(height * sw / sh)
             else:
                 width, height = even(sw), even(sh)
+        if name == "crop":   # crop.py: exactly the rectangle
+            width, height = int(flag("--width")), int(flag("--height"))
         if name == "fit" and flag("--rotate") in ("90", "270"):   # fit.py: a 90/270 turn swaps the displayed frame
             width, height = height, width
         encoding = {"crf": int(flag("--quality", flag("--crf", 18))), "preset": flag("--preset", "medium")}
@@ -236,9 +239,10 @@ _BASE_FLAGS = {"probe": [], "cut": ["--start", "--end", "--segments", "--accurat
                        "--rotate", "--flip"],
                "overlay": ["--image", "--position", "--margin", "--scale", "--opacity", "--start", "--end", "--fade"],
                "freeze": ["--at", "--hold", "--mode"], "reverse": ["--no-audio"],
-               "insert": ["--duration", "--width", "--height", "--fps", "--zoom", "--zoom-amount", "--pan"]}
-# tools a layout's checkout does not ship (ffmpeg-skill: reverse.py and insert.py from 0.11.0, freeze.py from 0.16.0)
-_LAYOUT_ABSENT = {"0.10": ("freeze", "reverse", "insert"), "0.x": ("freeze",)}
+               "insert": ["--duration", "--width", "--height", "--fps", "--zoom", "--zoom-amount", "--pan"],
+               "crop": ["--x", "--y", "--width", "--height", "--fps"]}
+# tools a layout's checkout does not ship (ffmpeg-skill: reverse.py, insert.py and crop.py from 0.11.0, freeze.py from 0.16.0)
+_LAYOUT_ABSENT = {"0.10": ("freeze", "reverse", "insert", "crop"), "0.x": ("freeze",)}
 _LAYOUT_FLAGS = {"0.10": ["--crf", "--preset"], "0.x": ["--crf", "--preset"], "1.x": ["--crf", "--quality", "--preset", "--overwrite"],
                  "2.x": ["--quality", "--preset", "--overwrite"], "help-only": ["--quality", "--preset", "--overwrite"]}
 
@@ -259,11 +263,11 @@ def layout_flags(layout: str) -> dict:
 
 def make_fake_skill(root: str, mode: str = "ok", version: str = "0.10.0", layout=None, absent=None, extra=()) -> str:
     """`absent`: tools not written (default: what the layout's release did not ship); `extra`: further tool names written as
-    the same fake (e.g. crop, to check that doctor detects an unsupported type's engine tool)."""
+    the same fake."""
     scripts = os.path.join(root, "scripts")
     os.makedirs(scripts, exist_ok=True)
     skip = _LAYOUT_ABSENT.get(layout, ()) if absent is None else tuple(absent)
-    for name in [t for t in ("probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert") if t not in skip] + list(extra):
+    for name in [t for t in ("probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop") if t not in skip] + list(extra):
         with open(os.path.join(scripts, name + ".py"), "w", encoding="utf-8") as fh:
             fh.write(SCRIPT)
     with open(os.path.join(scripts, "_contract.py"), "w", encoding="utf-8") as fh:

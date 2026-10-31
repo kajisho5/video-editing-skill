@@ -40,6 +40,7 @@ def _sample_params(t: str) -> Dict[str, Any]:  # noqa: C901
         "FREEZE": {"hold": one, "at": one},
         "REVERSE": {},
         "IMAGE_INSERT": {"duration": two, "width": 640, "height": 360, "fps": Fraction(25)},
+        "CROP": {"x": 10, "y": 20, "width": 320, "height": 180},
     }
     return samples[t]
 
@@ -140,10 +141,10 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
             problems.append(f"validate_encoding accepted {bad}")
         except Exception:  # noqa: BLE001
             pass
-    for script in ("cut", "join", "fit", "overlay", "freeze", "reverse", "insert"):
+    for script in ("cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop"):
         if not {"crf", "preset"} <= set(ALLOWED_FLAGS[script]):
             problems.append(f"encoding flags are not allowlisted for ffmpeg-skill/{script}")
-    if c.get("frame_semantics") != FRAME_SEMANTICS or set(FRAME_SEMANTICS) != {"RESIZE", "FIT", "FILL", "ROTATE", "rules"}:
+    if c.get("frame_semantics") != FRAME_SEMANTICS or set(FRAME_SEMANTICS) != {"RESIZE", "FIT", "FILL", "ROTATE", "CROP", "rules"}:
         problems.append("contract.frame_semantics differs from operations.FRAME_SEMANTICS")
     if c.get("media_policy") != MEDIA_POLICY or set(MEDIA_POLICY) != {"refused_before_execution", "normalized_by_skill", "delegated_to_engine", "by_stream"}:
         problems.append("contract.media_policy differs from operations.MEDIA_POLICY")

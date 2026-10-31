@@ -35,8 +35,9 @@ REQUIRED_TOOLS = ("probe", "cut", "join", "fit", "overlay")
 # pinned 0.11.0 has none), REVERSE -> reverse.py (from 0.11.0), IMAGE_INSERT -> insert.py (from 0.11.0, ADR-015). A
 # checkout without one still runs every other operation; doctor reports that one type MISSING (`tool:ffmpeg-skill/<name>`,
 # detected from the checkout, never inferred from its version) and a request using it is refused before anything runs.
-# This is the capability gate for a type newer than MIN_VERSION: the floor itself is not raised for it.
-OPTIONAL_TOOLS = ("freeze", "reverse", "insert")
+# This is the capability gate for a type newer than MIN_VERSION: the floor itself is not raised for it. CROP -> crop.py
+# (from 0.11.0, ADR-016) is optional the same way.
+OPTIONAL_TOOLS = ("freeze", "reverse", "insert", "crop")
 ENGINE_TOOLS = REQUIRED_TOOLS + OPTIONAL_TOOLS
 # A typed flag whose CLI spelling changed between releases, with the spellings in order of preference: ffmpeg-skill
 # 1.10 added --quality (same CRF scale and default) and 2.0 removed --crf from every re-encoding tool that takes it.

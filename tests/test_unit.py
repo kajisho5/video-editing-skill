@@ -52,7 +52,7 @@ class OperationParamTests(unittest.TestCase):
         with self.assertRaises(EditError) as cm:
             operations.validate_params("EXPLODE", {}, "op")
         self.assertEqual(cm.exception.code, "UNSUPPORTED_OPERATION")
-        for t in ("CROP", "POSITION", "REORDER", "TRANSITION"):
+        for t in ("POSITION", "REORDER", "TRANSITION"):
             with self.assertRaises(EditError) as cm:
                 operations.validate_params(t, {}, "op")
             self.assertEqual(cm.exception.code, "UNSUPPORTED_OPERATION")
@@ -234,7 +234,7 @@ class ProjectTests(unittest.TestCase):
             (lambda d: d["project"]["sources"][0].update(kind="audio"), "INVALID_REQUEST"),
             (lambda d: d.update(options={"timeout_seconds": 0}), "INVALID_REQUEST"),
             (lambda d: d.update(options={"workspace": "/"}), "INVALID_REQUEST"),
-            (lambda d: d["project"]["operations"][0].update(type="CROP", params={"x": 0, "y": 0, "width": 2, "height": 2}), "UNSUPPORTED_OPERATION"),
+            (lambda d: d["project"]["operations"][0].update(type="POSITION", params={"x": 0, "y": 0}), "UNSUPPORTED_OPERATION"),
             (lambda d: d["project"]["outputs"][0].update(path="out/final.avi"), "UNSUPPORTED_FORMAT"),
             (lambda d: d["project"]["sources"][0].update(path="in/missing.mp4"), "MISSING_INPUT"),
             (lambda d: d["project"]["outputs"][0].update(path="in/a.mp4"), "PATH_NOT_ALLOWED"),
@@ -365,18 +365,20 @@ class FreezeReverseParamTests(unittest.TestCase):
         self.assertEqual((step.tool, step.argv_for(["/x/a.mp4"], "/x/o.mp4")), ("ffmpeg-skill/reverse", ["/x/a.mp4", "-o", "/x/o.mp4", "--crf", "20"]))
 
     def test_contract_names_no_missing_engine_tool(self):
-        """Roadmap step 1: the static contract never says ffmpeg-skill lacks a tool (doctor detects it); FREEZE / REVERSE are
-        operations, not gaps; video.freeze / video.reverse are provided."""
+        """Roadmap step 1: the static contract never says ffmpeg-skill lacks a tool (doctor detects it); FREEZE / REVERSE (and,
+        from roadmap step 5, CROP) are operations, not gaps; video.freeze / video.reverse / video.crop are provided."""
         c = contract.skill_contract()
-        self.assertEqual(sorted(u["type"] for u in c["unsupported"]), ["CROP", "POSITION"])
+        self.assertEqual(sorted(u["type"] for u in c["unsupported"]), ["POSITION"])
         for u in c["unsupported"]:
             self.assertNotIn("ffmpeg-skill has no", u["reason"])
             self.assertNotIn("no tool", u["reason"])
-        self.assertEqual({u["type"]: u["engine_tool"] for u in c["unsupported"]}, {"CROP": "ffmpeg-skill/crop", "POSITION": None})
+        self.assertEqual({u["type"]: u["engine_tool"] for u in c["unsupported"]}, {"POSITION": None})
         provided = {p["id"]: p["tool_id"] for p in c["provides"]}
         self.assertEqual((provided["video.freeze"], provided["video.reverse"]), ("video-editing/freeze", "video-editing/reverse"))
         self.assertEqual((c["operations"]["FREEZE"]["tool"], c["operations"]["REVERSE"]["tool"]), ("ffmpeg-skill/freeze", "ffmpeg-skill/reverse"))
-        self.assertEqual(c["engine"]["tools_optional"], ["ffmpeg-skill/freeze", "ffmpeg-skill/reverse", "ffmpeg-skill/insert"])
+        self.assertEqual(c["engine"]["tools_optional"], ["ffmpeg-skill/freeze", "ffmpeg-skill/reverse", "ffmpeg-skill/insert", "ffmpeg-skill/crop"])
+        self.assertEqual((provided["video.crop"], c["operations"]["CROP"]["tool"]), ("video-editing/crop", "ffmpeg-skill/crop"))
+        self.assertFalse(any("CROP" in n for n in c["versioning"]["next"]["0.5.0"]))
         self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.5.0"]))
 
 
@@ -589,7 +591,7 @@ class ContractTests(unittest.TestCase):
             (lambda d: d["tools"][0].update(result_keys=["x"]), "result_keys changed"),
             (lambda d: d["tools"][0].update(produces_output=False), "produces_output changed"),
             (lambda d: d["tools"].pop(), "tool added"),
-            (lambda d: d["tools"].append({"tool_id": "video-editing/crop"}), "tool removed"),
+            (lambda d: d["tools"].append({"tool_id": "video-editing/position"}), "tool removed"),
             (lambda d: d.update(contract_version="9.9"), "pinned block contract_version changed"),
             (lambda d: d.update(skill_id="other"), "skill_id changed"),
             (lambda d: d["errors"]["exit_codes"].update(TOOL_ERROR=99), "errors (codes / exit codes / retryable) changed"),
@@ -613,10 +615,10 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(contract_check.check_saved("junk", live)["status"], "drift")
         # a contract that lies about the implementation is caught too
         lying = json.loads(json.dumps(live))
-        lying["capabilities"].append({"capability": "video.crop", "operations": ["CROP"], "tool": "x"})
+        lying["capabilities"].append({"capability": "video.position", "operations": ["POSITION"], "tool": "x"})
         self.assertTrue(any("capabilities differ" in p for p in contract_check.verify_implementation(lying)))
         lying = json.loads(json.dumps(live))
-        lying["operations"]["CROP"] = {}
+        lying["operations"]["POSITION"] = {}
         self.assertTrue(any("allowlist" in p for p in contract_check.verify_implementation(lying)))
         lying = json.loads(json.dumps(live))
         lying["execution"]["shell"] = True
@@ -843,7 +845,7 @@ class DoctorAvailabilityTests(unittest.TestCase):
         from video_editing_skill.doctor import operation_availability
         from video_editing_skill.ffmpeg_skill import FfmpegSkill
         full = {"ffmpeg": "6", "ffprobe": "6", "ok": True, "missing": [], "available": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade"]}
-        skill = FfmpegSkill("/x", "0.10.0", ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert"])
+        skill = FfmpegSkill("/x", "0.10.0", ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop"])
         rows = {r["type"]: r for r in operation_availability(skill, full)}
         self.assertEqual(sorted(rows), sorted(operations.OPERATIONS))
         self.assertTrue(all(r["status"] == "AVAILABLE" and r["missing"] == [] for r in rows.values()), rows)
@@ -856,10 +858,10 @@ class DoctorAvailabilityTests(unittest.TestCase):
         self.assertEqual(rows["OVERLAY"]["missing"], ["tool:ffmpeg-skill/overlay"])
         # no version ceiling (ADR-013): a newer release is judged by what it offers; only the 0.10.0 floor is a version check
         for newer in ("1.2.0", "2.10.3"):
-            rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", newer, ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert"]), full)}
+            rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", newer, ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop"]), full)}
             self.assertTrue(all(r["status"] == "AVAILABLE" for r in rows.values()), rows)
         # a checkout without the optional tools (ffmpeg-skill 0.11.0 has no freeze.py): only the types they execute are MISSING
-        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.11.0", ["probe", "cut", "join", "fit", "overlay", "reverse", "insert"]), full)}
+        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.11.0", ["probe", "cut", "join", "fit", "overlay", "reverse", "insert", "crop"]), full)}
         self.assertEqual({t: r["missing"] for t, r in rows.items() if r["status"] != "AVAILABLE"}, {"FREEZE": ["tool:ffmpeg-skill/freeze"]})
         rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.9.1", ["probe", "cut", "join", "fit", "overlay"]), full)}
         self.assertTrue(all(r["status"] == "MISSING" for r in rows.values()))
@@ -923,9 +925,12 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
             self.assertEqual(ex.target_frame("x"), want, degrees)
         ex = self.executor([{"id": "x", "type": "ROTATE", "input": "A", "params": {"flip": "h"}}], probes={"A": self.probe(640, 360), "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
         self.assertEqual(ex.target_frame("x"), (640, 360), "a flip alone never changes the frame size")
-        # the semantics block names the four types and no operation stretches
+        # CROP delivers exactly its rectangle (ADR-016)
+        ex = self.executor([{"id": "x", "type": "CROP", "input": "A", "params": {"x": 10, "y": 20, "width": 320, "height": 180}}], probes={"A": self.probe(640, 360), "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+        self.assertEqual(ex.target_frame("x"), (320, 180))
+        # the semantics block names the five types and no operation stretches
         sem = contract.skill_contract()["frame_semantics"]
-        self.assertEqual(set(sem) - {"rules"}, {"RESIZE", "FIT", "FILL", "ROTATE"})
+        self.assertEqual(set(sem) - {"rules"}, {"RESIZE", "FIT", "FILL", "ROTATE", "CROP"})
         self.assertTrue(any("stretch" in r for r in sem["rules"]))
 
     def test_hdr_vfr_and_codec(self):
@@ -1016,3 +1021,57 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
             g = next(x for x in golden["tools"] if x["tool_id"] == t["tool_id"])
             for f in ("parameters", "required_capabilities", "inputs", "result_keys", "executed_by", "deterministic", "produces_output", "writes_media", "kind"):
                 self.assertEqual(t[f], g[f], (t["tool_id"], f))
+
+
+class CropTests(ExecutorHarness):
+    """ECOSYSTEM_ROADMAP step 5, docs/decisions.md ADR-016: CROP -> ffmpeg-skill crop.py, exactly the rectangle the caller
+    gives (never rounded), refused up front when it does not lie inside the input frame."""
+
+    def test_params(self):
+        p = operations.validate_params("CROP", {"x": 10, "y": 0, "width": 320, "height": 180}, "op")
+        self.assertEqual(p, {"x": 10, "y": 0, "width": 320, "height": 180})
+        for bad in ({"x": 0, "y": 0, "width": 320},                         # height missing
+                    {"x": 0, "y": 0, "width": 321, "height": 180},          # odd: never rounded
+                    {"x": -1, "y": 0, "width": 320, "height": 180},
+                    {"x": True, "y": 0, "width": 320, "height": 180},
+                    {"x": 0.5, "y": 0, "width": 320, "height": 180},
+                    {"x": 0, "y": 0, "width": 0, "height": 180},
+                    {"x": 0, "y": 0, "width": 320, "height": 180, "anchor": {"x": 0, "y": 0}}):
+            with self.assertRaises(EditError, msg=bad) as cm:
+                operations.validate_params("CROP", bad, "op")
+            self.assertEqual(cm.exception.code, "INVALID_REQUEST")
+
+    def test_compiles_to_crop_py(self):
+        step = compile_operation(EditOperation("c", "CROP", ["A"], {"x": 10, "y": 20, "width": 320, "height": 180}, encoding={"crf": 20}))
+        self.assertEqual((step.tool, step.argv_for(["/x/a.mp4"], "/x/o.mp4")),
+                         ("ffmpeg-skill/crop", ["/x/a.mp4", "-o", "/x/o.mp4", "--x", "10", "--y", "20", "--width", "320", "--height", "180", "--crf", "20"]))
+
+    def test_target_frame_and_timeline(self):
+        logo = {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}
+        ex = self.executor([{"id": "c", "type": "CROP", "input": "A", "params": {"x": 0, "y": 0, "width": 200, "height": 100}}],
+                           probes={"A": self.probe(640, 360), "B": self.probe(), "logo": logo})
+        self.assertEqual(ex.target_frame("c"), (200, 100))
+        self.assertEqual(ex.normalized("c")["target_frame"], [200, 100])
+
+    def test_a_rectangle_outside_the_frame_is_refused_before_execution(self):
+        logo = {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}
+        for params in ({"x": 400, "y": 0, "width": 320, "height": 180}, {"x": 0, "y": 200, "width": 320, "height": 180}):
+            ex = self.executor([{"id": "c", "type": "CROP", "input": "A", "params": params}], probes={"A": self.probe(640, 360), "B": self.probe(), "logo": logo})
+            with self.assertRaises(EditError) as cm:
+                ex._check_media()
+            self.assertEqual((cm.exception.code, cm.exception.details["reason"]), ("INVALID_REQUEST", "crop_outside_frame"))
+        # as displayed: a 640x360 source tagged rotation 90 is 360x640, so a tall rectangle fits and a wide one does not
+        rotated = self.probe(640, 360)
+        rotated["video"]["rotation"] = 90
+        ex = self.executor([{"id": "c", "type": "CROP", "input": "A", "params": {"x": 0, "y": 0, "width": 360, "height": 600}}], probes={"A": rotated, "B": self.probe(), "logo": logo})
+        ex._check_media()
+        ex = self.executor([{"id": "c", "type": "CROP", "input": "A", "params": {"x": 0, "y": 0, "width": 600, "height": 360}}], probes={"A": rotated, "B": self.probe(), "logo": logo})
+        with self.assertRaises(EditError):
+            ex._check_media()
+        # the input of a CROP may be another operation's output: its expected frame is what is checked
+        ex = self.executor([{"id": "r", "type": "RESIZE", "input": "A", "params": {"width": 320}},
+                            {"id": "c", "type": "CROP", "input": "r", "params": {"x": 0, "y": 0, "width": 320, "height": 200}}],
+                           probes={"A": self.probe(640, 360), "B": self.probe(), "logo": logo})
+        with self.assertRaises(EditError) as cm:
+            ex._check_media()
+        self.assertEqual(cm.exception.details["frame"], [320, 180])

@@ -106,7 +106,7 @@ def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[
             segs.append(Segment(s.source, s.source_start, s.source_end, ts, te, s.speed * f))
         dur = src.duration.scale(1 / f) if src.duration is not None else None
         return Clip(dur, segs, list(src.overlays))
-    if op.type in ("FIT", "FILL", "RESIZE", "ROTATE"):
+    if op.type in ("FIT", "FILL", "RESIZE", "ROTATE", "CROP"):
         src = inputs[0]
         return Clip(src.duration, list(src.segments), list(src.overlays))
     if op.type == "OVERLAY":
