@@ -107,10 +107,20 @@ two new tools in `tools_used` (non-pinned). Breaking by this repository's conven
 `video-production-agent` re-pins. `contract_check.verify_implementation` refuses an `unsupported` reason that says an
 engine tool is missing.
 
+## After 0.4.0: IMAGE_INSERT (docs/decisions.md ADR-015; same release as ADR-014)
+
+`operations`, `capabilities` / `capability_names`, `tools[]` and `provides` gain `IMAGE_INSERT`
+(`video.image_insert`, tool `video-editing/image_insert`, `ffmpeg-skill/insert`); `unsupported` loses it.
+`media_compatibility.IMAGE_INSERT.requires` is the first entry with `video: false` (its one input is an image
+source) — a consumer that assumed every type needs video must read `requires` instead. `engine.tools_optional`
+gains `ffmpeg-skill/insert`; `engine.version_range` / `dependencies` stay `>=0.10.0` (the type is gated on the
+detected tool, not on a raised floor). Breaking by the same convention as ADR-014 and shipped in the same release:
+one `version` / `contract_version` bump and one agent re-pin cover both.
+
 ## 0.5.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011 / ADR-014, `kajisho5/video-editing-skill#11`)
 
 `versioning.next["0.5.0"]` lists breaking-change candidates for a future version, none currently in progress:
-`IMAGE_INSERT` via ffmpeg-skill's `insert.py`, `CROP` via `crop.py` or left to the caller (ownership undecided,
+`CROP` via `crop.py` or left to the caller (ownership undecided,
 ADR-014), and `RESIZE.height` — found, by live verification against ffmpeg-skill 0.10.0, to be blocked on the engine
 (`fit.py` has no `--height` flag), not the small addition it was first framed as; `OVERLAY` video-layer + chroma-key parameters
 (`overlay.py --video`/`--chromakey`), per ADR-002's own "extend OVERLAY rather than add a type" prescription —

@@ -39,6 +39,7 @@ def _sample_params(t: str) -> Dict[str, Any]:  # noqa: C901
         "ROTATE": {"degrees": 90, "flip": "h"},
         "FREEZE": {"hold": one, "at": one},
         "REVERSE": {},
+        "IMAGE_INSERT": {"duration": two, "width": 640, "height": 360, "fps": Fraction(25)},
     }
     return samples[t]
 
@@ -70,13 +71,14 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
         if script not in ALLOWED_FLAGS or script not in ENGINE_TOOLS:
             problems.append(f"{t}: engine tool {spec['tool']} is not in ALLOWED_FLAGS / ENGINE_TOOLS")
         # compile with a sample and prove every flag is allowlisted for the tool
-        op = EditOperation("x", t, ["a", "b", "logo"] if t == "CONCAT" else (["a", "logo"] if t == "OVERLAY" else ["a"]), _sample_params(t))
+        op = EditOperation("x", t, ["a", "b", "logo"] if t == "CONCAT" else (["a", "logo"] if t == "OVERLAY" else (["logo"] if t == "IMAGE_INSERT" else ["a"])),
+                           _sample_params(t))
         step = compile_operation(op)
         if step.tool != spec["tool"]:
             problems.append(f"{t}: compiler targets {step.tool}, contract says {spec['tool']}")
         try:
             from .timebase import Time
-            step.argv_for(["/in/a.mp4", "/in/b.mp4"] if t == "CONCAT" else ["/in/a.mp4"], "/ws/o.mp4", "/in/logo.png" if t == "OVERLAY" else None, Time.parse(10))
+            step.argv_for(["/in/a.mp4", "/in/b.mp4"] if t == "CONCAT" else (["/in/logo.png"] if t == "IMAGE_INSERT" else ["/in/a.mp4"]), "/ws/o.mp4", "/in/logo.png" if t == "OVERLAY" else None, Time.parse(10))
         except Exception as exc:  # noqa: BLE001
             problems.append(f"{t}: compiled flags are not all allowlisted: {exc}")
     for tid in tools:
@@ -100,13 +102,15 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
     for k in ("shell", "arbitrary_executables", "raw_ffmpeg_arguments", "filter_strings", "network", "ai", "input_mutation"):
         if ex.get(k) is not False:
             problems.append(f"execution.{k} must be false")
-    # media compatibility: one entry per operation, every operation needs video, and the contract mirrors the table
+    # media compatibility: one entry per operation, every operation but IMAGE_INSERT (whose input is a still, ADR-015) needs
+    # video, and the contract mirrors the table
     if set(MEDIA) != set(OPERATIONS):
         problems.append(f"operations.MEDIA {sorted(MEDIA)} != allowlist {sorted(OPERATIONS)}")
     for t, m in MEDIA.items():
-        if set(m) != {"inputs", "requires", "output", "refused_before_execution"} or set(m["requires"]) != {"video", "audio", "image"} or m["requires"]["video"] is not True:
+        if (set(m) != {"inputs", "requires", "output", "refused_before_execution"} or set(m["requires"]) != {"video", "audio", "image"}
+                or m["requires"]["video"] is not (t != "IMAGE_INSERT")):
             problems.append(f"MEDIA[{t}] is malformed")
-        if m["requires"]["image"] != (t == "OVERLAY"):
+        if m["requires"]["image"] != (t in ("OVERLAY", "IMAGE_INSERT")):
             problems.append(f"MEDIA[{t}].requires.image disagrees with the operation's inputs")
     if c.get("media_compatibility") != media_compatibility():
         problems.append("contract.media_compatibility differs from operations.MEDIA")
@@ -136,7 +140,7 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
             problems.append(f"validate_encoding accepted {bad}")
         except Exception:  # noqa: BLE001
             pass
-    for script in ("cut", "join", "fit", "overlay", "freeze", "reverse"):
+    for script in ("cut", "join", "fit", "overlay", "freeze", "reverse", "insert"):
         if not {"crf", "preset"} <= set(ALLOWED_FLAGS[script]):
             problems.append(f"encoding flags are not allowlisted for ffmpeg-skill/{script}")
     if c.get("frame_semantics") != FRAME_SEMANTICS or set(FRAME_SEMANTICS) != {"RESIZE", "FIT", "FILL", "ROTATE", "rules"}:

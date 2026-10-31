@@ -1,6 +1,6 @@
 """A fake ffmpeg-skill checkout for error-contract tests (no ffmpeg needed).
 
-It is a test double for the *engine boundary only*: scripts/probe.py, cut.py, join.py, fit.py, overlay.py, freeze.py, reverse.py that
+It is a test double for the *engine boundary only*: scripts/probe.py, cut.py, join.py, fit.py, overlay.py, freeze.py, reverse.py, insert.py that
 speak ffmpeg-skill's --json protocol and behave according to a MODE file. It is never used to claim real
 integration; tests/test_integration.py runs the real ffmpeg-skill.
 
@@ -26,8 +26,8 @@ exactly (even(): round then up to even), including fit.py's aspect-only canvas r
 Layouts (make_fake_skill(layout=...), written to <root>/LAYOUT; ADR-013's capability detection is tested against them):
   None        the original fake: _contract.py answers every call with the doctor document and the tools take any
               flag, so nothing is detected and every flag passes under its historical spelling
-  0.10        a 0.10.0-shaped checkout: contract --json lists flags; --crf; fit.py has no --rotate / --flip; no freeze.py, no reverse.py
-  0.x         0.11+ (and every 0.x after): as 0.10 plus fit.py --rotate / --flip and reverse.py (still no freeze.py, as in 0.11.0)
+  0.10        a 0.10.0-shaped checkout: contract --json lists flags; --crf; fit.py has no --rotate / --flip; no freeze.py, no reverse.py, no insert.py
+  0.x         0.11+ (and every 0.x after): as 0.10 plus fit.py --rotate / --flip, reverse.py and insert.py (still no freeze.py, as in 0.11.0)
   1.x         1.10+: --crf and --quality both accepted, --overwrite exists (an existing output is replaced); a tool
               (dry runs included) refuses an output directory that does not exist
   2.x         2.0+: --crf removed (unknown argument, exit 2), --quality; an existing output is refused (kind: input)
@@ -131,6 +131,8 @@ SCRIPT = textwrap.dedent('''
             return float(flag("--duration"))
         if name == "freeze":
             return dur_of(inputs[0]) + float(flag("--hold"))
+        if name == "insert":
+            return float(flag("--duration"))
         if name == "join":
             return sum(dur_of(p) for p in inputs) - float(flag("--duration", "0")) * (len(inputs) - 1)
         return dur_of(inputs[0])
@@ -159,7 +161,7 @@ SCRIPT = textwrap.dedent('''
         sw, sh = first["width"], first["height"]
         if first.get("rotation") in (90, -90, 270, -270):
             sw, sh = sh, sw
-        width, height, fps = sw, sh, first["fps"]
+        width, height, fps = sw, sh, first.get("fps", 30.0)
         if flag("--fps"):
             fps = float(flag("--fps"))
         if name == "join":   # join.py rule
@@ -187,6 +189,15 @@ SCRIPT = textwrap.dedent('''
                     width = even(sw); height = even(width / ratio)
             else:
                 width = even(sw if ratio <= src_ratio else sh * ratio); height = even(width / ratio)
+        if name == "insert":   # insert.py rule: both -> as given; one -> the other from the image aspect; none -> the image; even()
+            if flag("--width") and flag("--height"):
+                width, height = even(int(flag("--width"))), even(int(flag("--height")))
+            elif flag("--width"):
+                width = even(int(flag("--width"))); height = even(width * sh / sw)
+            elif flag("--height"):
+                height = even(int(flag("--height"))); width = even(height * sw / sh)
+            else:
+                width, height = even(sw), even(sh)
         if name == "fit" and flag("--rotate") in ("90", "270"):   # fit.py: a 90/270 turn swaps the displayed frame
             width, height = height, width
         encoding = {"crf": int(flag("--quality", flag("--crf", 18))), "preset": flag("--preset", "medium")}
@@ -224,9 +235,10 @@ _BASE_FLAGS = {"probe": [], "cut": ["--start", "--end", "--segments", "--accurat
                "fit": ["--duration", "--method", "--max-speed", "--smooth", "--aspect", "--fit", "--width", "--pad-color", "--crop-x", "--crop-y", "--fps",
                        "--rotate", "--flip"],
                "overlay": ["--image", "--position", "--margin", "--scale", "--opacity", "--start", "--end", "--fade"],
-               "freeze": ["--at", "--hold", "--mode"], "reverse": ["--no-audio"]}
-# tools a layout's checkout does not ship (ffmpeg-skill: reverse.py from 0.11.0, freeze.py from 0.16.0)
-_LAYOUT_ABSENT = {"0.10": ("freeze", "reverse"), "0.x": ("freeze",)}
+               "freeze": ["--at", "--hold", "--mode"], "reverse": ["--no-audio"],
+               "insert": ["--duration", "--width", "--height", "--fps", "--zoom", "--zoom-amount", "--pan"]}
+# tools a layout's checkout does not ship (ffmpeg-skill: reverse.py and insert.py from 0.11.0, freeze.py from 0.16.0)
+_LAYOUT_ABSENT = {"0.10": ("freeze", "reverse", "insert"), "0.x": ("freeze",)}
 _LAYOUT_FLAGS = {"0.10": ["--crf", "--preset"], "0.x": ["--crf", "--preset"], "1.x": ["--crf", "--quality", "--preset", "--overwrite"],
                  "2.x": ["--quality", "--preset", "--overwrite"], "help-only": ["--quality", "--preset", "--overwrite"]}
 
@@ -247,11 +259,11 @@ def layout_flags(layout: str) -> dict:
 
 def make_fake_skill(root: str, mode: str = "ok", version: str = "0.10.0", layout=None, absent=None, extra=()) -> str:
     """`absent`: tools not written (default: what the layout's release did not ship); `extra`: further tool names written as
-    the same fake (e.g. crop / insert, to check that doctor detects an unsupported type's engine tool)."""
+    the same fake (e.g. crop, to check that doctor detects an unsupported type's engine tool)."""
     scripts = os.path.join(root, "scripts")
     os.makedirs(scripts, exist_ok=True)
     skip = _LAYOUT_ABSENT.get(layout, ()) if absent is None else tuple(absent)
-    for name in [t for t in ("probe", "cut", "join", "fit", "overlay", "freeze", "reverse") if t not in skip] + list(extra):
+    for name in [t for t in ("probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert") if t not in skip] + list(extra):
         with open(os.path.join(scripts, name + ".py"), "w", encoding="utf-8") as fh:
             fh.write(SCRIPT)
     with open(os.path.join(scripts, "_contract.py"), "w", encoding="utf-8") as fh:

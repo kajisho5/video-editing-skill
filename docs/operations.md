@@ -19,6 +19,7 @@ name an execution escape hatch (`command`, `argv`, `shell`, `filter`, `env`, `ap
 | `ROTATE` | `input` (video) | degrees `90 \| 180 \| 270`, flip `h \| v` (at least one required) | `ffmpeg-skill/fit` |
 | `FREEZE` | `input` (video) | **hold** time 0.01..600 s, at time `< input duration` (optional) | `ffmpeg-skill/freeze` (optional tool) |
 | `REVERSE` | `input` (video) | none | `ffmpeg-skill/reverse` (optional tool) |
+| `IMAGE_INSERT` | `input` (image source) | **duration** time 0.01..600 s, width (even), height (even), fps 1..240 (default 30) | `ffmpeg-skill/insert` (optional tool) |
 
 `FREEZE` (ADR-014): with `at`, the frame shown at `at` is held for `hold` and the rest of the clip plays on after it
 (`freeze.py --at --hold --mode insert`; the hold is rounded by the engine to whole frames); without `at`, the last
@@ -31,6 +32,16 @@ frame, fps and duration as the input. The timeline reports each segment with `re
 stays ascending and plays from `end` back to `start`. ffmpeg's `reverse` buffers the whole input in memory; keep it
 short (TRIM first). Both tools are optional: `doctor` detects them in the checkout, and without one only that type is
 MISSING (refused up front with `TOOL_ERROR`, `missing: ["tool:ffmpeg-skill/<name>"]`).
+
+`IMAGE_INSERT` (ADR-015): one image source (`kind: "image"`) becomes a silent, constant-rate video clip of exactly
+`duration` seconds (`insert.py <image> --duration --fps [--width] [--height]`; `--fps` is always passed, 30 when not
+asked, so the clip never depends on the engine's default). Frame, as insert.py computes it: both `width` and
+`height` → that frame (the still is scaled to cover it and centre-cropped, never stretched); one → the other from
+the image aspect, `even()`; none → the image size, `even()`. Its input must be an image source, never a video or an
+operation (`DEPENDENCY_ERROR kind_mismatch`); a CONCAT given an image source directly is refused the same way, with a
+hint to use `IMAGE_INSERT`. The clip then goes anywhere a video does — typically into `CONCAT`, which inserts silence
+under it next to inputs with audio. The timeline holds the still: one segment from the image source, `source_range`
+0..0, speed `0/1`, over `duration`. Not mapped: insert.py's Ken Burns `--zoom` / `--zoom-amount` / `--pan`.
 
 Values that reach a filter graph (colours, transition names, positions, aspects) are closed vocabularies or
 integers; times are exact rationals. See `contract.operations` for the documented forms.
@@ -125,6 +136,7 @@ image must decode to a frame. Per operation:
 | `ROTATE` | video | frame size as the input, width/height swapped for a 90/270 `degrees`; audio, fps as the input |
 | `FREEZE` | video | frame size, fps as the input; audio as the input, silent under the hold; duration = input + hold |
 | `REVERSE` | video | frame size, fps, duration as the input; audio as the input, reversed |
+| `IMAGE_INSERT` | one image (no video) | frame by insert.py's rule (params or the image, even); `fps` (default 30); duration = `duration`; no audio |
 
 `OVERLAY` no longer requires audio (ADR-009): ffmpeg-skill 0.9.x's overlay (`-loop 1` image + `-shortest`) could run
 unbounded on a video without an audio stream, but ffmpeg-skill >=0.10.0 bounds it with an explicit `-t <video
@@ -179,7 +191,7 @@ with the same probe checks; a candidate that no longer validates is discarded an
 | `start ≥ end`, range beyond the input, transition too long, overlay start / end beyond the input, FREEZE `at` at or beyond the input / `hold` outside 0.01..600 s | `INVALID_TIME_RANGE` |
 | unknown reference, cycle, orphan, conflicting outputs, image / video slot mismatch | `DEPENDENCY_ERROR` |
 | source without video stream / duration, image that does not decode, overlay input without audio, engine says the input is unusable | `INVALID_INPUT` |
-| type not in the allowlist (`CROP`, `IMAGE_INSERT`, `POSITION`, anything unknown) | `UNSUPPORTED_OPERATION` |
+| type not in the allowlist (`CROP`, `POSITION`, anything unknown) | `UNSUPPORTED_OPERATION` |
 | ffmpeg-skill missing / unsupported version / tool or capability missing (not retryable); ffmpeg failed (retryable) | `TOOL_ERROR` |
 | tool exited 0 but wrote nothing / empty / unreadable; output cannot be written | `OUTPUT_ERROR` |
 | output exists but is not what was requested (stream, duration, frame, aspect, fps, audio) | `VALIDATION_ERROR` |
@@ -204,8 +216,9 @@ What changed between ffmpeg-skill releases and how this Skill handles each, dete
 | Change | Where | Handling |
 |---|---|---|
 | `fit.py --rotate` / `--flip` | added in 0.11.0 | flags read from the checkout; without them `ROTATE` is MISSING in doctor and refused (`TOOL_ERROR`, `flag:--rotate`) before anything runs |
-| `reverse.py`, `freeze.py` | added in 0.11.0 and 0.16.0 | optional tools (ADR-014): without one, only `REVERSE` / `FREEZE` is MISSING in doctor (a note; `ok` stays true) and refused (`TOOL_ERROR`, `tool:ffmpeg-skill/<name>`) before anything runs |
-| `crop.py`, `insert.py` | present in 0.11.0 and later | not used yet (`CROP`, `IMAGE_INSERT` are unsupported here); `doctor` reports whether the checkout has them (`unsupported[].engine_tool_status`) |
+| `reverse.py`, `insert.py`, `freeze.py` | added in 0.11.0, 0.11.0 and 0.16.0 | optional tools (ADR-014, ADR-015): without one, only `REVERSE` / `IMAGE_INSERT` / `FREEZE` is MISSING in doctor (a note; `ok` stays true) and refused (`TOOL_ERROR`, `tool:ffmpeg-skill/<name>`) before anything runs; the `>=0.10.0` floor is not raised for them |
+| `insert.py --crf` → `--quality` | as for every tool (2.0) | the same detected spelling: `outputs[].encoding.crf` reaches `IMAGE_INSERT` as `--crf` on 0.11.0, `--quality` on 2.x |
+| `crop.py` | present in 0.11.0 and later | not used yet (`CROP` is unsupported here); `doctor` reports whether the checkout has it (`unsupported[].engine_tool_status`) |
 | `--crf` → `--quality` (same CRF scale and default) | `--quality` added in 1.10, `--crf` removed in 2.0 | `outputs[].encoding.crf` is passed as `--quality` where the tool lists it, else as `--crf` |
 | `fit.py`'s aspect-only canvas (no `width`) | 0.16.10: never exceeds the source (9:16 from 1280x720 is 406x720, was 1280x2276) | behaviour, not a flag: the expected frame follows the rule of the installed release (`fit_bounds_by_source()`) |
 | probe `hdr` narrowed to PQ/HLG; `bt2020_or_hdr` keeps the old meaning | 2.0 | `bt2020_or_hdr` is read where present, `hdr` where not: a BT.2020 SDR source still expects HEVC |

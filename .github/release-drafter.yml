@@ -1,0 +1,72 @@
+# Shared by two workflows:
+#   - workflows/autolabel.yml applies `autolabeler` to a PR as it's opened/updated (pull_request_target,
+#     so it also works on PRs from forks -- see that workflow for why).
+#   - workflows/release.yml runs this in --dry-run to resolve the next version from `version-resolver`,
+#     based on the labels `autolabeler` already attached to every PR merged since the last release tag.
+#     It never lets release-drafter create or touch a GitHub Release itself (this repo's own workflow
+#     does that, after also generating CHANGELOG.md from `git log` -- see release.yml and
+#     .github/scripts/render_changelog.sh for why release-drafter's own changelog body is not used
+#     as-is: reading committed text back out via `git log` rather than interpolating it avoids the
+#     GitHub Actions script-injection pattern where untrusted PR text is spliced into a `run:` block).
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+categories:
+  - title: '⚠️ Breaking'
+    labels: ['major', 'breaking']
+  - title: '🚀 Features'
+    labels: ['minor', 'feature', 'enhancement']
+  - title: '🐛 Fixes'
+    labels: ['patch', 'fix', 'bug']
+  - title: '🧰 Maintenance'
+    labels: ['chore', 'maintenance', 'ci']
+  - title: '📝 Documentation'
+    labels: ['documentation', 'docs']
+
+# Only the label -> bump mapping matters for release.yml's dry run; `default: patch` is what makes
+# an unlabeled merged PR (or one only carrying a category label with no explicit bump) a patch release
+# by default, per this repo's release-automation design.
+version-resolver:
+  major:
+    labels: ['major', 'breaking']
+  minor:
+    labels: ['minor', 'feature', 'enhancement']
+  patch:
+    labels: ['patch', 'fix', 'bug', 'chore', 'maintenance', 'ci', 'documentation', 'docs']
+  default: patch
+
+autolabeler:
+  - label: 'documentation'
+    files:
+      - '*.md'
+      - 'docs/**'
+      - 'SKILL.md'
+  - label: 'chore'
+    files:
+      - '.github/**'
+      - '.gitignore'
+    title:
+      - '/^(chore|ci|build)(\(.+\))?:/i'
+  - label: 'fix'
+    branch:
+      - '/^fix\//i'
+    title:
+      - '/^fix(\(.+\))?:/i'
+      - '/^(fix|de-duplicate|correct)\b/i'
+  - label: 'feature'
+    branch:
+      - '/^feat(ure)?\//i'
+    title:
+      - '/^feat(\(.+\))?:/i'
+      - '/^(add|implement|introduce)\b/i'
+
+# `major`/`breaking` is deliberately NOT autolabeled from title or body text. A PR whose title happens
+# to start with "major"/"breaking", or whose description merely mentions the words "BREAKING CHANGE"
+# (e.g. describing a bug), must not silently trigger a major version bump. A human applies the
+# `major`/`breaking` label by hand when a change is actually breaking; only that label -- never text
+# pattern-matching -- feeds `version-resolver`'s major bump.
+
+template: |
+  ## What's Changed
+
+  $CHANGES

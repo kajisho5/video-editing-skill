@@ -52,7 +52,7 @@ class OperationParamTests(unittest.TestCase):
         with self.assertRaises(EditError) as cm:
             operations.validate_params("EXPLODE", {}, "op")
         self.assertEqual(cm.exception.code, "UNSUPPORTED_OPERATION")
-        for t in ("CROP", "IMAGE_INSERT", "POSITION", "REORDER", "TRANSITION"):
+        for t in ("CROP", "POSITION", "REORDER", "TRANSITION"):
             with self.assertRaises(EditError) as cm:
                 operations.validate_params(t, {}, "op")
             self.assertEqual(cm.exception.code, "UNSUPPORTED_OPERATION")
@@ -368,16 +368,83 @@ class FreezeReverseParamTests(unittest.TestCase):
         """Roadmap step 1: the static contract never says ffmpeg-skill lacks a tool (doctor detects it); FREEZE / REVERSE are
         operations, not gaps; video.freeze / video.reverse are provided."""
         c = contract.skill_contract()
-        self.assertEqual(sorted(u["type"] for u in c["unsupported"]), ["CROP", "IMAGE_INSERT", "POSITION"])
+        self.assertEqual(sorted(u["type"] for u in c["unsupported"]), ["CROP", "POSITION"])
         for u in c["unsupported"]:
             self.assertNotIn("ffmpeg-skill has no", u["reason"])
             self.assertNotIn("no tool", u["reason"])
-        self.assertEqual({u["type"]: u["engine_tool"] for u in c["unsupported"]}, {"CROP": "ffmpeg-skill/crop", "IMAGE_INSERT": "ffmpeg-skill/insert", "POSITION": None})
+        self.assertEqual({u["type"]: u["engine_tool"] for u in c["unsupported"]}, {"CROP": "ffmpeg-skill/crop", "POSITION": None})
         provided = {p["id"]: p["tool_id"] for p in c["provides"]}
         self.assertEqual((provided["video.freeze"], provided["video.reverse"]), ("video-editing/freeze", "video-editing/reverse"))
         self.assertEqual((c["operations"]["FREEZE"]["tool"], c["operations"]["REVERSE"]["tool"]), ("ffmpeg-skill/freeze", "ffmpeg-skill/reverse"))
-        self.assertEqual(c["engine"]["tools_optional"], ["ffmpeg-skill/freeze", "ffmpeg-skill/reverse"])
+        self.assertEqual(c["engine"]["tools_optional"], ["ffmpeg-skill/freeze", "ffmpeg-skill/reverse", "ffmpeg-skill/insert"])
         self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.5.0"]))
+
+
+class ImageInsertTests(unittest.TestCase):
+    """ADR-015 (roadmap step 4): IMAGE_INSERT {duration, width?, height?, fps?} on one image source -> ffmpeg-skill insert.py."""
+
+    def setUp(self):
+        self.ws = make_workspace()
+        write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
+        write_fake_media(os.path.join(self.ws, "in", "logo.png"))
+        self.policy = PathPolicy(self.ws)
+
+    def project(self, ops, out="c"):
+        return parse_request(request([{"id": "A", "path": "in/a.mp4"}, {"id": "logo", "path": "in/logo.png", "kind": "image"}], ops,
+                                     [{"id": "o", "operation": out, "path": "o.mp4"}]), self.policy)
+
+    def test_params(self):
+        p = operations.validate_params("IMAGE_INSERT", {"duration": 3}, "op")
+        self.assertEqual((p["duration"].value, p["fps"], "width" in p), (3, Fraction(30), False))   # fps defaults to insert.py's 30, stated
+        p = operations.validate_params("IMAGE_INSERT", {"duration": "00:02", "width": 1920, "height": 1080, "fps": "30000/1001"}, "op")
+        self.assertEqual((p["duration"].value, p["width"], p["height"], p["fps"]), (2, 1920, 1080, Fraction(30000, 1001)))
+        for bad, code in (({}, "INVALID_REQUEST"), ({"duration": 0}, "INVALID_TIME_RANGE"), ({"duration": 601}, "INVALID_TIME_RANGE"),
+                          ({"duration": 1, "width": 641}, "INVALID_REQUEST"), ({"duration": 1, "height": 0}, "INVALID_REQUEST"),
+                          ({"duration": 1, "fps": 0}, "INVALID_REQUEST"), ({"duration": 1, "zoom": "in"}, "INVALID_REQUEST"),
+                          ({"duration": 1, "image": "logo"}, "INVALID_REQUEST"), ({"duration": 1, "filter": "zoompan"}, "INVALID_REQUEST")):
+            with self.assertRaises(EditError, msg=bad) as cm:
+                operations.validate_params("IMAGE_INSERT", bad, "op")
+            self.assertEqual(cm.exception.code, code, bad)
+
+    def test_compile(self):
+        p = operations.validate_params("IMAGE_INSERT", {"duration": 2.5, "width": 640}, "op")
+        step = compile_operation(EditOperation("s", "IMAGE_INSERT", ["logo"], p, encoding={"crf": 20, "preset": "fast"}))
+        self.assertEqual(step.tool, "ffmpeg-skill/insert")
+        self.assertEqual(step.argv_for(["/x/logo.png"], "/x/o.mp4"),
+                         ["/x/logo.png", "-o", "/x/o.mp4", "--duration", "2.500000", "--width", "640", "--fps", "30", "--crf", "20", "--preset", "fast"])
+        self.assertEqual(step.flags()[:2], ["--duration", "--width"])
+
+    def test_graph_slots(self):
+        p = self.project([{"id": "s", "type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 1}},
+                          {"id": "c", "type": "CONCAT", "inputs": ["s", "A", "s"]}])
+        self.assertEqual(p.operations["c"].source_refs, ["logo", "A"])
+        for ops, msg in (([{"id": "c", "type": "IMAGE_INSERT", "input": "A", "params": {"duration": 1}}], "image source"),
+                         ([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}},
+                           {"id": "c", "type": "IMAGE_INSERT", "input": "t", "params": {"duration": 1}}], "not an operation"),
+                         ([{"id": "c", "type": "CONCAT", "inputs": ["logo", "A"]}], "IMAGE_INSERT"),
+                         ([{"id": "c", "type": "IMAGE_INSERT", "inputs": ["logo"], "params": {"duration": 1}}], "exactly one")):
+            with self.assertRaises(EditError, msg=ops) as cm:
+                self.project(ops)
+            self.assertIn(msg, cm.exception.message)
+
+    def test_timeline_is_a_held_still(self):
+        p = self.project([{"id": "s", "type": "IMAGE_INSERT", "input": "logo", "params": {"duration": {"rational": "3/2"}}},
+                          {"id": "c", "type": "CONCAT", "inputs": ["s", "A"], "params": {"transition": {"type": "fade", "duration": 0.5}}}])
+        clips = build_timelines(p, {"A": Time.parse(6)})
+        self.assertEqual((clips["s"].duration.value, clips["c"].duration.value), (Fraction(3, 2), 7))
+        segs = [x.to_dict() for x in clips["c"].segments]
+        self.assertEqual([(x["source"], x["source_range"]["end"]["rational"], x["timeline_range"]["start"]["rational"], x["timeline_range"]["end"]["rational"], x["speed"])
+                          for x in segs], [("logo", "0/1", "0/1", "3/2", "0/1"), ("A", "6/1", "1/1", "7/1", "1/1")])
+
+    def test_contract(self):
+        c = contract.skill_contract()
+        self.assertEqual(c["operations"]["IMAGE_INSERT"]["tool"], "ffmpeg-skill/insert")
+        self.assertIn({"id": "video.image_insert", "lifecycle": "EXPERIMENTAL", "tool_id": "video-editing/image_insert"}, c["provides"])
+        self.assertNotIn("IMAGE_INSERT", [u["type"] for u in c["unsupported"]])
+        self.assertEqual(c["media_compatibility"]["IMAGE_INSERT"]["requires"], {"video": False, "audio": False, "image": True})
+        self.assertIn("ffmpeg-skill/insert", c["engine"]["tools_optional"])
+        self.assertEqual(c["engine"]["version_range"], ">=0.10.0")   # gated on the tool, not by raising the floor
+        self.assertFalse(any("IMAGE_INSERT" in n for n in c["versioning"]["next"]["0.5.0"]))
 
 
 class TimelineTests(unittest.TestCase):
@@ -607,8 +674,8 @@ class MediaAndValidationTests(ExecutorHarness):
     def test_media_table_matches_operations_and_contract(self):
         self.assertEqual(set(operations.MEDIA), set(operations.OPERATIONS))
         for t, m in operations.MEDIA.items():
-            self.assertTrue(m["requires"]["video"], t)
-            self.assertEqual(m["requires"]["image"], t == "OVERLAY", t)
+            self.assertEqual(m["requires"]["video"], t != "IMAGE_INSERT", t)   # IMAGE_INSERT's only input is a still (ADR-015)
+            self.assertEqual(m["requires"]["image"], t in ("OVERLAY", "IMAGE_INSERT"), t)
             self.assertFalse(m["requires"]["audio"], "no operation needs audio (ffmpeg-skill >=0.10.0 bounds OVERLAY's looped-image composite with -t, not audio-dependent -shortest)")
         c = contract.skill_contract()
         self.assertEqual(c["media_compatibility"], operations.media_compatibility())
@@ -776,7 +843,7 @@ class DoctorAvailabilityTests(unittest.TestCase):
         from video_editing_skill.doctor import operation_availability
         from video_editing_skill.ffmpeg_skill import FfmpegSkill
         full = {"ffmpeg": "6", "ffprobe": "6", "ok": True, "missing": [], "available": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade"]}
-        skill = FfmpegSkill("/x", "0.10.0", ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse"])
+        skill = FfmpegSkill("/x", "0.10.0", ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert"])
         rows = {r["type"]: r for r in operation_availability(skill, full)}
         self.assertEqual(sorted(rows), sorted(operations.OPERATIONS))
         self.assertTrue(all(r["status"] == "AVAILABLE" and r["missing"] == [] for r in rows.values()), rows)
@@ -789,10 +856,10 @@ class DoctorAvailabilityTests(unittest.TestCase):
         self.assertEqual(rows["OVERLAY"]["missing"], ["tool:ffmpeg-skill/overlay"])
         # no version ceiling (ADR-013): a newer release is judged by what it offers; only the 0.10.0 floor is a version check
         for newer in ("1.2.0", "2.10.3"):
-            rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", newer, ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse"]), full)}
+            rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", newer, ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert"]), full)}
             self.assertTrue(all(r["status"] == "AVAILABLE" for r in rows.values()), rows)
         # a checkout without the optional tools (ffmpeg-skill 0.11.0 has no freeze.py): only the types they execute are MISSING
-        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.11.0", ["probe", "cut", "join", "fit", "overlay", "reverse"]), full)}
+        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.11.0", ["probe", "cut", "join", "fit", "overlay", "reverse", "insert"]), full)}
         self.assertEqual({t: r["missing"] for t, r in rows.items() if r["status"] != "AVAILABLE"}, {"FREEZE": ["tool:ffmpeg-skill/freeze"]})
         rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.9.1", ["probe", "cut", "join", "fit", "overlay"]), full)}
         self.assertTrue(all(r["status"] == "MISSING" for r in rows.values()))
@@ -941,7 +1008,10 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         for k in ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "capability_names", "schemas",
                   "response_shape", "request_shape", "formats"):
             self.assertEqual(c[k], golden[k], k)
-        self.assertEqual(c["version"], "0.4.0")
+        # `version` moves with every release (the release workflow bumps it and regenerates the golden copy); the shape this
+        # test guards is versioned by contract_version
+        self.assertEqual(c["version"], golden["version"])
+        self.assertEqual(c["contract_version"], "4.0")
         for t in c["tools"]:
             g = next(x for x in golden["tools"] if x["tool_id"] == t["tool_id"])
             for f in ("parameters", "required_capabilities", "inputs", "result_keys", "executed_by", "deterministic", "produces_output", "writes_media", "kind"):

@@ -6,7 +6,7 @@ installed checkout, never inferred from its version number:
   - --crf (0.x, 1.x) vs --quality (1.10+; the only spelling from 2.0)
   - probe's `hdr` (wide meaning before 2.0) vs `bt2020_or_hdr` (the same wide meaning from 2.0)
   - fit.py --rotate / --flip (absent from 0.10.0)
-  - freeze.py (absent before 0.16.0) and reverse.py (absent from 0.10.0): optional tools (ADR-014)
+  - freeze.py (absent before 0.16.0), reverse.py and insert.py (absent from 0.10.0): optional tools (ADR-014, ADR-015)
 Each layout is a fake checkout (fake_engine.py `layout=`) whose tools reject a flag they do not list, so a wrong
 spelling fails here exactly as it would against the real release.
 """
@@ -151,15 +151,44 @@ class Engine2xTests(LayoutCase):
         self.assertEqual(res["error"]["code"], "INVALID_TIME_RANGE")
         self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
 
+    def test_image_insert_feeds_concat(self):
+        """Roadmap step 4: a still becomes a silent clip (insert.py) that CONCAT joins with footage; the frame follows insert.py's
+        rule from the image (120x40 here), the clip's duration is params.duration, and CONCAT keeps the footage's audio."""
+        rc, res = self.run_([{"id": "s", "type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 1.5, "height": 360}},
+                             {"id": "c", "type": "CONCAT", "inputs": ["s", "A"], "params": {"width": 640, "height": 360}}], encoding={"crf": 22})
+        self.assertTrue(res["ok"], res)
+        ops = {o["operation"]: o for o in res["execution"]["operations"]}
+        s = ops["s"]
+        self.assertEqual((s["tool"], s["capability"], s["status"]), ("ffmpeg-skill/insert", "video.image_insert", "completed"))
+        self.assertEqual(s["parameters"], {"duration": "1.500000", "height": 360, "fps": "30"})
+        self.assertEqual((s["normalized"]["target_frame"], s["normalized"]["audio"], s["normalized"]["target_fps"]), ([1080, 360], False, 30.0))
+        self.assertEqual(s["normalized"]["target_duration"]["rational"], "3/2")
+        self.assertEqual(s["inputs"], [{"ref": "logo", "kind": "source", "sha256": s["inputs"][0]["sha256"]}])
+        self.assertEqual(ops["c"]["inputs"][0]["operation_id"], s["operation_id"])
+        self.assertTrue(ops["c"]["normalized"]["audio"])
+        h = self.delivered_header()
+        self.assertEqual((h["tool"], h["duration"], h["noaudio"]), ("join", 3.5, False))
+        seg = res["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
+        self.assertEqual([(x["source"], x["speed"]) for x in seg], [("logo", "0/1"), ("A", "1/1")])
+
+    def test_image_insert_takes_only_an_image_source(self):
+        for op, why in (({"id": "s", "type": "IMAGE_INSERT", "input": "A", "params": {"duration": 1}}, "kind_mismatch"),):
+            rc, res = self.run_([op])
+            self.assertFalse(res["ok"])
+            self.assertEqual((res["error"]["code"], res["error"]["details"]["reason"]), ("DEPENDENCY_ERROR", why))
+        rc, res = self.run_([{"id": "c", "type": "CONCAT", "inputs": ["logo", "A"]}])
+        self.assertEqual(res["error"]["code"], "DEPENDENCY_ERROR")
+        self.assertIn("IMAGE_INSERT", res["error"]["message"])
+
     def test_unsupported_engine_tools_are_detected(self):
         """Roadmap step 1: whether the checkout ships the engine tool of an unsupported type is detected, not declared."""
         rc, rep, err = cli(["doctor", "--json"], env=self.env)
-        self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"CROP": "MISSING", "IMAGE_INSERT": "MISSING", "POSITION": None})
+        self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"CROP": "MISSING", "POSITION": None})
         root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-crop-")
         try:
-            make_fake_skill(root, version=self.version, layout=self.layout, extra=("crop", "insert"))
+            make_fake_skill(root, version=self.version, layout=self.layout, extra=("crop",))
             rc, rep, err = cli(["doctor", "--json"], env={"VIDEO_EDITING_FFMPEG_SKILL_DIR": root})
-            self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"CROP": "AVAILABLE", "IMAGE_INSERT": "AVAILABLE", "POSITION": None})
+            self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"CROP": "AVAILABLE", "POSITION": None})
             self.assertTrue(all(u["status"] == "NOT_IMPLEMENTED" for u in rep["unsupported"]))
         finally:
             shutil.rmtree(root, ignore_errors=True)
@@ -222,6 +251,14 @@ class Engine0xTests(LayoutCase):
         self.assertTrue(res["ok"], res)
         self.assertIn("--crf", self.delivered_header()["args"])
 
+    def test_image_insert_runs_with_crf(self):
+        """0.11.0 already ships insert.py; the encoding profile reaches it as --crf there."""
+        rc, res = self.run_([{"id": "s", "type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 1, "width": 640, "height": 360}}], encoding={"crf": 21})
+        self.assertTrue(res["ok"], res)
+        h = self.delivered_header()
+        self.assertEqual((h["tool"], h["width"], h["height"], h["noaudio"]), ("insert", 640, 360, True))
+        self.assertIn("--crf", h["args"])
+
 
 class Engine010Tests(LayoutCase):
     """0.10.0's fit.py has no --rotate / --flip: ROTATE is MISSING in doctor and refused before anything runs; the
@@ -244,12 +281,21 @@ class Engine010Tests(LayoutCase):
         rows = {r["type"]: r for r in rep["operations"]}
         self.assertEqual(rows["ROTATE"]["status"], "MISSING")
         self.assertEqual(rows["ROTATE"]["missing"], ["flag:ffmpeg-skill/fit --rotate", "flag:ffmpeg-skill/fit --flip"])
-        # 0.10.0 ships neither freeze.py nor reverse.py: those two types are MISSING by the absent tool, a note, not a problem
-        self.assertEqual((rows["FREEZE"]["missing"], rows["REVERSE"]["missing"]), (["tool:ffmpeg-skill/freeze"], ["tool:ffmpeg-skill/reverse"]))
-        self.assertEqual(sorted(t for t, r in rows.items() if r["status"] == "AVAILABLE"), sorted(set(OPERATION_FLAGS) - {"ROTATE", "FREEZE", "REVERSE"}))
+        # 0.10.0 ships none of freeze.py / reverse.py / insert.py: those types are MISSING by the absent tool, a note, not a problem
+        self.assertEqual((rows["FREEZE"]["missing"], rows["REVERSE"]["missing"], rows["IMAGE_INSERT"]["missing"]),
+                         (["tool:ffmpeg-skill/freeze"], ["tool:ffmpeg-skill/reverse"], ["tool:ffmpeg-skill/insert"]))
+        self.assertEqual(sorted(t for t, r in rows.items() if r["status"] == "AVAILABLE"), sorted(set(OPERATION_FLAGS) - {"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT"}))
         self.assertTrue(any("ROTATE" in p for p in rep["problems"]))
-        self.assertFalse(any("FREEZE" in p or "REVERSE" in p for p in rep["problems"]), rep["problems"])
-        self.assertEqual(sorted(n.split()[1] for n in rep["notes"]), ["FREEZE", "REVERSE"])
+        self.assertFalse(any("FREEZE" in p or "REVERSE" in p or "IMAGE_INSERT" in p for p in rep["problems"]), rep["problems"])
+        self.assertEqual(sorted(n.split()[1] for n in rep["notes"]), ["FREEZE", "IMAGE_INSERT", "REVERSE"])
+
+    def test_image_insert_refused_up_front(self):
+        """No insert.py in this checkout: IMAGE_INSERT is refused before anything runs (the floor is not raised for it)."""
+        rc, res = self.run_([{"id": "s", "type": "IMAGE_INSERT", "input": "logo", "params": {"duration": 1}},
+                             {"id": "c", "type": "CONCAT", "inputs": ["s", "A"]}])
+        self.assertFalse(res["ok"])
+        self.assertEqual((res["error"]["code"], res["error"]["details"]["missing"], res["error"]["retryable"]), ("TOOL_ERROR", ["tool:ffmpeg-skill/insert"], False))
+        self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
 
     def test_trim_still_runs(self):
         rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}])

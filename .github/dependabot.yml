@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Actions pinned in .github/workflows/*.yml (checkout, setup-python, release-drafter, codeql-action,
+  # pypa/gh-action-pypi-publish, ...). This ecosystem always applies, independent of the project's own
+  # package ecosystem.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # This repo's own ecosystem (pyproject.toml, setuptools backend). `dependencies = []` today
+  # (stdlib only, see README.md), so there is nothing to bump yet; kept enabled so it starts
+  # working the moment a real dependency is ever added, with no further setup.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"

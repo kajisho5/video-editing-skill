@@ -22,6 +22,7 @@ ALLOWED_FLAGS: Dict[str, tuple] = {
     "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
     "freeze": ("at", "hold", "mode") + ENCODING_FLAGS,
     "reverse": ENCODING_FLAGS,
+    "insert": ("duration", "width", "height", "fps") + ENCODING_FLAGS,
     "probe": (),
 }
 
@@ -32,7 +33,7 @@ OPERATION_FLAGS: Dict[str, tuple] = {
     "TRIM": ("--start", "--end"), "CUT": ("--segments",), "CONCAT": ("--transition", "--duration", "--fit", "--pad-color"),
     "SPEED": ("--duration", "--method", "--max-speed"), "FIT": ("--aspect", "--fit", "--pad-color"), "FILL": ("--aspect", "--fit"),
     "RESIZE": ("--width",), "ROTATE": ("--rotate", "--flip"), "OVERLAY": ("--image", "--position", "--margin"),
-    "FREEZE": ("--hold", "--mode"), "REVERSE": (),
+    "FREEZE": ("--hold", "--mode"), "REVERSE": (), "IMAGE_INSERT": ("--duration", "--fps"),
 }
 
 
@@ -174,6 +175,15 @@ def _compile(op: EditOperation) -> Step:
         return Step(op, "ffmpeg-skill/freeze", args, video_inputs)
     if op.type == "REVERSE":
         return Step(op, "ffmpeg-skill/reverse", {}, video_inputs)   # audio is reversed with the picture (no --no-audio)
+    if op.type == "IMAGE_INSERT":
+        # insert.py: the still is the positional input; --fps is always passed (a still has no rate of its own), --width /
+        # --height only when asked (insert.py's rule fills the other from the image aspect). No --zoom / --pan (ADR-015).
+        args = {"duration": p["duration"].tool_arg()}
+        for k in ("width", "height"):
+            if k in p:
+                args[k] = p[k]
+        args["fps"] = _fps_text(p["fps"])
+        return Step(op, "ffmpeg-skill/insert", args, list(op.inputs))
     if op.type == "OVERLAY":
         pos = p["position"]
         args = {"position": pos if isinstance(pos, str) else f"{pos['x']},{pos['y']}", "margin": p["margin"]}

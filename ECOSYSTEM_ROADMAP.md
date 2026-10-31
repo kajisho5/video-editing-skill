@@ -30,11 +30,11 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay. Not 
   - Done when: integration test; provides gains video.freeze
 - [x] **3. REVERSE via ffmpeg-skill/reverse** — [#20](https://github.com/kajisho5/video-editing-skill/pull/20)
   - Done when: integration test
-- [ ] **4. IMAGE_INSERT via ffmpeg-skill/insert** — a still can join CONCAT
+- [x] **4. IMAGE_INSERT via ffmpeg-skill/insert** — [#21](https://github.com/kajisho5/video-editing-skill/pull/21) — a still can join CONCAT
   - Done when: integration test
 - [ ] **5. CROP: implement or leave to the agent** — ADR either way (the agent already calls ffmpeg-skill/crop)
   - Done when: no duplicate ownership
-- [ ] **6. CHANGELOG, release workflow, dependabot** — align with sibling repos
+- [x] **6. CHANGELOG, release workflow, dependabot** — [#21](https://github.com/kajisho5/video-editing-skill/pull/21) — align with sibling repos
   - Done when: a tag produces a release
 
 ## Boundaries

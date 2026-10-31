@@ -5,7 +5,7 @@
   "package": "video-editing-skill",
   "version": "0.4.0",
   "contract_version": "4.0",
-  "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, rotate/flip, image overlay, freeze frame, reverse) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing decisions, no LLM, no commands.",
+  "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, rotate/flip, image overlay, freeze frame, reverse, still image to clip) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing decisions, no LLM, no commands.",
   "role": "execution",
   "repository": "https://github.com/kajisho5/video-editing-skill",
   "not_provided": [
@@ -56,6 +56,13 @@
         "FREEZE"
       ],
       "tool": "ffmpeg-skill/freeze"
+    },
+    {
+      "capability": "video.image_insert",
+      "operations": [
+        "IMAGE_INSERT"
+      ],
+      "tool": "ffmpeg-skill/insert"
     },
     {
       "capability": "video.overlay",
@@ -121,6 +128,7 @@
     "video.fill",
     "video.fit",
     "video.freeze",
+    "video.image_insert",
     "video.overlay",
     "video.reorder",
     "video.resize",
@@ -137,13 +145,6 @@
       "status": "NOT_IMPLEMENTED",
       "reason": "not mapped to a typed operation here: whether this Skill or its caller owns pixel-rectangle crops is not decided yet (ADR-014); use FILL for crops to an aspect ratio",
       "engine_tool": "ffmpeg-skill/crop"
-    },
-    {
-      "type": "IMAGE_INSERT",
-      "capability": "video.image_insert",
-      "status": "NOT_IMPLEMENTED",
-      "reason": "not mapped to a typed operation here yet: a still as a CONCAT input needs an image-fed video-producing operation in the graph (ADR-014)",
-      "engine_tool": "ffmpeg-skill/insert"
     },
     {
       "type": "POSITION",
@@ -403,6 +404,56 @@
         "provenance"
       ],
       "executed_by": "ffmpeg-skill/freeze",
+      "kind": "transform"
+    },
+    {
+      "tool_id": "video-editing/image_insert",
+      "skill_id": "video-editing",
+      "version": "0.4.0",
+      "operation_type": "IMAGE_INSERT",
+      "capability": "video.image_insert",
+      "description": "turn a still image (title card, end slate) into a silent video clip of a set duration that CONCAT and every other type can take",
+      "required_capabilities": [
+        "ffmpeg",
+        "ffprobe",
+        "encoder:libx264"
+      ],
+      "inputs": [
+        "input"
+      ],
+      "input_arity": "one",
+      "parameters": {
+        "duration": "time 0.01..600 s: the clip's length",
+        "width": "even int px (optional; alone: height follows the image aspect)",
+        "height": "even int px (optional; alone: width follows the image aspect; both: exact frame, the image covers it, centre-cropped)",
+        "fps": "1..240 (optional, default 30)"
+      },
+      "media": {
+        "inputs": "one image source (png / jpg), never a video or an operation",
+        "requires": {
+          "video": false,
+          "audio": false,
+          "image": true
+        },
+        "output": {
+          "frame_size": "params.width x params.height; only one given -> the other from the image aspect; none -> the image size (each even; the image is scaled to cover the frame and centre-cropped, never stretched)",
+          "audio": "none (a silent clip: CONCAT inserts silence for it next to inputs with audio)",
+          "fps": "params.fps (default 30)",
+          "duration": "params.duration"
+        }
+      },
+      "produces_output": true,
+      "writes_media": true,
+      "deterministic": true,
+      "idempotency_hint": "content_equivalent",
+      "result_keys": [
+        "operation_id",
+        "output",
+        "probe",
+        "commands",
+        "provenance"
+      ],
+      "executed_by": "ffmpeg-skill/insert",
       "kind": "transform"
     },
     {
@@ -754,6 +805,17 @@
         "at": "time, < input duration (optional): hold the frame shown at `at` and play the rest after the hold; omitted: hold the last frame at the end"
       }
     },
+    "IMAGE_INSERT": {
+      "capability": "video.image_insert",
+      "tool": "ffmpeg-skill/insert",
+      "arity": "one",
+      "parameters": {
+        "duration": "time 0.01..600 s: the clip's length",
+        "width": "even int px (optional; alone: height follows the image aspect)",
+        "height": "even int px (optional; alone: width follows the image aspect; both: exact frame, the image covers it, centre-cropped)",
+        "fps": "1..240 (optional, default 30)"
+      }
+    },
     "OVERLAY": {
       "capability": "video.overlay",
       "tool": "ffmpeg-skill/overlay",
@@ -823,11 +885,13 @@
       "ffmpeg-skill/fit",
       "ffmpeg-skill/overlay",
       "ffmpeg-skill/freeze",
-      "ffmpeg-skill/reverse"
+      "ffmpeg-skill/reverse",
+      "ffmpeg-skill/insert"
     ],
     "tools_optional": [
       "ffmpeg-skill/freeze",
-      "ffmpeg-skill/reverse"
+      "ffmpeg-skill/reverse",
+      "ffmpeg-skill/insert"
     ],
     "location": "VIDEO_EDITING_FFMPEG_SKILL_DIR | --ffmpeg-skill-dir | ~/.claude/skills/ffmpeg-skill | ./vendor/ffmpeg-skill | ../ffmpeg-skill",
     "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout",
@@ -1072,6 +1136,11 @@
       "tool_id": "video-editing/freeze"
     },
     {
+      "id": "video.image_insert",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/image_insert"
+    },
+    {
       "id": "video.overlay",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "video-editing/overlay"
@@ -1194,6 +1263,25 @@
         "params.at at or beyond the input duration",
         "input frame with an odd width or height (odd_frame)",
         "an ffmpeg-skill checkout without freeze.py (TOOL_ERROR)"
+      ]
+    },
+    "IMAGE_INSERT": {
+      "inputs": "one image source (png / jpg), never a video or an operation",
+      "requires": {
+        "video": false,
+        "audio": false,
+        "image": true
+      },
+      "output": {
+        "frame_size": "params.width x params.height; only one given -> the other from the image aspect; none -> the image size (each even; the image is scaled to cover the frame and centre-cropped, never stretched)",
+        "audio": "none (a silent clip: CONCAT inserts silence for it next to inputs with audio)",
+        "fps": "params.fps (default 30)",
+        "duration": "params.duration"
+      },
+      "refused_before_execution": [
+        "input that is not an image source (DEPENDENCY_ERROR kind_mismatch)",
+        "image that does not decode",
+        "an ffmpeg-skill checkout without insert.py (TOOL_ERROR)"
       ]
     },
     "OVERLAY": {
@@ -1435,7 +1523,6 @@
       "0.5.0": [
         "RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag (docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
         "CROP (pixel rectangle) via ffmpeg-skill/crop, or left to the caller -- ownership to be decided (ADR-014)",
-        "IMAGE_INSERT (still -> timed clip that CONCAT can take) via ffmpeg-skill/insert (ADR-014)",
         "OVERLAY video-layer + chroma-key params (ffmpeg-skill overlay.py --video/--chromakey), per ADR-002's own \"extend OVERLAY rather than add a type\" prescription -- flagged, not decided or scheduled here (see kajisho5/video-editing-skill#11 item 2)",
         "stabilize / sequence / background: capability ownership (here, elsewhere, or nowhere) not yet decided (see kajisho5/video-editing-skill#11 item 3)",
         "POSITION: not planned as a type (see docs/decisions.md ADR-002)"
@@ -1503,6 +1590,7 @@
       "a source whose rotation metadata is ±90 / 270 is measured with width and height swapped (as the engine does)",
       "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)",
       "CONCAT (ffmpeg-skill join.py): params.width x params.height; only one given -> the other from the first input's aspect (round); none -> the first input's frame; then floored to even",
+      "IMAGE_INSERT (ffmpeg-skill insert.py): params.width x params.height; only one given -> the other = even(given x the image aspect); none -> even(image width) x even(image height); the still is scaled to cover that frame and centre-cropped, never stretched",
       "TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE keep the input frame -- losslessly, no filter maths beyond a turn or a mirror for ROTATE, whose target frame is the source's width x height, swapped for a 90 / 270 degrees turn; an input with an odd width or height is refused before execution (INVALID_INPUT odd_frame) because the engine's encoders need even sizes",
       "no operation stretches (distorts) the picture; anamorphic output is not provided",
       "the normalized target frame is reported in plan.steps[].normalized and execution.operations[].normalized and verified on the output exactly"
@@ -1513,23 +1601,24 @@
       "source with no video stream (audio-only files, corrupt containers): INVALID_INPUT no_video_stream",
       "video source without a duration (a still image or a broken container declared as video): INVALID_INPUT no_duration",
       "image source that does not decode to a frame: INVALID_INPUT image_undecodable",
-      "TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE on an input whose frame has an odd width or height: INVALID_INPUT odd_frame (the encoder needs even sizes; RESIZE / FIT / FILL / CONCAT normalize to even)",
+      "TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE on an input whose frame has an odd width or height: INVALID_INPUT odd_frame (the encoder needs even sizes; RESIZE / FIT / FILL / CONCAT / IMAGE_INSERT normalize to even)",
       "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
       "unsupported input extension / output container: UNSUPPORTED_FORMAT",
       "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
-      "engine tool / encoder / filter missing: TOOL_ERROR (not retryable); FREEZE / REVERSE need ffmpeg-skill/freeze / reverse, detected per checkout"
+      "engine tool / encoder / filter missing: TOOL_ERROR (not retryable); FREEZE / REVERSE / IMAGE_INSERT need ffmpeg-skill/freeze / reverse / insert, detected per checkout"
     ],
     "normalized_by_skill": [
       "times in any accepted form -> exact rational seconds",
       "target frame of RESIZE / FIT / FILL / CONCAT (frame_semantics)",
-      "target duration of SPEED (input duration / factor) and FREEZE (input duration + hold)",
+      "target duration of SPEED (input duration / factor), FREEZE (input duration + hold) and IMAGE_INSERT (params.duration)",
       "encoding profile -> typed engine flags (crf, preset)",
       "audio expectation per operation (kept / added / none)"
     ],
     "delegated_to_engine": [
       "scaling, padding, cropping filters and their exact pixel maths",
       "constant-frame-rate conform of variable-frame-rate sources (a warning is reported)",
-      "resampling, silence insertion and stereo layout in CONCAT",
+      "resampling, silence insertion and stereo layout in CONCAT (an IMAGE_INSERT clip has no audio)",
+      "scaling / centre-cropping a still to its IMAGE_INSERT frame",
       "silence under a FREEZE hold; reversing the audio with the picture in REVERSE",
       "HDR sources encoded HEVC 10-bit (the output codec is hevc; a warning is reported)",
       "audio codec / bitrate / sample rate (AAC 192 kb/s)",
@@ -1546,7 +1635,7 @@
       "variable_frame_rate": "allowed; conformed to constant fps by the engine (warning)",
       "hdr": "allowed alone (output hevc, warning); not mixed with SDR in CONCAT",
       "rotation_metadata": "honoured (a display matrix): the frame is measured as displayed; a legacy `rotate` tag is ignored by ffmpeg >= 5 and therefore by the probe",
-      "odd_frame": "RESIZE / FIT / FILL / CONCAT normalize to even sizes; TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE refuse it up front (odd_frame)"
+      "odd_frame": "RESIZE / FIT / FILL / CONCAT / IMAGE_INSERT normalize to even sizes; TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE refuse it up front (odd_frame)"
     }
   }
 }
