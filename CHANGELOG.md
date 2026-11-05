@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.5 - 2026-11-05
+
+- docs(roadmap): bring status and wiring up to date (2026-11-05 review) (#27) (f27c0be)
+
 ## v0.4.4 - 2026-11-05
 
 - Bump actions/setup-python from 5 to 7 (#24) (52c5fb0)
