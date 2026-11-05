@@ -393,6 +393,10 @@ class VersionPolicyTests(unittest.TestCase):
             self.assertTrue(FfmpegSkill("/x", v, []).fit_bounds_by_source(), v)
         self.assertNotIn("<", ffmpeg_skill_version_range())
 
+    def test_freeze_held_frame_by_version(self):
+        for v, at_t in (("2.24.1", False), ("3.0.0", False), ("3.1.5", False), ("3.1.6", True), ("4.0.0", True), ("unknown", True)):
+            self.assertEqual(FfmpegSkill("/x", v, []).freeze_holds_frame_at_t(), at_t, v)
+
     def test_keep_hevc_default_by_version_when_flags_are_undetected(self):
         for v, keeps in (("2.24.1", False), ("3.0.0", True), ("3.4.2", True), ("unknown", False)):
             self.assertEqual(FfmpegSkill("/nonexistent", v, ["cut"]).cut_keeps_hevc_by_default(), keeps, v)
