@@ -38,6 +38,22 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Done when: a tag produces a release
 - [x] **7. ffmpeg-skill 3.0.0** — [#26](https://github.com/kajisho5/video-editing-skill/pull/26) — cut.py's new defaults checked against TRIM / CUT; ADR-017
   - Done when: the real-media suite passes against 3.0.0 and 2.x in CI
+- [ ] **8. Segment cache and partial re-render** — CUT / CONCAT keep a cache of encoded segments keyed by the source hash, the range and the encode settings; after a change only the segments that changed are encoded and the rest are joined by stream copy. Running the same request twice writes nothing new. Field review 2026-11-05 (Velisa ROADMAP, third round)
+  - Why: fixing one cut in a long programme takes minutes, not a full re-encode（なぜ要るか：長尺の1カットだけ直すとき全体を書き出し直さない）
+  - Done when: a 1-hour fixture with one changed cut re-encodes only that segment (counted), and the result equals a full render (framemd5)
+- [ ] **9. Keyframe-aware long-form cuts** — TRIM / CUT on 2-8 h sources choose a stream copy when the in and out fall on keyframes, and re-encode only the GOPs at the boundaries otherwise (smart render), reported per cut
+  - Why: trimming the head and tail of an 8-hour recording needs no re-encode（なぜ要るか：長尺の頭と尻を落とすだけなら再エンコード不要）
+  - Needs: Velisa ROADMAP, Proposals to ffmpeg-skill 1 (cut-point candidates); until then whole re-encode as today
+  - Done when: a fixture cut on keyframes is byte-for-byte a stream copy; one cut between keyframes re-encodes at most two GOPs
+- [ ] **10. Punch-in on the speaker** — PUNCH_IN: a zoom to a stated scale centred on detection-skill's face box for a range (a hard cut in, or a short ease), kept inside the frame; used at a share of jump cuts
+  - Why: the common punch-in on the speaker follows the face automatically（なぜ要るか：話者に寄る演出を顔の位置に合わせて入れられる）
+  - Done when: a fixture with a face left of centre keeps the face inside the zoomed frame for the whole range
+- [ ] **11. One edit, several aspects** — one cut list rendered as 16:9, 9:16 and 1:1 in one request, each shot cropped with one window per shot from detection-skill's subject path (CROP), the audio shared
+  - Why: the landscape programme and the vertical shorts ship from one edit（なぜ要るか：横の本編と縦型を同じ編集から同時に納品できる）
+  - Done when: a three-shot fixture gives three outputs of equal duration, each shot's window inside the source
+- [ ] **12. AI-generated clips in an edit** — a generated clip is normalised before it joins (fps, size, SAR, colour tags, a silent track when it has none), and provenance marks it `AI_GENERATED` with its generator and licence as declared by the caller
+  - Why: generated clips join an edit without format mismatches or a missing AI label（なぜ要るか：生成映像を混ぜても規格不一致と表記漏れが起きない）
+  - Done when: a 24 fps, untagged, silent fixture joins a 29.97 fps edit without a duration drift and carries the mark
 
 ## Boundaries
 
