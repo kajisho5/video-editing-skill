@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.4 - 2026-11-05
+
+- Bump actions/setup-python from 5 to 7 (#24) (52c5fb0)
+
 ## v0.4.3 - 2026-11-05
 
 - Bump actions/checkout from 4 to 7 (#23) (8795b27)
