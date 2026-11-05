@@ -20,7 +20,7 @@ v0.4.4, Python 3.9+ stdlib. TRIM, CUT, CONCAT (+transition), SPEED, FIT, FILL, R
 
 ## Wiring
 
-Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim and rotate (video-production-agent#80), image_insert (#86) and crop (#94); FREEZE / REVERSE are lowered but not planned (agent step 17). Pinned at 0.4.2. Delegates to ffmpeg-skill probe, cut, join, fit, overlay.
+Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim and rotate (video-production-agent#80), image_insert (video-production-agent#86) and crop (video-production-agent#94); FREEZE / REVERSE are lowered but not planned (agent step 17). Pinned at 0.4.2. Delegates to ffmpeg-skill probe, cut, join, fit, overlay.
 
 ## Steps
 
