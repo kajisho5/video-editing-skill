@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.3 - 2026-11-05
+
+- Bump actions/checkout from 4 to 7 (#23) (8795b27)
+
 ## v0.4.2 - 2026-10-31
 
 - Support ffmpeg-skill 3.0.0: keep SDR HEVC TRIM/CUT re-encodes on H.264 (#26) (5f6e88d)
