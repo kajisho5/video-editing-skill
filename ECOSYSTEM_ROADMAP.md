@@ -54,6 +54,10 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
 - [ ] **12. AI-generated clips in an edit** — a generated clip is normalised before it joins (fps, size, SAR, colour tags, a silent track when it has none), and provenance marks it `AI_GENERATED` with its generator and licence as declared by the caller
   - Why: generated clips join an edit without format mismatches or a missing AI label（なぜ要るか：生成映像を混ぜても規格不一致と表記漏れが起きない）
   - Done when: a 24 fps, untagged, silent fixture joins a 29.97 fps edit without a duration drift and carries the mark
+- [ ] **13. Stinger transition** — CONCAT gains `transition: stinger`: a stinger file with alpha (hyperframes-skill, remotion-ffmpeg-skill or blender-skill output, with its `stinger.json`) is laid over the join, and the outgoing clip switches to the incoming one at the stinger's cut point, the frame where the graphic covers the whole picture; the stinger's audio is mixed in. The timeline reports the cut at that frame. A stinger without a stated cut point, or that does not cover the frame there, is refused
+  - Why: logo wipes and graphic transitions between scenes are common in event and YouTube edits, and the switch must happen under full cover（なぜ要るか：スティンガーを挟み、画面が完全に覆われた瞬間に前後のクリップを切り替えられる）
+  - Needs: a stinger with a cut point (hyperframes-skill stinger templates, or any alpha file with its cut point given)
+  - Done when: two clips joined with a 1.2 s stinger cut at 0.5 s switch at exactly that frame (framemd5 around the cut), and qc-skill's stinger cut-point check passes on the result
 
 ## Boundaries
 
