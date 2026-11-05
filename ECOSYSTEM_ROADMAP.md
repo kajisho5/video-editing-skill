@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-v0.4.0, Python 3.9+ stdlib. TRIM, CUT, CONCAT (+transition), SPEED, FIT, FILL, RESIZE, OVERLAY, ROTATE. 171 tests, CI on 3 OSes x py3.9/3.11 against ffmpeg-skill pinned + main. Best OS-schema fit of all skills (contract_version 4.0, dependencies declared).
+v0.4.4, Python 3.9+ stdlib. TRIM, CUT, CONCAT (+transition), SPEED, FIT, FILL, RESIZE, OVERLAY, ROTATE, FREEZE, REVERSE, IMAGE_INSERT, CROP. 171 tests, CI on 3 OSes x py3.9/3.11 against ffmpeg-skill pinned + main. Best OS-schema fit of all skills (contract_version 4.0, dependencies declared).
 
 ## What this repository owns
 
@@ -20,7 +20,7 @@ v0.4.0, Python 3.9+ stdlib. TRIM, CUT, CONCAT (+transition), SPEED, FIT, FILL, R
 
 ## Wiring
 
-Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay. Not wired: trim (declared phase 2), rotate. Delegates to ffmpeg-skill probe, cut, join, fit, overlay.
+Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim and rotate (video-production-agent#80), image_insert (video-production-agent#86) and crop (video-production-agent#94); FREEZE / REVERSE are lowered but not planned (agent step 17). Pinned at 0.4.2. Delegates to ffmpeg-skill probe, cut, join, fit, overlay.
 
 ## Steps
 
@@ -44,4 +44,4 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay. Not 
 Still-image overlay also exists in motion-graphics `image_overlay`; ecosystem.json gives it to video-editing.
 
 ---
-Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (42 tools, treated as complete). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).
+Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (3.x, 42 tools, contract_version 2.0; treated as complete, proposals go to Velisa's ROADMAP). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).
