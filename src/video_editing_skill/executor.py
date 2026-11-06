@@ -23,7 +23,7 @@ from .project import EditProject
 from .timebase import Time
 from .timeline import Clip, build_timelines
 
-DURATION_TOLERANCE = {"frame": 0.35, "keyframe": 1.5, "default": 0.35}
+DURATION_TOLERANCE = {"frame": 0.35, "keyframe": 1.5, "auto": 0.35, "default": 0.35}
 FPS_TOLERANCE = 0.02
 ASPECT_TOLERANCE_PX = 2      # |height - width * ah / aw| for FIT / FILL without an explicit width
 
@@ -249,7 +249,7 @@ class Executor:
 
     @staticmethod
     def _reencodes(op) -> bool:
-        return not (op.type in ("TRIM", "CUT") and op.params.get("precision") == "keyframe")
+        return not (op.type in ("TRIM", "CUT") and op.params.get("precision") in ("keyframe", "auto"))
 
     @staticmethod
     def _profile_of_doc(doc: Optional[Dict[str, Any]], provenance: str) -> Dict[str, Any]:
@@ -596,6 +596,7 @@ class Executor:
         _remove(os.path.join(self.work, op.operation_id + ".json"))
         self._sweep_partials(op.operation_id)
         segments: Optional[Dict[str, Any]] = None
+        engine_doc: Optional[Dict[str, Any]] = None
         if self.segmented(ref):
             commands, seconds, segments = self._run_segments(ref, partial, t0)
         else:
@@ -603,6 +604,7 @@ class Executor:
             self.log(f"run {ref}: {st.tool}")
             run = run_tool(self.skill, st.script, argv, timeout=self.project.options.timeout_seconds)
             commands, seconds = run.commands, run.seconds
+            engine_doc = run.document if isinstance(run.document, dict) else None
             if not run.ok:
                 _remove(partial)
                 err = tool_error(run, f"operation {ref!r} ({st.tool})")
@@ -624,6 +626,19 @@ class Executor:
         os.replace(tmp, os.path.join(self.work, op.operation_id + ".json"))
         self.produced[ref] = final
         self.results.append(self._record(op, st, "completed", t0, final, digest, doc, commands, seconds, segments=segments))
+        if engine_doc is not None and op.type in ("TRIM", "CUT") and op.params.get("precision") in ("keyframe", "auto"):
+            self.results[-1]["cuts"] = self._cut_report(op, engine_doc)
+
+    def _cut_report(self, op, doc: Dict[str, Any]) -> Dict[str, Any]:
+        """What cut.py measured and chose for a lossless-first TRIM / CUT (ADR-019): copy, accurate (re-encoded) or hybrid
+        (a copy that missed the tolerance and was re-encoded), why, and how far the result is from the asked range. The
+        engine's own keys, passed through as OBSERVED; a key an older release does not report is null, never guessed."""
+        keys = ("mode", "reencoded", "reencode_reason", "precision", "segment_precision", "segment_end_snap_seconds", "duration_delta_seconds",
+                "nearest_keyframes", "edit_list", "keyframe_snapped")
+        rep: Dict[str, Any] = {"requested_precision": op.params.get("precision"), "provenance": "OBSERVED", "source": f"ffmpeg-skill/cut@{self.skill.version}"}
+        rep.update({k: doc.get(k) for k in keys})
+        rep["ranges"] = len(op.params["keep"]) if op.type == "CUT" else 1
+        return rep
 
     def _run_segments(self, ref: str, partial: str, t0: str) -> tuple:
         """The segment render of a CUT (ADR-018): every keep range is taken from the cache when its key is there, else cut on

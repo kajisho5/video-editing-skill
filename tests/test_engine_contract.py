@@ -555,3 +555,22 @@ class SegmentCacheTests(FakeEngineHarness):
             self.assertEqual(self.calls(), [])
         finally:
             shutil.rmtree(root, ignore_errors=True)
+
+
+class KeyframeAwareCutTests(FakeEngineHarness):
+    """precision auto (ADR-019): the engine's per-cut choice is reported; frame precision reports nothing new."""
+
+    def test_auto_reports_the_engines_choice_per_cut(self):
+        doc = request(self.sources(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "auto"}},
+                                       {"id": "c", "type": "CUT", "input": "A", "params": {"keep": [{"start": 0, "end": 1}, {"start": 1.5, "end": 2}], "precision": "auto"}},
+                                       {"id": "f", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}],
+                      [{"id": "x", "operation": "t", "path": "out/t.mp4"}, {"id": "y", "operation": "c", "path": "out/c.mp4"}, {"id": "z", "operation": "f", "path": "out/f.mp4"}])
+        rc, out = self.run_(doc, expect=0)
+        recs = {r["operation"]: r for r in out["execution"]["operations"]}
+        self.assertEqual(recs["t"]["cuts"]["requested_precision"], "auto")
+        self.assertEqual(recs["t"]["cuts"]["provenance"], "OBSERVED")
+        self.assertIsNone(recs["t"]["cuts"]["mode"], "the fake engine reports no mode: null, never guessed")
+        self.assertEqual(recs["c"]["cuts"]["ranges"], 2)
+        self.assertNotIn("cuts", recs["f"])
+        self.assertEqual(recs["t"]["parameters"]["tolerance"], "0.2")
+        self.assertNotIn("accurate", recs["t"]["parameters"])

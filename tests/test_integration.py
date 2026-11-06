@@ -719,6 +719,67 @@ class SegmentCacheLongFormTests(unittest.TestCase):
         self.assertEqual(again["status"], "reused")
 
 
+def packet_md5s(path):
+    """md5 of every video packet as stored (stream copy, no decode): equal lists mean byte-for-byte the same packets."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0:v", "-c", "copy", "-f", "framemd5", "-"],
+                         stdout=subprocess.PIPE, check=True, text=True).stdout
+    return [ln.rsplit(",", 1)[1].strip() for ln in out.splitlines() if ln and not ln.startswith("#")]
+
+
+@unittest.skipUnless(READY, REASON)
+class KeyframeAwareCutTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 9 (ADR-019): precision auto copies a cut whose in point is on a keyframe (the packets are the
+    source's, byte for byte) and re-encodes one that is not, and the record says which per cut."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-kf-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "gop30.mp4")   # a keyframe every second exactly (30 fps, closed GOP of 30)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "12", "-c:v", "libx264", "-preset", "veryfast",
+                        "-g", "30", "-keyint_min", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.src], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def trim(self, start, end):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        doc = request([{"id": "S", "path": self.src}], [{"id": "t", "type": "TRIM", "input": "S", "params": {"start": start, "end": end, "precision": "auto"}}],
+                      [{"id": "o", "operation": "t", "path": "out/t.mp4"}])
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertEqual(rc, 0, json.dumps(out.get("error") if isinstance(out, dict) else out) + err)
+        return os.path.join(ws, "out", "t.mp4"), out["execution"]["operations"][0]["cuts"]
+
+    def test_cut_on_keyframes_is_a_stream_copy(self):
+        path, cuts = self.trim(2, 5)
+        self.assertEqual(cuts["requested_precision"], "auto")
+        if cuts["mode"] is not None:   # reported from ffmpeg-skill 2.x; 0.11.0 does not name it
+            self.assertEqual(cuts["mode"], "copy")
+        got, src = packet_md5s(path), packet_md5s(self.src)
+        self.assertGreaterEqual(len(got), 89)
+        start = src.index(got[0])
+        self.assertEqual(got, src[start:start + len(got)], "every video packet is the source's, byte for byte, in order")
+        self.assertAlmostEqual(duration(path), 3.0, delta=0.15)
+
+    def test_cut_between_keyframes_is_reported_as_what_it_is(self):
+        """An in point half a GOP past a keyframe. The engine judges a copy by how far its length lands from the asked one, not
+        by where the keyframes are (that measurement is Velisa's proposal 1 to ffmpeg-skill): 0.11.0 / 2.x snap the start to
+        the keyframe 0.5 s early and re-encode; 3.x keeps the MP4 edit list (the picture starts at 2.5) and may copy. Either
+        way the record must say what happened, and the packets must agree with it."""
+        path, cuts = self.trim(2.5, 5)
+        got, src = packet_md5s(path), packet_md5s(self.src)
+        copied = got[0] in src and got == src[src.index(got[0]):src.index(got[0]) + len(got)]
+        if cuts["mode"] is not None:
+            self.assertEqual(cuts["mode"] == "copy", copied, cuts)
+            self.assertEqual(bool(cuts["reencoded"]), not copied, cuts)
+        if not copied:
+            self.assertAlmostEqual(duration(path), 2.5, delta=0.1)
+
+
 @unittest.skipUnless(READY, REASON)
 class MediaMatrixE2ETests(unittest.TestCase):
     """Real-media matrix (contract.media_policy, frame_semantics, encoding): A video-only, B video+audio, C mixed audio,

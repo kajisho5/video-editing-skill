@@ -11,12 +11,13 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .errors import EditError
 from .project import EditOperation, EditProject
+from .operations import AUTO_TOLERANCE
 from .timebase import Time, fraction_text
 
 ENCODING_FLAGS = ("crf", "preset")   # the typed encoding profile (operations.validate_encoding): every re-encoding tool takes them
                                      # (crf is passed as --quality where the engine has it: ffmpeg_skill.FLAG_SPELLINGS)
 ALLOWED_FLAGS: Dict[str, tuple] = {
-    "cut": ("start", "end", "segments", "accurate", "no_keep_hevc") + ENCODING_FLAGS,   # no_keep_hevc: set by the executor only (ADR-017)
+    "cut": ("start", "end", "segments", "accurate", "tolerance", "no_keep_hevc") + ENCODING_FLAGS,   # no_keep_hevc: set by the executor only (ADR-017)
     "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color", "copy") + ENCODING_FLAGS,   # copy: segment joins only (ADR-018)
     "fit": ("duration", "method", "max_speed", "smooth", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps", "rotate", "flip") + ENCODING_FLAGS,
     "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
@@ -123,12 +124,16 @@ def _compile(op: EditOperation) -> Step:
         args: Dict[str, Any] = {"start": p["start"].tool_arg(), "end": p["end"].tool_arg()}
         if p["precision"] == "frame":
             args["accurate"] = True
+        elif p["precision"] == "auto":   # stream copy where it lands within AUTO_TOLERANCE, else that cut re-encoded (ADR-019)
+            args["tolerance"] = AUTO_TOLERANCE
         return Step(op, "ffmpeg-skill/cut", args, video_inputs)
     if op.type == "CUT":
         segs = ",".join(f"{r['start'].tool_arg()}-{r['end'].tool_arg()}" for r in p["keep"])
         args = {"segments": segs}
         if p["precision"] == "frame":
             args["accurate"] = True
+        elif p["precision"] == "auto":   # stream copy where it lands within AUTO_TOLERANCE, else that cut re-encoded (ADR-019)
+            args["tolerance"] = AUTO_TOLERANCE
         return Step(op, "ffmpeg-skill/cut", args, video_inputs)
     if op.type == "CONCAT":
         tr = p.get("transition")

@@ -721,3 +721,46 @@ request rendered from an empty cache, and a third run is `reused`. Against ffmpe
 the refusal is tested instead. Offline: `tests/test_engine_contract.py::SegmentCacheTests` (fake engine) covers
 counting, the repeated request, `reuse: false`, the plan's `cached` flags and the refusal.
 
+## ADR-019 — Keyframe-aware cuts: `precision: auto`, the engine's choice reported per cut
+
+**Context.** ECOSYSTEM_ROADMAP step 9: trimming the head and tail of a 2-8 hour recording should not re-encode it. Until
+now a TRIM / CUT was either `frame` (always re-encoded) or `keyframe` (cut.py's lossless mode with its default 0.5 s
+tolerance: an in point may move to a keyframe up to 0.5 s away, and validation allows 1.5 s). Neither copies only when the
+copy is exact.
+
+**What the engine offers, measured (ffmpeg 6.1.1; a 12 s, 30 fps clip with a closed 30-frame GOP).** `cut.py --tolerance T`
+without `--accurate` stream-copies, then measures how far the copy's length lands from the asked one. Past `T` it
+re-encodes that cut ("hybrid", `reencode_reason: tolerance`). It judges the length, not the keyframe positions:
+- On a keyframe, 2 to 5 s: 3.2.0 lands 0.067 s long (two B-frames past the out point) and 0.11.0 lands 0.147 s long. So
+  `T` must be above about 0.15 s for a copy on a keyframe to stay a copy on every release.
+- Half a GOP off, 2.5 to 5 s: 0.11.0 / 2.x snap the start to 2.0 and re-encode. 3.x keeps the MP4 edit list (the
+  picture starts at 2.5 with the pre-roll hidden) and lands 0.167 s long, so with `T = 0.2` it is a lossless copy.
+- No public tool lists keyframe positions. cut.py reports `nearest_keyframes` only after a tolerance miss.
+
+**Decision.** A third precision, `auto`: cut.py's lossless mode with `--tolerance 0.2` (never `--accurate`). A cut whose
+copy lands within 0.2 s of the range is a stream copy, and an in point on a keyframe gives the source's packets byte for
+byte. Any other cut is re-encoded frame-accurately. Validation uses the frame tolerance (0.35 s), not keyframe's 1.5 s.
+Like `keyframe`, it may stream-copy, so an encoding profile on its output is refused (`encoding_needs_reencode`), and
+`--no-keep-hevc` / the codec check do not apply. Every keyframe or auto TRIM / CUT record now carries `cuts`: cut.py's
+own measured keys (`mode`, `reencoded`, `reencode_reason`, `precision`, `segment_precision` and
+`segment_end_snap_seconds` per range, `duration_delta_seconds`, `nearest_keyframes`, `edit_list`, `keyframe_snapped`),
+OBSERVED with `source: ffmpeg-skill/cut@<version>`. A key a release does not report is null. 0.11.0, for one, does not
+name `mode` for every case.
+
+**Not done (roadmap step 9's second condition).** "One cut between keyframes re-encodes at most two GOPs" is not met.
+cut.py re-encodes the whole cut, not the GOPs at its edges. A smart render here would need the keyframe positions
+(Velisa ROADMAP, proposal 1 to ffmpeg-skill: cut-point candidates). It would also need to splice an H.264 re-encode into
+copied packets with matching parameter sets, which is the engine's job and no tool offers it. Building it here would
+mean reading packets and running ffmpeg outside ffmpeg-skill, which ADR-001 / ADR-013 rule out. Proposal to
+ffmpeg-skill: a `cut.py` smart-render mode that re-encodes only the boundary GOPs, with its keyframe candidates in
+the result. Until then `auto` is the lossless-first choice and says per cut what it did.
+
+**Versioning.** `operations.TRIM` / `CUT.parameters.precision` gain a value (pinned): breaking by ADR-007's convention.
+The bump is left to the release (ADR-014 to ADR-016), and video-production-agent re-pins. `compiler.ALLOWED_FLAGS["cut"]`
+gains `tolerance`.
+
+**Verified.** `tests/test_integration.py::KeyframeAwareCutTests`, against ffmpeg-skill 3.2.0 and 0.11.0:
+- 2 to 5 s with `auto`: every video packet of the output is the source's, in order, byte for byte (packet md5s), and
+  `mode` is `copy` where the engine reports it.
+- 2.5 to 5 s: the report agrees with the packets (copy exactly when the packets are the source's, `reencoded` otherwise).
+

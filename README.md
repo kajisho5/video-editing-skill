@@ -483,6 +483,11 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
   HEVC source re-encoded by a frame-precision TRIM / CUT is H.264 on every ffmpeg-skill release (3.x: `--no-keep-hevc`
   is passed, ADR-017).
   A `keyframe` precision `TRIM` / `CUT` may stream-copy and land on a keyframe (tolerance 1.5 s in validation).
+  An `auto` precision `TRIM` / `CUT` (ADR-019) is a stream copy where the copy lands within 0.2 s of the asked range (an
+  in point on a keyframe gives the source's packets byte for byte) and a frame-accurate re-encode of that cut otherwise;
+  `execution.operations[].cuts` reports the engine's choice (`mode` copy / accurate / hybrid, `reencode_reason`,
+  `segment_precision` per range, `duration_delta_seconds`). It re-encodes a whole cut, not only the GOPs at its edges
+  (that needs ffmpeg-skill's cut-point candidates, Velisa proposal 1).
 - Source durations come from the container; ranges are checked against them with 0.1 s slack.
 - `SPEED` computes its target duration from the timeline; the tool retimes to that duration (audio via `atempo`).
   Optional `smooth: blend | interpolate` (0.4.0, ADR-012) maps to `fit.py`'s own `--smooth` flag and only affects a
