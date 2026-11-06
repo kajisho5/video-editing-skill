@@ -68,9 +68,10 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Why: the usual clean-up of a talk or interview is proposed, not done blind（なぜ要るか：言い直し・詰まりを理由付きで提案し、人が承認したものだけ切る）
   - Done when: every retake in a fixture is proposed, and a clean-speech fixture gives no more false positives than the default threshold allows
   - Done (ADR-024): `video-editing propose` with `retakes: {transcript, profile, min_confidence}` returns proposals (repeat / restart / fragment / filler) with a reason and a rule confidence, `applied: false`, writing nothing. `RetakeProposalTests`: all six retakes of the English fixture and all four of the Japanese one (`profile: ja`) are proposed; the clean-speech fixture gives none at the default threshold (its emphatic doubles score 0.3, below 0.5)
-- [ ] **15. Cuts by amount of motion** — find the spans with no motion (a fixed camera with nobody in frame) from the picture, and combine them with the sound (silence) by and / or into labelled spans
+- [x] **15. Cuts by amount of motion** — find the spans with no motion (a fixed camera with nobody in frame) from the picture, and combine them with the sound (silence) by and / or into labelled spans
   - Why: dead spans of a fixed-camera recording are found without watching it（なぜ要るか：定点カメラの不在区間を映像から見つける）
   - Done when: a fixture with a still span finds it to within one frame
+  - Done (ADR-025): `propose` with `source`, `static: {}` and / or `silence: {threshold_db, min_seconds}`, `combine: {mode: and | or}` returns labelled spans (`static`, `silence`, `silence+static`) as proposals; the static spans are the shots ffmpeg-skill `scenes --shots` labels static, the silences `silence --list`. `MotionSpanTests`: a 3 s still span between moving ones is found at 2.0-5.0 s to within one frame; `and` with a 2.5-4.5 s silence gives 2.5-4.5, `or` gives 2.0-5.0 labelled silence+static. A still span with no visible change of picture at its edges is found only at the shot edges the engine detects
 - [ ] **16. A choice per labelled span** — per label (silence, static, retake, ...), cut / keep / speed (with a factor)
   - Why: silences can be sped up instead of cut, retakes cut, the rest kept, in one edit（なぜ要るか：ラベルごとに切る・残す・早送りを選べる）
   - Done when: an edit that keeps the silences at double speed has the right duration and keeps the pitch (atempo)

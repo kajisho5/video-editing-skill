@@ -361,7 +361,9 @@ values are reported under `project`, never as observations.
 - **Retake proposals** (ADR-024): `video-editing propose - --json --workspace W` with
   `{"schema": "video-editing/propose@1", "retakes": {"transcript": "in/words.json", "profile": "en"}}` lists repeats,
   restarts, broken-off words and hesitation words as cut proposals with reasons (`applied: false`, nothing written).
-  Approve them by id; only approved spans are cut (CONDENSE).
+  Approve them by id; only approved spans are cut (CONDENSE). With `"source"`, `"static": {}` (no motion: shots
+  ffmpeg-skill `scenes --shots` labels static) and / or `"silence": {"threshold_db": -40}` and `"combine": {"mode":
+  "and"}`, it proposes labelled spans (`static`, `silence`, `silence+static`) the same way (ADR-025).
 - **Stinger transition** (ADR-023): `CONCAT` `params.transition: {"type": "stinger", "stinger": "<video source with
   alpha>", "cut_point": 0.5, "cover": {"start": 0.5, "end": 0.5333}}` (cut point and cover from the stinger's
   stinger.json). The clips are butt-joined, and the stinger is laid over each join so that its cut-point frame is the

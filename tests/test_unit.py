@@ -393,7 +393,7 @@ class FreezeReverseParamTests(unittest.TestCase):
         self.assertEqual((provided["video.freeze"], provided["video.reverse"]), ("video-editing/freeze", "video-editing/reverse"))
         self.assertEqual((c["operations"]["FREEZE"]["tool"], c["operations"]["REVERSE"]["tool"]), ("ffmpeg-skill/freeze", "ffmpeg-skill/reverse"))
         self.assertEqual(c["engine"]["tools_optional"], ["ffmpeg-skill/freeze", "ffmpeg-skill/reverse", "ffmpeg-skill/insert", "ffmpeg-skill/crop",
-                                                         "ffmpeg-skill/broll", "ffmpeg-skill/audio"])
+                                                         "ffmpeg-skill/broll", "ffmpeg-skill/audio", "ffmpeg-skill/silence", "ffmpeg-skill/scenes"])
         self.assertEqual((provided["video.crop"], c["operations"]["CROP"]["tool"]), ("video-editing/crop", "ffmpeg-skill/crop"))
         self.assertFalse(any("CROP" in n for n in c["versioning"]["next"]["0.5.0"]))
         self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.5.0"]))
@@ -1215,3 +1215,20 @@ class RetakeProposalTests(unittest.TestCase):
         self.assertEqual(sorted(os.listdir(ws)), before)
         rc, out, err = cli(["propose", "-", "--json", "--workspace", ws], stdin=json.dumps({"schema": "video-editing/propose@1"}).encode())
         self.assertEqual(out["error"]["code"], "INVALID_REQUEST")
+
+
+class SpanCombineTests(unittest.TestCase):
+    """ADR-025: and = where every measurement holds, or = wherever any holds, labelled with all that do."""
+
+    def test_and_or(self):
+        from video_editing_skill.proposals import combine_spans
+        F = Fraction
+        m = {"silence": [(F(5, 2), F(9, 2)), (F(10), F(11))], "static": [(F(2), F(5)), (F(10, 1), F(21, 2))]}
+        a = combine_spans(m, "and", F(0))
+        self.assertEqual([(x["start"]["rational"], x["end"]["rational"], x["label"]) for x in a],
+                         [("5/2", "9/2", "silence+static"), ("10/1", "21/2", "silence+static")])
+        o = combine_spans(m, "or", F(0))
+        self.assertEqual([(x["start"]["rational"], x["end"]["rational"], x["label"]) for x in o],
+                         [("2/1", "5/1", "silence+static"), ("10/1", "11/1", "silence+static")])
+        self.assertEqual([x["label"] for x in combine_spans({"static": [(F(1), F(2))]}, "or", F(0))], ["static"])
+        self.assertEqual(combine_spans(m, "and", F(1)), [x for x in a if x["start"]["rational"] == "5/2"])

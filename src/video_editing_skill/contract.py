@@ -126,7 +126,18 @@ def proposals_block() -> Dict[str, Any]:
         "request_shape": {"schema": PROPOSE_SCHEMA,
                           "retakes": {"transcript": "JSON file under an allowed root: {words: [{word | text, start, end}]} in time order",
                                       "profile": f"{' | '.join(sorted(PROFILES))} (default {DEFAULT_PROFILE}; others are regional profiles)",
-                                      "min_confidence": f"0..1 (default {DEFAULT_MIN_CONFIDENCE})"}},
+                                      "min_confidence": f"0..1 (default {DEFAULT_MIN_CONFIDENCE})"},
+                          "source": "the video silence / static measure (under an allowed root)",
+                          "silence": "{threshold_db: -90..-5 (default -35), min_seconds: 0.05.. (default 0.6)}: ffmpeg-skill/silence --list",
+                          "static": "{}: spans with no motion, the shots ffmpeg-skill/scenes --shots labels static",
+                          "combine": "{mode: and | or (default or), min_seconds: time (default 0)}"},
+        "spans": {"silence": "ffmpeg-skill/silence --list --threshold --min-silence: its silences, snapped to the source's frame grid",
+                  "static": "ffmpeg-skill/scenes --shots: shots labelled static (a measured optical-flow proxy); the span edges are the shot "
+                            "boundaries the engine's scene detection finds, so a still span that starts or ends without a visible change of "
+                            "picture is found only at the shot's edges",
+                  "and": "only where every asked measurement holds (silent and static); label silence+static",
+                  "or": "wherever any holds; labelled with every measurement that touches the span",
+                  "needs": "ffmpeg-skill silence.py; scenes.py --shots (2.x+, detected; TOOL_ERROR without it)"},
         "applies": "nothing: the response says applied: false; approved proposal ids become CONDENSE segments, and only those are cut",
         "rules": {"repeat": "the same 1-4 words twice in a row; the first saying is proposed, up to where the second starts",
                   "restart": f"a phrase of 2+ words said again within {RESTART_WINDOW} words and {RESTART_MAX_SECONDS:g} s, with only hesitations "
@@ -135,7 +146,7 @@ def proposals_block() -> Dict[str, Any]:
                   "filler": {k: sorted(v["fillers"]) for k, v in sorted(PROFILES.items())}},
         "confidence": {"per_rule": dict(CONFIDENCE), "filler": "per word, in the profile",
                        "meaning": "a fixed weight of the rule that fired, not a probability; emphatic doubles of the profile (very very, はい はい) score below the default"},
-        "proposal_shape": {"id": "p1..", "kind": "repeat | restart | fragment | filler", "label": "retake", "action": "cut", "start": "time", "end": "time",
+        "proposal_shape": {"id": "p1..", "kind": "repeat | restart | fragment | filler | span", "labels": "span: the measurements that hold", "label": "retake", "action": "cut", "start": "time", "end": "time",
                            "word_range": "[first, last] word index", "text": "the words", "reason": "why, in words", "confidence": "0..1", "also": "merged overlaps"},
         "not_provided": ["any model, score or language detection", "automatic application"],
     }
