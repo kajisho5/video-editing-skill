@@ -358,6 +358,10 @@ values are reported under `project`, never as observations.
   key, size and hash match re-validates them (probe, duration, frame, audio) and reuses them (`status: "reused"`,
   `execution.reused: true`, `outputs[].reused`); a candidate that no longer validates is run again.
   `options.reuse: false` disables it.
+- **AI-generated sources** (ADR-022): `sources[].ai_generated: {"generator": "…", "licence": "…"}` declares a source
+  generated; every operation record and output that contains it carries `marks: ["AI_GENERATED"]` and the declaration
+  (`provenance: "DECLARED"`). Join it with `CONCAT` and give `width` / `height` / `fps`: the engine conforms size, rate,
+  pixel shape and colour tags, and adds silence where it has no sound.
 - **Several aspects from one edit** (ADR-021): one TRIM per shot, then per aspect one `CROP` per shot (the window you
   computed, e.g. from detection-skill's subject path) and one `CONCAT` with that aspect's `width` / `height`; three
   `outputs[]` in one request. The shots run once and are shared. Template: `examples/multi-aspect.json`.

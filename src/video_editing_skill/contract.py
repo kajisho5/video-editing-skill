@@ -51,6 +51,18 @@ SEGMENT_CACHE: Dict[str, Any] = {
     "reuse_false": "options.reuse false also bypasses the segment cache (every part is encoded again and the cache is refreshed)",
 }
 
+AI_GENERATED: Dict[str, Any] = {
+    "request_field": "project.sources[].ai_generated: {generator: text, licence: text} (each 1..200 printable characters)",
+    "meaning": "declared by the caller, never inferred from the media; reported with provenance DECLARED",
+    "mark": "AI_GENERATED: execution.operations[].marks / ai_generated and execution.outputs[].marks / ai_generated list every declared source the result "
+            "contains ({source, generator, licence, provenance: DECLARED}); execution.sources[].ai_generated repeats the declaration",
+    "identity": "not part of operation_id or idempotency_key: the bytes decide identity; the mark is recomputed on every run, so a reused result is marked too",
+    "normalisation": ["CONCAT conforms a generated clip with the rest (ffmpeg-skill/join): frame size by params.width / height (mode pad | crop), frame rate by "
+                      "params.fps or the first input's, square pixels (setsar=1), BT.709 tags on the H.264 output, and a silent track for an input "
+                      "without sound when another has sound",
+                      "set params.width / height / fps on the CONCAT so the edit's format decides, not whichever clip comes first"],
+}
+
 PARAM_DOCS: Dict[str, Dict[str, str]] = {
     "TRIM": {"start": "time", "end": "time (> start)", "precision": "frame (default, re-encode) | keyframe (lossless when possible) | auto (stream copy when the copy lands within 0.2 s of the range, e.g. an in point on a keyframe; else a frame-accurate re-encode; reported per cut)"},
     "CUT": {"keep": "[{start, end}, ...] in output order", "precision": "frame | keyframe | auto"},
@@ -173,7 +185,8 @@ def skill_contract() -> Dict[str, Any]:
         "schemas": {"request": REQUEST_SCHEMA, "response": RESPONSE_SCHEMA, "plan": PLAN_SCHEMA, "contract": CONTRACT_SCHEMA, "doctor": DOCTOR_SCHEMA},
         "request_shape": {
             "schema": REQUEST_SCHEMA,
-            "project": {"id": "optional label", "sources": [{"id": "label", "path": "file under an allowed root", "kind": "video | image"}],
+            "project": {"id": "optional label", "sources": [{"id": "label", "path": "file under an allowed root", "kind": "video | image",
+                                                             "ai_generated": "optional {generator, licence}: the caller declares the source AI-generated (contract.ai_generated)"}],
                         "operations": [{"id": "label", "type": "one of operations", "input": "source or operation id", "inputs": "[ids] for CONCAT", "params": {}}],
                         "outputs": [{"id": "label", "operation": "operation id", "path": "relative path under the workspace (.mp4 | .mov | .mkv)",
                                      "encoding": "optional {crf, preset} (contract.encoding); refused where noted there"}]},
@@ -237,6 +250,8 @@ def skill_contract() -> Dict[str, Any]:
                                          "POSITION: not planned as a type (see docs/decisions.md ADR-002)"]}},
         # ---- 0.1.x additive blocks: encoding profile, frame semantics, media policy (docs/decisions.md ADR-003 .. ADR-005)
         "encoding": ENCODING,
+        # ---- AI-generated sources (docs/decisions.md ADR-022)
+        "ai_generated": AI_GENERATED,
         # ---- segment cache and partial re-render (docs/decisions.md ADR-018)
         "segment_cache": SEGMENT_CACHE,
         "frame_semantics": FRAME_SEMANTICS,

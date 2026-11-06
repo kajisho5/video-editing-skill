@@ -954,6 +954,9 @@ class Executor:
                 d["reused"] = bool(rec and rec["status"] == "reused")
                 d["operation_id"] = self.project.operations[out.operation].operation_id
                 d["timeline"] = self.clips[out.operation].to_dict() if out.operation in self.clips else None
+                mark = self.ai_mark(out.operation)
+                if mark:
+                    d["marks"], d["ai_generated"] = ["AI_GENERATED"], mark
                 d["observation"] = {"kind": "media.probe", "provenance": "OBSERVED", "source": f"ffmpeg-skill/probe@{self.skill.version}",
                                     "data": rec["probe"] if rec else None}
             docs.append(d)
@@ -985,7 +988,16 @@ class Executor:
             rec["note"] = note
         if segments is not None:
             rec["segments"] = segments
+        mark = self.ai_mark(op.ref)
+        if mark:
+            rec["marks"], rec["ai_generated"] = ["AI_GENERATED"], mark
         return rec
+
+    def ai_mark(self, ref: str) -> List[Dict[str, str]]:
+        """Every caller-declared AI-generated source an operation's result contains (ADR-022), in source order."""
+        op = self.project.operations[ref]
+        return [{"source": s, **self.project.sources[s].ai_generated, "provenance": "DECLARED"}   # type: ignore[dict-item]
+                for s in op.source_refs if self.project.sources[s].ai_generated is not None]
 
 
 class _Failed(Exception):

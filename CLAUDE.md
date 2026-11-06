@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-021). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-022). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -230,6 +230,8 @@ exception to ADR-001.
   caller's box, kept in frame. Hard cut only (an ease needs a time-varying crop in ffmpeg-skill).
 - (ADR-021, step 11) — several aspects from one edit is a request graph (shared TRIMs, CROP per shot per aspect, CONCAT
   per aspect), `examples/multi-aspect.json`; no new type, no contract change.
+- (ADR-022, step 12) — `sources[].ai_generated {generator, licence}` (declared): `marks: [AI_GENERATED]` on every record /
+  output containing it; CONCAT conforms the clip. Engine finding: join.py writes 30000/1001 as 2997/100.
 
 ## Picking the next task
 

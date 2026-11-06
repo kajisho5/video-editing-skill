@@ -35,13 +35,17 @@ class EditSource:
     kind: str            # video | image
     sha256: str
     size: int
+    ai_generated: Optional[Dict[str, str]] = None   # {generator, licence} as declared by the caller (ADR-022); never inferred
 
     @property
     def identity(self) -> str:
         return "sha256:" + self.sha256
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"id": self.ref, "kind": self.kind, "path": self.path, "sha256": self.sha256, "size": self.size}
+        d: Dict[str, Any] = {"id": self.ref, "kind": self.kind, "path": self.path, "sha256": self.sha256, "size": self.size}
+        if self.ai_generated is not None:
+            d["ai_generated"] = dict(self.ai_generated, provenance="DECLARED")
+        return d
 
 
 @dataclass
@@ -177,6 +181,24 @@ def parse_options(raw: Any) -> EditOptions:
     return o
 
 
+_LABEL = re.compile(r"^[^\x00-\x1f\x7f]{1,200}$")
+
+
+def _ai_generated(raw: Any, what: str) -> Optional[Dict[str, str]]:
+    """A source the caller declares AI-generated: {generator, licence}, both short printable text. Reported as declared
+    (provenance DECLARED) and carried to every operation and output it reaches; it is never inferred from the media."""
+    if raw is None:
+        return None
+    d = _obj(raw, what)
+    _keys(d, what, ("generator", "licence"), ("generator", "licence"))
+    out = {}
+    for k in ("generator", "licence"):
+        if not isinstance(d[k], str) or not _LABEL.fullmatch(d[k]) or not d[k].strip():
+            raise EditError("INVALID_REQUEST", f"{what}.{k}: must be 1..200 printable characters")
+        out[k] = d[k]
+    return out
+
+
 # ---------------------------------------------------------------- main entry
 def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> EditProject:
     """Validate a request document against the schema, the path policy and the operation allowlist."""
@@ -198,7 +220,7 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
     for i, raw in enumerate(_list(proj["sources"], "project.sources", MAX_SOURCES)):
         what = f"project.sources[{i}]"
         s = _obj(raw, what)
-        _keys(s, what, ("id", "path", "kind"), ("id", "path"))
+        _keys(s, what, ("id", "path", "kind", "ai_generated"), ("id", "path"))
         ref = _ref(s["id"], what + ".id")
         if ref in sources:
             raise EditError("INVALID_REQUEST", f"{what}: duplicate source id {ref!r}")
@@ -208,7 +230,7 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
         exts = VIDEO_EXTENSIONS if kind == "video" else IMAGE_EXTENSIONS
         path = policy.resolve_input(s["path"], what + ".path", exts)
         digest = sha256_file(path) if hash_sources else ""
-        sources[ref] = EditSource(ref, s["path"], path, kind, digest, os.path.getsize(path))
+        sources[ref] = EditSource(ref, s["path"], path, kind, digest, os.path.getsize(path), _ai_generated(s.get("ai_generated"), what + ".ai_generated"))
     if not sources:
         raise EditError("INVALID_REQUEST", "project.sources: at least one source is required")
 

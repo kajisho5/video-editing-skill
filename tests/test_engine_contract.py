@@ -603,3 +603,29 @@ class PunchInTests(FakeEngineHarness):
         rc, out = self.run_(self.doc({"x": 0, "y": 0, "width": 400, "height": 60}), expect=EXIT_CODES["INVALID_REQUEST"])
         self.assertEqual(out["error"]["details"]["reason"], "subject_larger_than_window")
         self.assertEqual(self.calls(), [])
+
+
+class GeneratedSourceMarkTests(FakeEngineHarness):
+    """ADR-022: a declared AI-generated source marks every operation and output that contains it, and nothing else."""
+
+    def test_mark_reaches_downstream_only(self):
+        src = self.sources()
+        src[1] = dict(src[1], ai_generated={"generator": "gen-model 1", "licence": "proprietary, licensed for broadcast"})
+        doc = request(src, [{"id": "a", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}},
+                            {"id": "b", "type": "TRIM", "input": "B", "params": {"start": 0, "end": 1}},
+                            {"id": "c", "type": "CONCAT", "inputs": ["a", "b"]}],
+                      [{"id": "x", "operation": "a", "path": "out/a.mp4"}, {"id": "y", "operation": "c", "path": "out/c.mp4"}])
+        rc, out = self.run_(doc, expect=0)
+        recs = {r["operation"]: r for r in out["execution"]["operations"]}
+        self.assertNotIn("marks", recs["a"])
+        self.assertEqual(recs["b"]["marks"], ["AI_GENERATED"])
+        self.assertEqual(recs["c"]["ai_generated"], [{"source": "B", "generator": "gen-model 1", "licence": "proprietary, licensed for broadcast", "provenance": "DECLARED"}])
+        outs = {o["id"]: o for o in out["execution"]["outputs"]}
+        self.assertNotIn("marks", outs["x"])
+        self.assertEqual(outs["y"]["marks"], ["AI_GENERATED"])
+        # the declaration is not part of identity: the same bytes undeclared give the same operation ids
+        doc2 = request(self.sources(), doc["project"]["operations"], [{"id": "x", "operation": "a", "path": "out/a2.mp4"}, {"id": "y", "operation": "c", "path": "out/c2.mp4"}])
+        rc, out2 = self.run_(doc2, expect=0)
+        self.assertEqual(sorted(r["operation_id"] for r in out2["execution"]["operations"]), sorted(r["operation_id"] for r in out["execution"]["operations"]))
+        self.assertEqual(out2["status"], "reused")
+        self.assertNotIn("marks", {o["id"]: o for o in out2["execution"]["outputs"]}["y"])
