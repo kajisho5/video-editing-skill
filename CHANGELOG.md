@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.9 - 2026-11-06
+
+- Keyframe-aware TRIM / CUT: precision auto, reported per cut (roadmap step 9) (#31) (687b111)
+
 ## v0.4.8 - 2026-11-06
 
 - Segment cache and partial re-render for CUT (roadmap step 8) (#30) (16e159a)
