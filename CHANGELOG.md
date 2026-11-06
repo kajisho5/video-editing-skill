@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.10 - 2026-11-06
+
+- PUNCH_IN: a hard-cut zoom on a subject box (roadmap step 10) (#32) (0403787)
+
 ## v0.4.9 - 2026-11-06
 
 - Keyframe-aware TRIM / CUT: precision auto, reported per cut (roadmap step 9) (#31) (687b111)
