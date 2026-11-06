@@ -574,3 +574,32 @@ class KeyframeAwareCutTests(FakeEngineHarness):
         self.assertNotIn("cuts", recs["f"])
         self.assertEqual(recs["t"]["parameters"]["tolerance"], "0.2")
         self.assertNotIn("accurate", recs["t"]["parameters"])
+
+
+class PunchInTests(FakeEngineHarness):
+    """PUNCH_IN (ADR-020) through the fake engine: cut, crop, fit and join in turn; the window is reported."""
+
+    def doc(self, subject, scale=2, start=0.5, end=1.5):
+        return request(self.sources(), [{"id": "p", "type": "PUNCH_IN", "input": "A",
+                                         "params": {"start": start, "end": end, "scale": scale, "subject": subject}}],
+                       [{"id": "x", "operation": "p", "path": "out/p.mp4"}], options={"overwrite": True})
+
+    def test_runs_cut_crop_fit_join_and_reports_the_window(self):
+        rc, out = self.run_(self.doc({"x": 40, "y": 100, "width": 60, "height": 60}), expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual(rec["punch_in"]["window"], {"x": 0, "y": 40, "width": 320, "height": 180})
+        self.assertEqual(rec["punch_in"]["frame"], [640, 360])
+        with open(os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".mp4"), "rb") as fh:
+            header = json.loads(fh.read()[4:].decode())
+        self.assertEqual(header["tool"], "join")
+        self.assertEqual((header["width"], header["height"]), (640, 360))
+        self.assertAlmostEqual(header["duration"], 2.0)
+        work = os.path.join(self.ws, ".video-editing", "work")
+        self.assertFalse([f for f in os.listdir(work) if ".pin" in f], "the intermediate parts are removed")
+        rc, plan = self.run_(self.doc({"x": 40, "y": 100, "width": 60, "height": 60}), "plan", expect=0)
+        self.assertEqual(plan["plan"]["steps"][0]["punch_in"]["window"]["width"], 320)
+
+    def test_subject_too_large_is_refused_before_execution(self):
+        rc, out = self.run_(self.doc({"x": 0, "y": 0, "width": 400, "height": 60}), expect=EXIT_CODES["INVALID_REQUEST"])
+        self.assertEqual(out["error"]["details"]["reason"], "subject_larger_than_window")
+        self.assertEqual(self.calls(), [])

@@ -14,10 +14,10 @@ from typing import Any, Dict, List, Optional
 
 from . import SKILL_ID, VERSION
 from .canonical import sha256_file, stable_hash
-from .compiler import Step, compile_project, output_extension
+from .compiler import Step, _fps_text, compile_project, output_extension
 from .errors import EditError
 from .ffmpeg_skill import FfmpegSkill, cancelled, missing_capabilities, probe, run_tool, tool_error
-from .operations import ENCODING_DEFAULTS, MEDIA, even, params_to_json
+from .operations import ENCODING_DEFAULTS, MEDIA, even, params_to_json, punch_window
 from .paths import is_within
 from .project import EditProject
 from .timebase import Time
@@ -128,6 +128,13 @@ class Executor:
                                 {"operation": ref, "tool": op.tool, "missing": [f"tool:{op.tool}"]}, retryable=False)
             gaps = missing_capabilities(self.engine_doctor, TOOL_REQUIREMENTS[op.tool]) if self.engine_doctor else []
             gaps += [f"flag:{f}" for f in self.skill.missing_flags(script, self.steps[ref].flags())]   # detected, not version-guessed
+            if op.type == "PUNCH_IN":   # cut the range out, crop and scale it back, join the parts (ADR-020)
+                for tool, flags in (("cut", ["--start", "--end", "--accurate"]), ("fit", ["--aspect", "--fit", "--width"]),
+                                    ("join", ["--transition", "--width", "--height", "--fps"]), ("crop", ["--x", "--y", "--width", "--height"])):
+                    if tool not in self.skill.tools:
+                        gaps.append(f"tool:ffmpeg-skill/{tool}")
+                    else:
+                        gaps += [f"flag:ffmpeg-skill/{tool} {f}" for f in self.skill.missing_flags(tool, flags)]
             if self.segmented(ref):   # each keep range is cut alone and the parts joined by stream copy (ADR-018)
                 if "join" not in self.skill.tools:
                     gaps.append("tool:ffmpeg-skill/join")
@@ -184,6 +191,8 @@ class Executor:
             return (even(sw), even(sh)) if sw and sh else None
         if op.type == "CROP":   # crop.py: exactly the rectangle (ADR-016)
             return (p["width"], p["height"])
+        if op.type == "PUNCH_IN":   # zoomed and scaled back: the input frame
+            return (sw, sh) if sw and sh else None
         if op.type == "ROTATE":
             if p.get("degrees") in (90, 270) and sw and sh:
                 return (sh, sw)
@@ -281,7 +290,7 @@ class Executor:
                 if any(h is True for h in hdrs.values()) and any(h is False for h in hdrs.values()):
                     raise EditError("INVALID_INPUT", f"operation {ref!r} (CONCAT): HDR and SDR inputs cannot be joined (the engine encodes from the first input's colour system)",
                                     {"operation": ref, "inputs": hdrs, "reason": "hdr_mismatch"})
-            if op.type in ("TRIM", "CUT", "SPEED", "OVERLAY", "ROTATE", "FREEZE", "REVERSE"):   # these keep the input frame; the engine's encoders need even sizes
+            if op.type in ("TRIM", "CUT", "SPEED", "OVERLAY", "ROTATE", "FREEZE", "REVERSE", "PUNCH_IN"):   # these keep the input frame; the engine's encoders need even sizes
                 prof = self.profile(video_inputs[0])
                 if prof["width"] and prof["height"] and (prof["width"] % 2 or prof["height"] % 2):
                     raise EditError("INVALID_INPUT", f"operation {ref!r} ({op.type}): input {video_inputs[0]!r} frame {prof['width']}x{prof['height']} has an odd dimension; "
@@ -301,6 +310,14 @@ class Executor:
                                     f"input frame {prof['width']}x{prof['height']} of {op.inputs[0]!r}",
                                     {"operation": ref, "input": op.inputs[0], "frame": [prof["width"], prof["height"]],
                                      "rectangle": {k: p[k] for k in ("x", "y", "width", "height")}, "reason": "crop_outside_frame"})
+            if op.type == "PUNCH_IN":   # the window must hold the subject box: refused before anything runs
+                prof = self.profile(op.inputs[0])
+                if prof["width"] and prof["height"]:
+                    try:
+                        punch_window(prof["width"], prof["height"], op.params["scale"], op.params["subject"])
+                    except EditError as exc:
+                        exc.details = dict(exc.details or {}, operation=ref, input=op.inputs[0])
+                        raise
             if op.type in ("OVERLAY", "IMAGE_INSERT"):
                 img = self.profile(op.inputs[-1])
                 if img["width"] is None:
@@ -314,7 +331,7 @@ class Executor:
             if limit is None:
                 continue
             ranges = []
-            if op.type == "TRIM":
+            if op.type in ("TRIM", "PUNCH_IN"):
                 ranges = [(op.params["start"], op.params["end"])]
             elif op.type == "CUT":
                 ranges = [(r["start"], r["end"]) for r in op.params["keep"]]
@@ -450,6 +467,8 @@ class Executor:
             d["reusable"] = self._reusable(ref) is not None
             if self.segmented(ref):
                 d["segments"] = self.segments_plan(ref)
+            if self.project.operations[ref].type == "PUNCH_IN" and self.source_probes:
+                d["punch_in"] = self.punch_plan(ref)
             if preview:
                 d["preview"] = self._preview(ref)
             steps.append(d)
@@ -457,6 +476,8 @@ class Executor:
 
     def _preview(self, ref: str) -> Dict[str, Any]:
         """ffmpeg-skill --dry-run for one step: the commands it would run. Nothing is written."""
+        if self.project.operations[ref].type == "PUNCH_IN":
+            return {"ok": True, "commands": [], "note": "PUNCH_IN runs ffmpeg-skill cut, crop, fit and join in turn; each call's commands are recorded when it runs"}
         try:
             argv = self._argv(ref, dry_run=True)
             run = run_tool(self.skill, self.steps[ref].script, argv, timeout=120, dry_run=True)
@@ -599,6 +620,8 @@ class Executor:
         engine_doc: Optional[Dict[str, Any]] = None
         if self.segmented(ref):
             commands, seconds, segments = self._run_segments(ref, partial, t0)
+        elif op.type == "PUNCH_IN":
+            commands, seconds = self._run_punch_in(ref, partial, t0)
         else:
             argv = self._argv(ref)
             self.log(f"run {ref}: {st.tool}")
@@ -626,6 +649,8 @@ class Executor:
         os.replace(tmp, os.path.join(self.work, op.operation_id + ".json"))
         self.produced[ref] = final
         self.results.append(self._record(op, st, "completed", t0, final, digest, doc, commands, seconds, segments=segments))
+        if op.type == "PUNCH_IN":
+            self.results[-1]["punch_in"] = self.punch_plan(ref)
         if engine_doc is not None and op.type in ("TRIM", "CUT") and op.params.get("precision") in ("keyframe", "auto"):
             self.results[-1]["cuts"] = self._cut_report(op, engine_doc)
 
@@ -726,6 +751,81 @@ class Executor:
             self.results.append(self._record(op, st, "failed", t0, None, None, None, commands, seconds, err, segments=report))
             raise err
         return commands, seconds, report
+
+    # ------------------------------------------------------------ PUNCH_IN (ADR-020)
+    def punch_plan(self, ref: str) -> Optional[Dict[str, Any]]:
+        op = self.project.operations[ref]
+        prof = self.profile(op.inputs[0])
+        if not (prof["width"] and prof["height"]):
+            return None
+        win = punch_window(prof["width"], prof["height"], op.params["scale"], op.params["subject"])
+        return {"window": win, "frame": [prof["width"], prof["height"]], "subject": dict(op.params["subject"]),
+                "scale": params_to_json({"s": op.params["scale"]})["s"], "transition": "cut",
+                "range": {"start": op.params["start"].to_dict(), "end": op.params["end"].to_dict()}}
+
+    def _run_punch_in(self, ref: str, partial: str, t0: str) -> tuple:
+        """A zoom on a range: the range is cut out frame-accurately, cropped to the window and scaled back to the input frame
+        (fit.py --fit crop: the window's aspect is the frame's to within one even step, so nothing is stretched), and joined
+        with the untouched parts before and after it (join.py, no transition). Each call is an ffmpeg-skill tool."""
+        op = self.project.operations[ref]
+        st = self.steps[ref]
+        prof = self.profile(op.inputs[0])
+        plan = self.punch_plan(ref)
+        if plan is None or not prof.get("fps"):
+            raise EditError("INVALID_INPUT", f"operation {ref!r} (PUNCH_IN): the input frame or frame rate is not known", {"operation": ref})
+        win, (fw, fh) = plan["window"], plan["frame"]
+        ext = output_extension(self.project, ref)
+        src = self._path_of(op.inputs[0], False)
+        c = self.clips.get(op.inputs[0])
+        total = c.duration if c is not None and c.duration is not None else self.durations.get(op.inputs[0])
+        if total is None:
+            total = self._probe_duration(src)
+        start, end = op.params["start"], op.params["end"]
+        enc = {k: op.encoding[k] for k in ("crf", "preset") if op.encoding and k in op.encoding}
+        temps: List[str] = []
+        commands: List[str] = []
+        seconds = 0.0
+
+        def call(tool: str, args: Dict[str, Any], inputs: List[str], engine_args: Optional[Dict[str, Any]] = None) -> str:
+            nonlocal seconds
+            out = os.path.join(self.work, f"{op.operation_id}.pin{len(temps)}.partial.{os.getpid()}{ext}")
+            _remove(out)
+            temps.append(out)
+            argv = Step(op, "ffmpeg-skill/" + tool, dict(args, **enc), []).argv_for(inputs, out, resolve=lambda f: self.skill.resolve_flag(tool, f),
+                                                                                       engine_args=engine_args)
+            self.log(f"run {ref}: ffmpeg-skill/{tool}")
+            run = run_tool(self.skill, tool, argv, timeout=self.project.options.timeout_seconds)
+            commands.extend(run.commands)
+            seconds += run.seconds
+            if not run.ok:
+                err = tool_error(run, f"operation {ref!r} (PUNCH_IN, ffmpeg-skill/{tool})")
+                for t in temps:
+                    _remove(t)
+                self.results.append(self._record(op, st, "failed", t0, None, None, None, commands, seconds, err))
+                raise err
+            return out
+
+        cut_args = {"no_keep_hevc": True} if self.skill.cut_keeps_hevc_by_default() else {}
+        try:
+            parts: List[str] = []
+            if start.value > 0:
+                parts.append(call("cut", {"start": "0", "end": start.tool_arg(), "accurate": True}, [src], cut_args))
+            mid = call("cut", {"start": start.tool_arg(), "end": end.tool_arg(), "accurate": True}, [src], cut_args)
+            cropped = call("crop", {"x": win["x"], "y": win["y"], "width": win["width"], "height": win["height"]}, [mid])
+            parts.append(call("fit", {"aspect": f"{fw}:{fh}", "fit": "crop", "width": fw}, [cropped]))
+            if end.value < total.value - Time.from_float(0.5 / prof["fps"]).value:
+                parts.append(call("cut", {"start": end.tool_arg(), "end": total.tool_arg(), "accurate": True}, [src], cut_args))
+            if len(parts) == 1:
+                os.replace(parts[0], partial)
+            else:
+                from fractions import Fraction
+                joined = call("join", {"transition": "none", "width": fw, "height": fh, "fps": _fps_text(Fraction(prof["fps"]).limit_denominator(1001))}, parts)
+                os.replace(joined, partial)
+        finally:
+            for t in temps:
+                if t != partial:
+                    _remove(t)
+        return commands, seconds
 
     @staticmethod
     def _segments_report(parts: List[Dict[str, Any]], join: Optional[str]) -> Dict[str, Any]:

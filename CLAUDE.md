@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-019). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-020). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -226,6 +226,8 @@ exception to ADR-001.
   ffmpeg-skill 2.24.0+ (`--copy`, detected; refused before execution without it). CONCAT's own join is unchanged.
 - (ADR-019, step 9) — TRIM / CUT `precision: auto`: cut.py lossless mode, `--tolerance 0.2`; `execution.operations[].cuts`
   passes through cut.py's per-cut choice. Boundary-GOP smart render not done (needs an ffmpeg-skill proposal).
+- (ADR-020, step 10) — `PUNCH_IN {start, end, scale, subject}`: cut / crop / fit / join in turn; window centred on the
+  caller's box, kept in frame. Hard cut only (an ease needs a time-varying crop in ffmpeg-skill).
 
 ## Picking the next task
 

@@ -41,6 +41,7 @@ def _sample_params(t: str) -> Dict[str, Any]:  # noqa: C901
         "REVERSE": {},
         "IMAGE_INSERT": {"duration": two, "width": 640, "height": 360, "fps": Fraction(25)},
         "CROP": {"x": 10, "y": 20, "width": 320, "height": 180},
+        "PUNCH_IN": {"start": one, "end": two, "scale": Fraction(2), "subject": {"x": 10, "y": 20, "width": 40, "height": 40}},
     }
     return samples[t]
 

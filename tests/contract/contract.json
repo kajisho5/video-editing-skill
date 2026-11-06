@@ -79,6 +79,13 @@
       "tool": "ffmpeg-skill/overlay"
     },
     {
+      "capability": "video.punch_in",
+      "operations": [
+        "PUNCH_IN"
+      ],
+      "tool": "ffmpeg-skill/crop"
+    },
+    {
       "capability": "video.reorder",
       "operations": [
         "CONCAT (input order)",
@@ -138,6 +145,7 @@
     "video.freeze",
     "video.image_insert",
     "video.overlay",
+    "video.punch_in",
     "video.reorder",
     "video.resize",
     "video.reverse",
@@ -563,6 +571,57 @@
       "kind": "transform"
     },
     {
+      "tool_id": "video-editing/punch_in",
+      "skill_id": "video-editing",
+      "version": "0.4.9",
+      "operation_type": "PUNCH_IN",
+      "capability": "video.punch_in",
+      "description": "zoom in by a scale on a subject box the caller gives (e.g. detection-skill's face box) for a time range: a hard cut in and out, the window centred on the box and kept inside the frame, the frame size unchanged",
+      "required_capabilities": [
+        "ffmpeg",
+        "ffprobe",
+        "encoder:libx264",
+        "encoder:aac"
+      ],
+      "inputs": [
+        "input"
+      ],
+      "input_arity": "one",
+      "parameters": {
+        "start": "time",
+        "end": "time (> start): the zoomed range; a hard cut in at start and out at end",
+        "scale": "number or N/D in (1, 4]: the zoom (2 = the window is half the frame in each dimension)",
+        "subject": "{x, y, width, height} int px in the input frame as displayed: the box to keep in view (e.g. detection-skill's face box); the window is centred on it and kept inside the frame"
+      },
+      "media": {
+        "inputs": "one video",
+        "requires": {
+          "video": true,
+          "audio": false,
+          "image": false
+        },
+        "output": {
+          "frame_size": "as input",
+          "audio": "kept (stereo AAC: the parts are joined by ffmpeg-skill/join)",
+          "fps": "as input",
+          "duration": "as input"
+        }
+      },
+      "produces_output": true,
+      "writes_media": true,
+      "deterministic": true,
+      "idempotency_hint": "content_equivalent",
+      "result_keys": [
+        "operation_id",
+        "output",
+        "probe",
+        "commands",
+        "provenance"
+      ],
+      "executed_by": "ffmpeg-skill/crop",
+      "kind": "transform"
+    },
+    {
       "tool_id": "video-editing/resize",
       "skill_id": "video-editing",
       "version": "0.4.9",
@@ -894,6 +953,17 @@
         "fade": "seconds 0..10 (optional)"
       }
     },
+    "PUNCH_IN": {
+      "capability": "video.punch_in",
+      "tool": "ffmpeg-skill/crop",
+      "arity": "one",
+      "parameters": {
+        "start": "time",
+        "end": "time (> start): the zoomed range; a hard cut in at start and out at end",
+        "scale": "number or N/D in (1, 4]: the zoom (2 = the window is half the frame in each dimension)",
+        "subject": "{x, y, width, height} int px in the input frame as displayed: the box to keep in view (e.g. detection-skill's face box); the window is centred on it and kept inside the frame"
+      }
+    },
     "RESIZE": {
       "capability": "video.resize",
       "tool": "ffmpeg-skill/fit",
@@ -1218,6 +1288,11 @@
       "tool_id": "video-editing/overlay"
     },
     {
+      "id": "video.punch_in",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/punch_in"
+    },
+    {
       "id": "video.resize",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "video-editing/resize"
@@ -1392,6 +1467,28 @@
         "image that does not decode",
         "start / end beyond the input duration",
         "input frame with an odd width or height (odd_frame)"
+      ]
+    },
+    "PUNCH_IN": {
+      "inputs": "one video",
+      "requires": {
+        "video": true,
+        "audio": false,
+        "image": false
+      },
+      "output": {
+        "frame_size": "as input",
+        "audio": "kept (stereo AAC: the parts are joined by ffmpeg-skill/join)",
+        "fps": "as input",
+        "duration": "as input"
+      },
+      "refused_before_execution": [
+        "source without a video stream or duration",
+        "start / end beyond the input duration",
+        "a subject box outside the input frame (INVALID_REQUEST subject_outside_frame)",
+        "a subject box larger than the zoomed window (INVALID_REQUEST subject_larger_than_window)",
+        "input frame with an odd width or height (odd_frame)",
+        "an ffmpeg-skill checkout without crop.py (TOOL_ERROR)"
       ]
     },
     "RESIZE": {
@@ -1707,6 +1804,7 @@
       "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)",
       "CONCAT (ffmpeg-skill join.py): params.width x params.height; only one given -> the other from the first input's aspect (round); none -> the first input's frame; then floored to even",
       "IMAGE_INSERT (ffmpeg-skill insert.py): params.width x params.height; only one given -> the other = even(given x the image aspect); none -> even(image width) x even(image height); the still is scaled to cover that frame and centre-cropped, never stretched",
+      "PUNCH_IN keeps the input frame: the window is floor_even(width / scale) x floor_even(height / scale), centred on the subject box, moved only as far as needed to stay inside the frame (even offsets), cropped (crop.py) and scaled back to the input frame (fit.py --fit crop: never stretched)",
       "TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE keep the input frame -- losslessly, no filter maths beyond a turn or a mirror for ROTATE, whose target frame is the source's width x height, swapped for a 90 / 270 degrees turn; an input with an odd width or height is refused before execution (INVALID_INPUT odd_frame) because the engine's encoders need even sizes",
       "no operation stretches (distorts) the picture; anamorphic output is not provided",
       "the normalized target frame is reported in plan.steps[].normalized and execution.operations[].normalized and verified on the output exactly"
