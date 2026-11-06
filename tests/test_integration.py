@@ -1193,6 +1193,25 @@ class CondenseTests(unittest.TestCase):
         seg_tl = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
         self.assertEqual([s["speed"] for s in seg_tl], ["1/1", "2/1", "1/1"])
 
+    def test_review_file_lasts_the_removed_spans(self):
+        """ECOSYSTEM_ROADMAP step 17 (ADR-027): output removed joins only the spans the rules cut."""
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        segs = [{"start": 1, "end": 1.5, "label": "retake"}, {"start": 3, "end": 4.2, "label": "retake"}, {"start": 5, "end": 5.5, "label": "silence"}]
+        params = {"segments": segs, "rules": {"retake": "cut", "silence": {"speed": 2}}}
+        doc = request([{"id": "S", "path": self.src}],
+                      [{"id": "r", "type": "CONDENSE", "input": "S", "params": dict(params, output="removed")},
+                       {"id": "e", "type": "CONDENSE", "input": "S", "params": params}],
+                      [{"id": "review", "operation": "r", "path": "out/review.mp4"}, {"id": "edit", "operation": "e", "path": "out/edit.mp4"}])
+        out = self.cli_doc("run", doc, ws)
+        removed = 0.5 + 1.2
+        self.assertAlmostEqual(duration(os.path.join(ws, "out", "review.mp4")), removed, delta=0.1)
+        # the contract's frame tolerance: 0.11.0's join.py of four pieces lands 0.155 s long
+        self.assertAlmostEqual(duration(os.path.join(ws, "out", "edit.mp4")), 6 - removed - 0.25, delta=0.35)
+        rec = {r["operation"]: r for r in out["execution"]["operations"]}["r"]
+        self.assertEqual([(x["source_range"]["start"]["rational"], x["review_range"]["start"]["rational"]) for x in rec["condense"]["review"]],
+                         [("1/1", "0/1"), ("3/1", "1/2")])
+        self.assertEqual(rec["condense"]["removed"]["rational"], "17/10")
+
 
 @unittest.skipUnless(READY, REASON)
 class MediaMatrixE2ETests(unittest.TestCase):

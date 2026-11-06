@@ -246,7 +246,8 @@
       "parameters": {
         "segments": "[{start, end, label}] non-overlapping spans of the input (e.g. approved proposals: retake, silence, static); label [a-z0-9][a-z0-9_+.-]{0,39}",
         "rules": "{label: cut | keep | {speed: factor 1/4..4, not 1}}: one per label used",
-        "default": "cut | keep | {speed: factor} for the time no segment covers (default keep)"
+        "default": "cut | keep | {speed: factor} for the time no segment covers (default keep)",
+        "output": "result (default: the edit) | removed (a review file: only the spans the rules cut, joined in order at speed 1; the record lists each with its place in the file)"
       },
       "media": {
         "inputs": "one video",
@@ -941,7 +942,8 @@
       "parameters": {
         "segments": "[{start, end, label}] non-overlapping spans of the input (e.g. approved proposals: retake, silence, static); label [a-z0-9][a-z0-9_+.-]{0,39}",
         "rules": "{label: cut | keep | {speed: factor 1/4..4, not 1}}: one per label used",
-        "default": "cut | keep | {speed: factor} for the time no segment covers (default keep)"
+        "default": "cut | keep | {speed: factor} for the time no segment covers (default keep)",
+        "output": "result (default: the edit) | removed (a review file: only the spans the rules cut, joined in order at speed 1; the record lists each with its place in the file)"
       }
     },
     "CROP": {

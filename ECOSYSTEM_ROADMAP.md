@@ -76,9 +76,10 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Why: silences can be sped up instead of cut, retakes cut, the rest kept, in one edit（なぜ要るか：ラベルごとに切る・残す・早送りを選べる）
   - Done when: an edit that keeps the silences at double speed has the right duration and keeps the pitch (atempo)
   - Done (ADR-026): `CONDENSE {segments: [{start, end, label}], rules: {label: cut | keep | {speed: f}}, default}`; each kept piece cut frame-accurately, a sped one retimed by fit.py `--duration --method speed` (atempo), joined in order. `CondenseTests`: a silence proposed by `propose`, approved and kept at 2x makes 6 s into 5 s (within 0.1 s), and the quiet 880 Hz tone in it is still 880 Hz (not 1760); the timeline shows speeds 1, 2, 1
-- [ ] **17. Review of the planned cuts** — write a review file that joins only the spans to be removed, plus their list
+- [x] **17. Review of the planned cuts** — write a review file that joins only the spans to be removed, plus their list
   - Why: what will be cut is checked before it is cut（なぜ要るか：削除予定の区間だけを繋いで確認できる）
   - Done when: the review file lasts the sum of the removed spans
+  - Done (ADR-027): CONDENSE `output: removed` writes a review file of only the spans its rules cut, in order at speed 1, and its record lists each with its source range and its place in the file (`condense.review`, `removed`). `CondenseTests`: two retakes (0.5 s + 1.2 s) give a 1.7 s review file (within 0.1 s) beside the edit itself, from one request
 - [ ] **18. Export to a target file size** — given a limit such as 25 MB, work out the video bitrate from the duration and the audio bitrate and write it in two passes through ffmpeg-skill; past the limit, work it out again and retry; when it cannot fit (resolution, lowest bitrate), fail with the reason
   - Why: deliveries with a size cap (mail, chat, upload limits) are met on the first try（なぜ要るか：サイズ上限のある納品を一度で満たす）
   - Done when: on two or three fixtures the output is at or under the limit and at least 90 % of it

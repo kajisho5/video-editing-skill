@@ -112,7 +112,9 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
     "CONDENSE": {"segments": "[{start, end, label}] non-overlapping spans of the input (e.g. approved proposals: retake, silence, static); label "
                              "[a-z0-9][a-z0-9_+.-]{0,39}",
                  "rules": "{label: cut | keep | {speed: factor 1/4..4, not 1}}: one per label used",
-                 "default": "cut | keep | {speed: factor} for the time no segment covers (default keep)"},
+                 "default": "cut | keep | {speed: factor} for the time no segment covers (default keep)",
+                 "output": "result (default: the edit) | removed (a review file: only the spans the rules cut, joined in order at speed 1; the record lists each "
+                           "with its place in the file)"},
     "PUNCH_IN": {"start": "time", "end": "time (> start): the zoomed range; a hard cut in at start and out at end",
                  "scale": "number or N/D in (1, 4]: the zoom (2 = the window is half the frame in each dimension)",
                  "subject": "{x, y, width, height} int px in the input frame as displayed: the box to keep in view (e.g. detection-skill's face box); "
