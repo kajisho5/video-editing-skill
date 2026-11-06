@@ -931,3 +931,45 @@ video-production-agent re-pins. There is a new additive block, `stinger`.
 - **Refusals.** A cut point outside the cover is refused before anything runs. Offline (fake engine), the no-alpha,
   off-frame, too-long, and operation-as-stinger refusals are covered too.
 
+## ADR-024 — Retake proposals: rules over word timings, proposed with reasons, never applied
+
+**Context.** ECOSYSTEM_ROADMAP step 14 (added on the owner's instruction, 2026-11-06, with steps 15 to 18). Talks and
+interviews are cleaned up by cutting retakes, broken-off words, repeats and hesitation words. ADR-001 keeps editing
+judgement out of this Skill. This step therefore produces proposals only: deterministic rules, each finding stated with
+its reason. A person (or the agent, on a person's behalf) approves them by id, and only approved proposals reach an edit,
+as CONDENSE segments (step 16). This repository never applies a proposal by itself.
+
+**Decision.** A new command, `video-editing propose` (request `video-editing/propose@1`, response
+`video-editing/proposals@1`, contract block `proposals`). With `retakes: {transcript, profile?, min_confidence?}`, it
+reads a transcript with word timings from an allowed input root (`{words: [{word | text, start, end}]}`, in time order,
+validated). It writes nothing; the response says `applied: false`. The rules:
+- **repeat:** the same 1 to 4 words twice in a row. The first saying is proposed, up to where the second starts.
+- **restart:** a phrase of 2+ words said again within 8 words and 4 s, with only hesitation words or broken-off words in
+  between. A 3+ word opening said again after at most 3 words also counts. "in the morning and in the evening" is not a
+  restart.
+- **fragment:** a broken-off word (ending in -, — or ~), or a short false start that the next word begins with
+  ("st store").
+- **filler:** a hesitation word of the profile.
+
+Each rule has a fixed confidence (`contract.proposals.confidence`). It is a stated weight, not a probability.
+`min_confidence` (default 0.5) decides what is proposed, and how many findings fell below it is reported. Overlapping
+findings merge, and the higher-confidence one names the merged proposal. A one-word repeat of a word people double on
+purpose (very very, はい はい) scores 0.3, so by default it is seen but not proposed.
+
+**Language.** English is the default profile. Japanese (`profile: ja`: えー, えっと, あのー, …, with あの and まあ scored
+below the default because they are also ordinary words) is a selectable regional profile, per the ecosystem's
+internationalisation rule. There is no language detection: the caller names the profile.
+
+**Versioning.** It is a new command and new schemas, outside the pinned blocks. The contract gains an additive
+`proposals` block. The canonical `run` invocation is unchanged. It is additive by ADR-007's rules, and the agent needs a
+wrapper to use it.
+
+**Verified.** `tests/test_unit.py::RetakeProposalTests`:
+- **English.** A fixture with a filler, a one-word repeat, a four-word repeat, a cut-off word, a false start and a
+  restart after "uh": all six are proposed, in order, with reasons.
+- **Clean speech.** A clean fixture, with "very very", "had had", "that that" and "in the morning and in the evening",
+  gives no proposal at the default threshold. The emphatic doubles appear only at 0.2.
+- **Japanese.** A Japanese fixture gives its two fillers and two repeats under `profile: ja`.
+- **Refusals and the CLI.** Bad timings and unknown profiles or ids are refused. The CLI writes nothing to the
+  workspace.
+

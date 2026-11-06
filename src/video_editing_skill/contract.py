@@ -118,6 +118,29 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
 }
 
 
+def proposals_block() -> Dict[str, Any]:
+    from .proposals import CONFIDENCE, DEFAULT_MIN_CONFIDENCE, DEFAULT_PROFILE, PROFILES, PROPOSALS_SCHEMA, PROPOSE_SCHEMA, RESTART_MAX_SECONDS, RESTART_WINDOW
+    return {
+        "invocation": ["video-editing", "propose", "-", "--json", "--workspace", "<dir>", "--allowed-input", "<root>"],
+        "request_schema": PROPOSE_SCHEMA, "response_schema": PROPOSALS_SCHEMA,
+        "request_shape": {"schema": PROPOSE_SCHEMA,
+                          "retakes": {"transcript": "JSON file under an allowed root: {words: [{word | text, start, end}]} in time order",
+                                      "profile": f"{' | '.join(sorted(PROFILES))} (default {DEFAULT_PROFILE}; others are regional profiles)",
+                                      "min_confidence": f"0..1 (default {DEFAULT_MIN_CONFIDENCE})"}},
+        "applies": "nothing: the response says applied: false; approved proposal ids become CONDENSE segments, and only those are cut",
+        "rules": {"repeat": "the same 1-4 words twice in a row; the first saying is proposed, up to where the second starts",
+                  "restart": f"a phrase of 2+ words said again within {RESTART_WINDOW} words and {RESTART_MAX_SECONDS:g} s, with only hesitations "
+                             "between (or a 3+ word opening after at most 3 words)",
+                  "fragment": "a broken-off word (ends with -, —, ~) or a short false start the next word begins with",
+                  "filler": {k: sorted(v["fillers"]) for k, v in sorted(PROFILES.items())}},
+        "confidence": {"per_rule": dict(CONFIDENCE), "filler": "per word, in the profile",
+                       "meaning": "a fixed weight of the rule that fired, not a probability; emphatic doubles of the profile (very very, はい はい) score below the default"},
+        "proposal_shape": {"id": "p1..", "kind": "repeat | restart | fragment | filler", "label": "retake", "action": "cut", "start": "time", "end": "time",
+                           "word_range": "[first, last] word index", "text": "the words", "reason": "why, in words", "confidence": "0..1", "also": "merged overlaps"},
+        "not_provided": ["any model, score or language detection", "automatic application"],
+    }
+
+
 def ffmpeg_skill_version_range() -> str:
     """The version range this Skill's own `version_supported()` check enforces at runtime (`ffmpeg_skill.py`'s
     `MIN_VERSION`), as the range-string shape `dependencies[].version_range` uses (never an exact pin:
@@ -274,6 +297,8 @@ def skill_contract() -> Dict[str, Any]:
                                          "POSITION: not planned as a type (see docs/decisions.md ADR-002)"]}},
         # ---- 0.1.x additive blocks: encoding profile, frame semantics, media policy (docs/decisions.md ADR-003 .. ADR-005)
         "encoding": ENCODING,
+        # ---- cut proposals (docs/decisions.md ADR-024)
+        "proposals": proposals_block(),
         # ---- stinger transition (docs/decisions.md ADR-023)
         "stinger": STINGER,
         # ---- AI-generated sources (docs/decisions.md ADR-022)

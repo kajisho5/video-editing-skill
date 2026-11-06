@@ -64,6 +64,22 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Needs: a stinger with a cut point (hyperframes-skill stinger templates, or any alpha file with its cut point given)
   - Done when: two clips joined with a 1.2 s stinger cut at 0.5 s switch at exactly that frame (framemd5 around the cut), and qc-skill's stinger cut-point check passes on the result
   - Partly done (ADR-023): CONCAT `transition: {type: stinger, stinger, cut_point, cover}`; `StingerTests` shows the switch at exactly the cut frame (frame 60 fully covered, 59 shows A, 61 shows B, decoded pixels), the stinger's sound mixed in, the timeline reporting the cut there, and a cut point outside the stated cover refused. **Not met:** qc-skill has no stinger cut-point check yet (to run on the result), and full cover is checked against the stated cover window only — no ffmpeg-skill tool measures a stinger's alpha at one frame. Left unchecked until qc-skill's check exists
+- [x] **14. Retake and stumble proposals** — from a transcript with word timings, find retakes (a phrase said again), stumbles (broken-off words, false starts), repeats and hesitation words, and propose each as a cut with its reason; nothing is applied, only proposals a person approves reach the edit (CONDENSE, step 16). English by default; other languages as selectable regional profiles
+  - Why: the usual clean-up of a talk or interview is proposed, not done blind（なぜ要るか：言い直し・詰まりを理由付きで提案し、人が承認したものだけ切る）
+  - Done when: every retake in a fixture is proposed, and a clean-speech fixture gives no more false positives than the default threshold allows
+  - Done (ADR-024): `video-editing propose` with `retakes: {transcript, profile, min_confidence}` returns proposals (repeat / restart / fragment / filler) with a reason and a rule confidence, `applied: false`, writing nothing. `RetakeProposalTests`: all six retakes of the English fixture and all four of the Japanese one (`profile: ja`) are proposed; the clean-speech fixture gives none at the default threshold (its emphatic doubles score 0.3, below 0.5)
+- [ ] **15. Cuts by amount of motion** — find the spans with no motion (a fixed camera with nobody in frame) from the picture, and combine them with the sound (silence) by and / or into labelled spans
+  - Why: dead spans of a fixed-camera recording are found without watching it（なぜ要るか：定点カメラの不在区間を映像から見つける）
+  - Done when: a fixture with a still span finds it to within one frame
+- [ ] **16. A choice per labelled span** — per label (silence, static, retake, ...), cut / keep / speed (with a factor)
+  - Why: silences can be sped up instead of cut, retakes cut, the rest kept, in one edit（なぜ要るか：ラベルごとに切る・残す・早送りを選べる）
+  - Done when: an edit that keeps the silences at double speed has the right duration and keeps the pitch (atempo)
+- [ ] **17. Review of the planned cuts** — write a review file that joins only the spans to be removed, plus their list
+  - Why: what will be cut is checked before it is cut（なぜ要るか：削除予定の区間だけを繋いで確認できる）
+  - Done when: the review file lasts the sum of the removed spans
+- [ ] **18. Export to a target file size** — given a limit such as 25 MB, work out the video bitrate from the duration and the audio bitrate and write it in two passes through ffmpeg-skill; past the limit, work it out again and retry; when it cannot fit (resolution, lowest bitrate), fail with the reason
+  - Why: deliveries with a size cap (mail, chat, upload limits) are met on the first try（なぜ要るか：サイズ上限のある納品を一度で満たす）
+  - Done when: on two or three fixtures the output is at or under the limit and at least 90 % of it
 
 ## Boundaries
 
