@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.14 - 2026-11-06
+
+- Retake proposals from word timings; roadmap steps 14-18 (roadmap step 14) (#36) (ec51f7f)
+
 ## v0.4.13 - 2026-11-06
 
 - Stinger transition for CONCAT (roadmap step 13) (#35) (182b833)
