@@ -842,6 +842,81 @@ class PunchInTests(unittest.TestCase):
             self.assertAlmostEqual(x1 - x0 + 1, 40, delta=3)
 
 
+def audio_md5s(path):
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0:a", "-f", "framemd5", "-"],
+                         stdout=subprocess.PIPE, check=True, text=True).stdout
+    return [ln for ln in out.splitlines() if ln and not ln.startswith("#")]
+
+
+@unittest.skipUnless(READY and HAS_CROP, REASON + " with crop.py")
+class MultiAspectTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 11 (ADR-021): one cut list, three deliveries (16:9, 9:16, 1:1) in one request; each shot of the
+    vertical and square versions cropped with its own window (CROP), the shots shared, the outputs of equal duration."""
+    SHOTS = [(0, 2), (2.5, 4), (4.5, 6)]
+    VERTICAL = [10, 115, 220]   # x of each shot's 90x160 window (from a subject path, in a real edit)
+    SQUARE = [0, 70, 140]       # x of each shot's 180x180 window
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-aspect-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "6", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-ac", "2", cls.src], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def doc(self, vertical_x):
+        ops = [{"id": f"s{i}", "type": "TRIM", "input": "S", "params": {"start": a, "end": b}} for i, (a, b) in enumerate(self.SHOTS)]
+        ops.append({"id": "wide", "type": "CONCAT", "inputs": ["s0", "s1", "s2"], "params": {"width": 320, "height": 180}})
+        for i, x in enumerate(vertical_x):
+            ops.append({"id": f"v{i}", "type": "CROP", "input": f"s{i}", "params": {"x": x, "y": 10, "width": 90, "height": 160}})
+        ops.append({"id": "vertical", "type": "CONCAT", "inputs": ["v0", "v1", "v2"], "params": {"width": 180, "height": 320}})
+        for i, x in enumerate(self.SQUARE):
+            ops.append({"id": f"q{i}", "type": "CROP", "input": f"s{i}", "params": {"x": x, "y": 0, "width": 180, "height": 180}})
+        ops.append({"id": "square", "type": "CONCAT", "inputs": ["q0", "q1", "q2"], "params": {"width": 180, "height": 180}})
+        return request([{"id": "S", "path": self.src}], ops,
+                       [{"id": "w", "operation": "wide", "path": "out/p_16x9.mp4"}, {"id": "v", "operation": "vertical", "path": "out/p_9x16.mp4"},
+                        {"id": "q", "operation": "square", "path": "out/p_1x1.mp4"}])
+
+    def run_cli(self, doc, ws):
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        return rc, out
+
+    def test_three_aspects_from_one_edit(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        rc, out = self.run_cli(self.doc(self.VERTICAL), ws)
+        self.assertEqual(rc, 0, json.dumps(out.get("error")))
+        paths = {k: os.path.join(ws, "out", f"p_{k}.mp4") for k in ("16x9", "9x16", "1x1")}
+        self.assertEqual((size(paths["16x9"]), size(paths["9x16"]), size(paths["1x1"])), ((320, 180), (180, 320), (180, 180)))
+        durs = [duration(p) for p in paths.values()]
+        self.assertAlmostEqual(durs[0], 5.0, delta=0.35)   # the contract's frame tolerance (0.11.0's join.py lands 5.106)
+        self.assertLess(max(durs) - min(durs), 1 / 30 + 0.025, durs)   # equal to within a frame (container rounding)
+        trims = [r for r in out["execution"]["operations"] if r["type"] == "TRIM"]
+        self.assertEqual(len(trims), 3, "each shot is cut once and shared by the three versions")
+        for r in out["execution"]["operations"]:
+            if r["type"] == "CROP":   # every window inside its shot's frame, as measured
+                fw, fh = r["normalized"]["source_frame"]
+                p = r["params"]
+                self.assertTrue(p["x"] + p["width"] <= fw and p["y"] + p["height"] <= fh, r["params"])
+        # the sound comes from the same shots: every version has it, and none is longer or shorter than the others
+        lens = [len(audio_md5s(p)) for p in paths.values()]
+        self.assertLessEqual(max(lens) - min(lens), 1, lens)
+
+    def test_a_window_outside_the_source_is_refused_before_anything_runs(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        rc, out = self.run_cli(self.doc([10, 115, 240]), ws)   # 240 + 90 > 320
+        self.assertEqual(out["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(out["error"]["details"]["reason"], "crop_outside_frame")
+        self.assertFalse(os.path.exists(os.path.join(ws, "out")))
+
+
 @unittest.skipUnless(READY, REASON)
 class MediaMatrixE2ETests(unittest.TestCase):
     """Real-media matrix (contract.media_policy, frame_semantics, encoding): A video-only, B video+audio, C mixed audio,

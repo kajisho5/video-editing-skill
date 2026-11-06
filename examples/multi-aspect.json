@@ -1,0 +1,31 @@
+{
+  "schema": "video-editing/request@1",
+  "project": {
+    "id": "one-edit-three-aspects",
+    "sources": [
+      {"id": "talk", "path": "in/talk.mp4"}
+    ],
+    "operations": [
+      {"id": "shot1", "type": "TRIM", "input": "talk", "params": {"start": "0:12", "end": "0:18"}},
+      {"id": "shot2", "type": "TRIM", "input": "talk", "params": {"start": "1:40", "end": "1:47.5"}},
+      {"id": "shot3", "type": "TRIM", "input": "talk", "params": {"start": "3:05", "end": "3:09"}},
+
+      {"id": "wide", "type": "CONCAT", "inputs": ["shot1", "shot2", "shot3"], "params": {"width": 1920, "height": 1080}},
+
+      {"id": "shot1_v", "type": "CROP", "input": "shot1", "params": {"x": 420, "y": 28, "width": 576, "height": 1024}},
+      {"id": "shot2_v", "type": "CROP", "input": "shot2", "params": {"x": 1010, "y": 28, "width": 576, "height": 1024}},
+      {"id": "shot3_v", "type": "CROP", "input": "shot3", "params": {"x": 680, "y": 28, "width": 576, "height": 1024}},
+      {"id": "vertical", "type": "CONCAT", "inputs": ["shot1_v", "shot2_v", "shot3_v"], "params": {"width": 1080, "height": 1920}},
+
+      {"id": "shot1_s", "type": "CROP", "input": "shot1", "params": {"x": 200, "y": 0, "width": 1080, "height": 1080}},
+      {"id": "shot2_s", "type": "CROP", "input": "shot2", "params": {"x": 760, "y": 0, "width": 1080, "height": 1080}},
+      {"id": "shot3_s", "type": "CROP", "input": "shot3", "params": {"x": 430, "y": 0, "width": 1080, "height": 1080}},
+      {"id": "square", "type": "CONCAT", "inputs": ["shot1_s", "shot2_s", "shot3_s"], "params": {"width": 1080, "height": 1080}}
+    ],
+    "outputs": [
+      {"id": "landscape", "operation": "wide", "path": "out/programme_16x9.mp4"},
+      {"id": "shorts", "operation": "vertical", "path": "out/programme_9x16.mp4"},
+      {"id": "feed", "operation": "square", "path": "out/programme_1x1.mp4"}
+    ]
+  }
+}

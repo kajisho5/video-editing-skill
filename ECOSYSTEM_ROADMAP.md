@@ -51,9 +51,10 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Why: the common punch-in on the speaker follows the face automatically（なぜ要るか：話者に寄る演出を顔の位置に合わせて入れられる）
   - Done when: a fixture with a face left of centre keeps the face inside the zoomed frame for the whole range
   - Done (ADR-020): `PUNCH_IN {start, end, scale, subject}` — window centred on the caller's box (detection-skill's face box) and kept inside the frame; `PunchInTests` checks decoded frames across the range (the doubled box stays fully inside). Hard cut only: a short ease needs a time-varying crop (Velisa proposal 2 to ffmpeg-skill). Which jump cuts get one stays the agent's decision (ADR-001)
-- [ ] **11. One edit, several aspects** — one cut list rendered as 16:9, 9:16 and 1:1 in one request, each shot cropped with one window per shot from detection-skill's subject path (CROP), the audio shared
+- [x] **11. One edit, several aspects** — one cut list rendered as 16:9, 9:16 and 1:1 in one request, each shot cropped with one window per shot from detection-skill's subject path (CROP), the audio shared
   - Why: the landscape programme and the vertical shorts ship from one edit（なぜ要るか：横の本編と縦型を同じ編集から同時に納品できる）
   - Done when: a three-shot fixture gives three outputs of equal duration, each shot's window inside the source
+  - Done (ADR-021): a request graph, no new type — shared TRIMs, one CROP per shot per aspect (windows from the caller), one CONCAT per aspect; `examples/multi-aspect.json`. `MultiAspectTests`: 16:9 / 9:16 / 1:1 outputs equal in duration to within a frame, every window checked inside its measured shot, one outside refused before execution. The sound is the same source ranges in each output but encoded per output (not bit-identical); one shared track would need a mux step
 - [ ] **12. AI-generated clips in an edit** — a generated clip is normalised before it joins (fps, size, SAR, colour tags, a silent track when it has none), and provenance marks it `AI_GENERATED` with its generator and licence as declared by the caller
   - Why: generated clips join an edit without format mismatches or a missing AI label（なぜ要るか：生成映像を混ぜても規格不一致と表記漏れが起きない）
   - Done when: a 24 fps, untagged, silent fixture joins a 29.97 fps edit without a duration drift and carries the mark
