@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.11 - 2026-11-06
+
+- One edit rendered in several aspects (roadmap step 11) (#33) (d96d46e)
+
 ## v0.4.10 - 2026-11-06
 
 - PUNCH_IN: a hard-cut zoom on a subject box (roadmap step 10) (#32) (0403787)
