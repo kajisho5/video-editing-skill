@@ -109,6 +109,10 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
                      "width": "even int px (optional; alone: height follows the image aspect)",
                      "height": "even int px (optional; alone: width follows the image aspect; both: exact frame, the image covers it, centre-cropped)",
                      "fps": "1..240 (optional, default 30)"},
+    "CONDENSE": {"segments": "[{start, end, label}] non-overlapping spans of the input (e.g. approved proposals: retake, silence, static); label "
+                             "[a-z0-9][a-z0-9_+.-]{0,39}",
+                 "rules": "{label: cut | keep | {speed: factor 1/4..4, not 1}}: one per label used",
+                 "default": "cut | keep | {speed: factor} for the time no segment covers (default keep)"},
     "PUNCH_IN": {"start": "time", "end": "time (> start): the zoomed range; a hard cut in at start and out at end",
                  "scale": "number or N/D in (1, 4]: the zoom (2 = the window is half the frame in each dimension)",
                  "subject": "{x, y, width, height} int px in the input frame as displayed: the box to keep in view (e.g. detection-skill's face box); "

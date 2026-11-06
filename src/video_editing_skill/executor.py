@@ -19,7 +19,7 @@ from fractions import Fraction
 from .compiler import ALLOWED_FLAGS, Step, _fps_text, compile_project, output_extension
 from .errors import EditError
 from .ffmpeg_skill import FfmpegSkill, cancelled, missing_capabilities, probe, run_tool, tool_error
-from .operations import ENCODING_DEFAULTS, MEDIA, even, params_to_json, punch_window
+from .operations import ENCODING_DEFAULTS, MEDIA, condense_pieces, even, params_to_json, punch_window
 from .paths import is_within
 from .project import EditProject
 from .timebase import Time
@@ -134,6 +134,15 @@ class Executor:
                 needs = [("overlay", ["--video", "--place", "--position", "--margin", "--scale"])]
                 if self.profile(op.stinger).get("audio"):
                     needs += [("broll", ["--insert", "--at", "--duration", "--audio"]), ("audio", ["--replace"])]
+                for tool, flags in needs:
+                    if tool not in self.skill.tools:
+                        gaps.append(f"tool:ffmpeg-skill/{tool}")
+                    else:
+                        gaps += [f"flag:ffmpeg-skill/{tool} {f}" for f in self.skill.missing_flags(tool, flags)]
+            if op.type == "CONDENSE":   # cut each piece, fit --duration a sped one, join them (ADR-026)
+                needs = [("cut", ["--start", "--end", "--accurate"]), ("join", ["--transition", "--width", "--height", "--fps"])]
+                if any("factor" in r for r in list(op.params["rules"].values()) + [op.params["default"]]):
+                    needs.append(("fit", ["--duration", "--method", "--max-speed"]))
                 for tool, flags in needs:
                     if tool not in self.skill.tools:
                         gaps.append(f"tool:ffmpeg-skill/{tool}")
@@ -303,7 +312,7 @@ class Executor:
                 if any(h is True for h in hdrs.values()) and any(h is False for h in hdrs.values()):
                     raise EditError("INVALID_INPUT", f"operation {ref!r} (CONCAT): HDR and SDR inputs cannot be joined (the engine encodes from the first input's colour system)",
                                     {"operation": ref, "inputs": hdrs, "reason": "hdr_mismatch"})
-            if op.type in ("TRIM", "CUT", "SPEED", "OVERLAY", "ROTATE", "FREEZE", "REVERSE", "PUNCH_IN"):   # these keep the input frame; the engine's encoders need even sizes
+            if op.type in ("TRIM", "CUT", "SPEED", "OVERLAY", "ROTATE", "FREEZE", "REVERSE", "PUNCH_IN", "CONDENSE"):   # these keep the input frame; the engine's encoders need even sizes
                 prof = self.profile(video_inputs[0])
                 if prof["width"] and prof["height"] and (prof["width"] % 2 or prof["height"] % 2):
                     raise EditError("INVALID_INPUT", f"operation {ref!r} ({op.type}): input {video_inputs[0]!r} frame {prof['width']}x{prof['height']} has an odd dimension; "
@@ -348,6 +357,10 @@ class Executor:
                 ranges = [(op.params["start"], op.params["end"])]
             elif op.type == "CUT":
                 ranges = [(r["start"], r["end"]) for r in op.params["keep"]]
+            elif op.type == "CONDENSE":
+                ranges = [(r["start"], r["end"]) for r in op.params["segments"]]
+                if not any(pc["action"] != "cut" for pc in condense_pieces(op.params, limit)):
+                    raise EditError("INVALID_REQUEST", f"operation {ref!r} (CONDENSE): every span is cut; nothing would be kept", {"reason": "nothing_kept"})
             elif op.type == "FREEZE" and "at" in op.params:
                 at = op.params["at"]
                 if not at.value < limit.value:   # the last frame is held by omitting `at`
@@ -484,6 +497,8 @@ class Executor:
                 d["segments"] = self.segments_plan(ref)
             if self.project.operations[ref].type == "PUNCH_IN" and self.source_probes:
                 d["punch_in"] = self.punch_plan(ref)
+            if self.project.operations[ref].type == "CONDENSE" and self.source_probes:
+                d["condense"] = self.condense_plan(ref)
             if self.project.operations[ref].stinger is not None and self.source_probes:
                 d["stinger"] = self.stinger_plan(ref)
             if preview:
@@ -493,6 +508,8 @@ class Executor:
 
     def _preview(self, ref: str) -> Dict[str, Any]:
         """ffmpeg-skill --dry-run for one step: the commands it would run. Nothing is written."""
+        if self.project.operations[ref].type == "CONDENSE":
+            return {"ok": True, "commands": [], "note": "CONDENSE runs ffmpeg-skill cut per piece, fit --duration per sped piece and join; each call's commands are recorded when it runs"}
         if self.project.operations[ref].type == "PUNCH_IN":
             return {"ok": True, "commands": [], "note": "PUNCH_IN runs ffmpeg-skill cut, crop, fit and join in turn; each call's commands are recorded when it runs"}
         if self.project.operations[ref].stinger is not None:
@@ -642,6 +659,8 @@ class Executor:
             commands, seconds, segments = self._run_segments(ref, partial, t0)
         elif op.type == "PUNCH_IN":
             commands, seconds = self._run_punch_in(ref, partial, t0)
+        elif op.type == "CONDENSE":
+            commands, seconds = self._run_condense(ref, partial, t0)
         elif op.stinger is not None:
             commands, seconds = self._run_stinger(ref, partial, t0)
         else:
@@ -673,6 +692,8 @@ class Executor:
         self.results.append(self._record(op, st, "completed", t0, final, digest, doc, commands, seconds, segments=segments))
         if op.type == "PUNCH_IN":
             self.results[-1]["punch_in"] = self.punch_plan(ref)
+        if op.type == "CONDENSE":
+            self.results[-1]["condense"] = self.condense_plan(ref)
         if op.stinger is not None:
             self.results[-1]["stinger"] = self.stinger_plan(ref)
         if engine_doc is not None and op.type in ("TRIM", "CUT") and op.params.get("precision") in ("keyframe", "auto"):
@@ -939,6 +960,86 @@ class Executor:
                 if t != partial:
                     _remove(t)
         return commands, seconds
+
+    # ------------------------------------------------------------ CONDENSE (ADR-026)
+    def _input_duration(self, op) -> Optional[Time]:
+        c = self.clips.get(op.inputs[0])
+        return c.duration if c is not None and c.duration is not None else self.durations.get(op.inputs[0])
+
+    def condense_plan(self, ref: str) -> Optional[Dict[str, Any]]:
+        op = self.project.operations[ref]
+        d = self._input_duration(op)
+        if d is None:
+            return None
+        pieces = condense_pieces(op.params, d)
+        rows = []
+        for pc in pieces:
+            length = pc["end"] - pc["start"]
+            f = pc.get("factor")
+            rows.append({"start": pc["start"].to_dict(), "end": pc["end"].to_dict(), "label": pc["label"], "action": pc["action"],
+                         "factor": params_to_json({"f": f})["f"] if f is not None else None,
+                         "output_seconds": "0.000000" if pc["action"] == "cut" else length.scale(1 / (f or Fraction(1))).to_dict()["seconds"]})
+        removed = sum(((pc["end"] - pc["start"]).value for pc in pieces if pc["action"] == "cut"), Fraction(0))
+        return {"pieces": rows, "removed": Time(removed).to_dict(), "input_duration": d.to_dict()}
+
+    def _engine_call(self, op, st: Step, t0: str, tool: str, args: Dict[str, Any], inputs: List[str], temps: List[str], acc: Dict[str, Any],
+                     engine_args: Optional[Dict[str, Any]] = None) -> str:
+        """One typed ffmpeg-skill call writing a temporary file of this operation (removed by the caller)."""
+        out = os.path.join(self.work, f"{op.operation_id}.t{len(temps)}.partial.{os.getpid()}{output_extension(self.project, op.ref)}")
+        _remove(out)
+        temps.append(out)
+        enc = {k: op.encoding[k] for k in ("crf", "preset") if op.encoding and k in op.encoding}
+        argv = Step(op, "ffmpeg-skill/" + tool, dict(args, **enc), []).argv_for(inputs, out, resolve=lambda f: self.skill.resolve_flag(tool, f),
+                                                                               engine_args=engine_args)
+        self.log(f"run {op.ref}: ffmpeg-skill/{tool}")
+        run = run_tool(self.skill, tool, argv, timeout=self.project.options.timeout_seconds)
+        acc["commands"].extend(run.commands)
+        acc["seconds"] += run.seconds
+        if not run.ok:
+            err = tool_error(run, f"operation {op.ref!r} ({op.type}, ffmpeg-skill/{tool})")
+            for t in temps:
+                _remove(t)
+            self.results.append(self._record(op, st, "failed", t0, None, None, None, acc["commands"], acc["seconds"], err))
+            raise err
+        return out
+
+    def _run_condense(self, ref: str, partial: str, t0: str) -> tuple:
+        """Each piece that is kept is cut out frame-accurately; a sped one is then retimed by fit.py --duration (method speed:
+        picture and pitch-preserved sound, as SPEED); the pieces are joined in order with no transition."""
+        op = self.project.operations[ref]
+        st = self.steps[ref]
+        d = self._input_duration(op)
+        src = self._path_of(op.inputs[0], False)
+        if d is None:
+            d = self._probe_duration(src)
+        prof = self.profile(op.inputs[0])
+        cut_args = {"no_keep_hevc": True} if self.skill.cut_keeps_hevc_by_default() else {}
+        temps: List[str] = []
+        acc: Dict[str, Any] = {"commands": [], "seconds": 0.0}
+        try:
+            parts: List[str] = []
+            for pc in condense_pieces(op.params, d):
+                if pc["action"] == "cut":
+                    continue
+                part = self._engine_call(op, st, t0, "cut", {"start": pc["start"].tool_arg(), "end": pc["end"].tool_arg(), "accurate": True}, [src], temps, acc,
+                                         cut_args)
+                if pc["action"] == "speed":
+                    target = (pc["end"] - pc["start"]).scale(1 / pc["factor"])
+                    part = self._engine_call(op, st, t0, "fit", {"duration": target.tool_arg(), "method": "speed", "max_speed": "4"}, [part], temps, acc)
+                parts.append(part)
+            if len(parts) == 1:
+                os.replace(parts[0], partial)
+            else:
+                fps = prof.get("fps")
+                args: Dict[str, Any] = {"transition": "none", "width": prof["width"], "height": prof["height"]}
+                if fps:
+                    args["fps"] = _fps_text(Fraction(fps).limit_denominator(1001))
+                os.replace(self._engine_call(op, st, t0, "join", args, parts, temps, acc), partial)
+        finally:
+            for t in temps:
+                if t != partial:
+                    _remove(t)
+        return acc["commands"], acc["seconds"]
 
     # ------------------------------------------------------------ PUNCH_IN (ADR-020)
     def punch_plan(self, ref: str) -> Optional[Dict[str, Any]]:

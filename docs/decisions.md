@@ -1010,3 +1010,41 @@ gains silence and scenes. The agent pins that block, so the agent re-pins.
   - the response stays `applied: false`.
 - `tests/test_unit.py::SpanCombineTests` covers the and / or arithmetic.
 
+## ADR-026 — CONDENSE: one rule per labelled span (cut, keep, speed)
+
+**Context.** ECOSYSTEM_ROADMAP step 16: once proposals are approved (retakes, silences, static spans; ADR-024 / ADR-025),
+each kind of span needs its own treatment. Retakes are cut, silences may be kept at double speed, and the rest is kept.
+
+**Decision.** A new operation type, `CONDENSE {segments: [{start, end, label}], rules: {label: cut | keep | {speed:
+factor}}, default}` (capability `video.condense`).
+- **The parameters.** `segments` are spans of the input; they may not overlap, and they are sorted. Labels are lower-case
+  tokens (`retake`, `silence`, `silence+static`, ...). Every label used needs a rule (`missing_rule`). `default` (keep
+  by default) is the rule for the time that no segment covers. A speed factor is SPEED's range [1/4, 4], and not 1. An
+  edit that keeps nothing is refused (`nothing_kept`).
+- **Pieces.** The input is split into pieces in order (`operations.condense_pieces`), and neighbours with the same rule
+  merge.
+- **Engine calls.**
+  - Each kept piece is cut with `cut.py --start --end --accurate` (`--no-keep-hevc` where the release has it, ADR-017).
+  - A sped piece is then retimed with `fit.py --duration <len / factor> --method speed --max-speed 4`, the same call as
+    SPEED. The sound keeps its pitch (atempo).
+  - The pieces are joined with `join.py --transition none` at the input's size and rate. The sound comes out as stereo
+    AAC.
+- **Timeline and report.** The timeline maps each kept piece at speed 1 and each sped piece at speed `factor`. Cut pieces
+  leave the timeline. The record and the plan carry `condense: {pieces: [{start, end, label, action, factor,
+  output_seconds}], removed, input_duration}`.
+
+The judgement stays outside, as ADR-001 requires: the caller decides which proposals are approved and which rule each
+label gets.
+
+**Versioning.** A new type in `operations`, `capabilities` and `tools` (pinned): breaking by ADR-007's convention. The
+bump is left to the release, and the agent re-pins and needs a lowering.
+
+**Verified.**
+- `tests/test_integration.py::CondenseTests`, against ffmpeg-skill 3.2.0 and 0.11.0:
+  - **Fixture.** A 6 s clip: a 440 Hz tone, then 2 s at -50 dBFS (an 880 Hz tone), then the tone again.
+  - **Proposal.** `propose` finds the 2 s silence. The test approves it and runs CONDENSE with `silence: {speed: 2}`.
+  - **Result.** The output lasts 5 s (within 0.1 s). The tones measure 440 / 880 / 440 Hz, so the sped span keeps its
+    pitch. The timeline shows speeds 1 / 2 / 1.
+- `tests/test_unit.py::CondenseParamTests` (pieces, timeline, refusals) and `test_engine_contract.CondenseFakeTests` (the
+  calls, `nothing_kept`).
+

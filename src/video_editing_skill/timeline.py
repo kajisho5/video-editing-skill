@@ -18,6 +18,7 @@ duration_known: false and downstream timeline ranges are omitted (never guessed)
 from fractions import Fraction
 from typing import Any, Dict, List, Optional
 
+from .operations import condense_pieces
 from .project import EditOperation, EditProject
 from .timebase import Time
 
@@ -117,6 +118,8 @@ def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[
         return Clip(src.duration, list(src.segments), list(src.overlays) + [ov])
     if op.type == "FREEZE":
         return _freeze(inputs[0], p.get("at"), p["hold"])
+    if op.type == "CONDENSE":
+        return _condense(inputs[0], p)
     if op.type == "REVERSE":
         return _reverse(inputs[0])
     if op.type == "CONCAT":
@@ -168,6 +171,24 @@ def _cut(src: Clip, ranges: List[tuple]) -> Clip:
             se = s.source_start + (hi - s.timeline_start).scale(s.speed)
             segs.append(Segment(s.source, ss, se, total + (lo - a), total + (hi - a), s.speed))
         total = total + length
+    return Clip(total, segs, [])
+
+
+def _condense(src: Clip, p: Dict[str, Any]) -> Clip:
+    """CONDENSE: the pieces kept (speed 1) or sped up (speed x factor), back to back; cut pieces leave the timeline."""
+    if src.duration is None:
+        return Clip(None, list(src.segments), [])
+    segs: List[Segment] = []
+    total = ZERO
+    for pc in condense_pieces(p, src.duration):
+        if pc["action"] == "cut":
+            continue
+        f = pc.get("factor", Fraction(1))
+        for s in _cut(src, [(pc["start"], pc["end"])]).segments:
+            ts = total + s.timeline_start.scale(1 / f) if s.timeline_start is not None else None
+            te = total + s.timeline_end.scale(1 / f) if s.timeline_end is not None else None
+            segs.append(Segment(s.source, s.source_start, s.source_end, ts, te, s.speed * f))
+        total = total + (pc["end"] - pc["start"]).scale(1 / f)
     return Clip(total, segs, [])
 
 

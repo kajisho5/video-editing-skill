@@ -33,7 +33,9 @@ clockwise and/or mirror `h`/`v`), `FREEZE` (`hold` seconds of one frame: at `at`
 omitted), `REVERSE` (backwards, picture and audio), `IMAGE_INSERT` (one `kind: "image"` source → a silent clip of
 `duration` seconds, optional `width` / `height` / `fps`, that `CONCAT` can join: a title card or end slate), `CROP`
 (exactly the pixel rectangle `{x, y, width, height}` you give: even sizes, inside the frame as displayed; decide the
-rectangle yourself, e.g. from ffmpeg-skill `cropdetect`), `PUNCH_IN` (`start`, `end`, `scale` in (1, 4], `subject`
+rectangle yourself, e.g. from ffmpeg-skill `cropdetect`), `CONDENSE` (`segments` `[{start, end, label}]` and `rules` `{label: cut | keep | {speed: f}}`, `default` keep: apply the
+proposals from `video-editing propose` that a person approved; e.g. cut retakes and keep silences at double speed),
+`PUNCH_IN` (`start`, `end`, `scale` in (1, 4], `subject`
 `{x, y, width, height}`: a hard-cut zoom on the box you give, e.g. detection-skill's face box; which jump cuts get one is
 your decision). `FREEZE` / `REVERSE` / `IMAGE_INSERT` / `CROP` need ffmpeg-skill's
 `freeze.py` / `reverse.py` / `insert.py` / `crop.py`; `doctor --json` says whether the installed checkout has them. Anything
