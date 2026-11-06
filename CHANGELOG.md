@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.12 - 2026-11-06
+
+- AI-generated sources: declared, conformed by CONCAT, marked downstream (roadmap step 12) (#34) (cf926d5)
+
 ## v0.4.11 - 2026-11-06
 
 - One edit rendered in several aspects (roadmap step 11) (#33) (d96d46e)
