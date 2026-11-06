@@ -20,7 +20,9 @@ ALLOWED_FLAGS: Dict[str, tuple] = {
     "cut": ("start", "end", "segments", "accurate", "tolerance", "no_keep_hevc") + ENCODING_FLAGS,   # no_keep_hevc: set by the executor only (ADR-017)
     "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color", "copy") + ENCODING_FLAGS,   # copy: segment joins only (ADR-018)
     "fit": ("duration", "method", "max_speed", "smooth", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps", "rotate", "flip") + ENCODING_FLAGS,
-    "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
+    "overlay": ("image", "video", "place", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,   # video / place: stinger only
+    "broll": ("insert", "at", "duration", "audio"),   # stinger sound only (ADR-023): the stinger's audio mixed in under each join
+    "audio": ("replace",),                            # stinger sound only: the mixed track onto the composited picture
     "freeze": ("at", "hold", "mode") + ENCODING_FLAGS,
     "reverse": ENCODING_FLAGS,
     "insert": ("duration", "width", "height", "fps") + ENCODING_FLAGS,
@@ -120,7 +122,7 @@ def compile_operation(op: EditOperation) -> Step:
 
 def _compile(op: EditOperation) -> Step:
     p = op.params
-    video_inputs = op.inputs[:-1] if op.type == "OVERLAY" else op.inputs
+    video_inputs = op.video_inputs
     if op.type == "TRIM":
         args: Dict[str, Any] = {"start": p["start"].tool_arg(), "end": p["end"].tool_arg()}
         if p["precision"] == "frame":
@@ -138,6 +140,8 @@ def _compile(op: EditOperation) -> Step:
         return Step(op, "ffmpeg-skill/cut", args, video_inputs)
     if op.type == "CONCAT":
         tr = p.get("transition")
+        if tr and tr["type"] == "stinger":   # butt-joined here; the stinger is laid over each join afterwards (ADR-023)
+            tr = None
         args = {"transition": tr["type"] if tr else "none", "duration": tr["duration"].tool_arg() if tr else "0",
                 "fit": p["mode"], "pad_color": p["pad_color"]}
         for k in ("width", "height"):

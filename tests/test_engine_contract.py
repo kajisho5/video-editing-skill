@@ -629,3 +629,48 @@ class GeneratedSourceMarkTests(FakeEngineHarness):
         self.assertEqual(sorted(r["operation_id"] for r in out2["execution"]["operations"]), sorted(r["operation_id"] for r in out["execution"]["operations"]))
         self.assertEqual(out2["status"], "reused")
         self.assertNotIn("marks", {o["id"]: o for o in out2["execution"]["outputs"]}["y"])
+
+
+class StingerTransitionTests(FakeEngineHarness):
+    """CONCAT transition stinger (ADR-023) through the fake engine: the calls, the plan, and every refusal before execution."""
+
+    def setUp(self):
+        super().setUp()
+        write_fake_media(os.path.join(self.ws, "in", "stinger_alpha.mov"))
+        write_fake_media(os.path.join(self.ws, "in", "stinger_opaque.mov"))
+
+    def doc(self, stinger="ST", cut_point=0.5, cover=None, inputs=("A", "B")):
+        src = self.sources() + [{"id": "ST", "path": "in/stinger_alpha.mov"}, {"id": "OP", "path": "in/stinger_opaque.mov"}]
+        tr = {"type": "stinger", "stinger": stinger, "cut_point": cut_point, "cover": cover or {"start": 0.4, "end": 0.6}}
+        return request(src, [{"id": "c", "type": "CONCAT", "inputs": list(inputs), "params": {"transition": tr}}],
+                       [{"id": "x", "operation": "c", "path": "out/c.mp4"}], options={"overwrite": True})
+
+    def test_join_overlay_broll_audio_and_the_report(self):
+        rc, out = self.run_(self.doc(), expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([j["cut_at"]["rational"] for j in rec["stinger"]["joins"]], ["2/1"])
+        self.assertEqual(rec["stinger"]["joins"][0]["stinger_start"]["rational"], "3/2")
+        with open(os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".mp4"), "rb") as fh:
+            header = json.loads(fh.read()[4:].decode())
+        self.assertEqual(header["tool"], "audio", "with sound: the mixed track replaces the composite's")
+        self.assertAlmostEqual(header["duration"], 4.0)
+        self.assertEqual([i["ref"] for i in rec["inputs"]], ["A", "B", "ST"])
+        ov = out["execution"]["outputs"][0]["timeline"]["tracks"][1]["segments"]
+        self.assertEqual([(s["kind"], s["cut_at"]["rational"]) for s in ov], [("stinger", "2/1")])
+        rc, plan = self.run_(self.doc(inputs=("A", "B", "A")), "plan", expect=0)
+        self.assertEqual([j["cut_at"]["rational"] for j in plan["plan"]["steps"][0]["stinger"]["joins"]], ["2/1", "4/1"])
+
+    def test_refusals_before_execution(self):
+        cases = [(self.doc(cut_point=0.7), "stinger_not_covering"), (self.doc(stinger="OP"), "stinger_no_alpha"),
+                 (self.doc(cut_point=0.51, cover={"start": 0.5, "end": 0.6}), "cut_point_not_on_frame")]
+        for doc, reason in cases:
+            rc, out = self.run_(doc)
+            self.assertEqual(out["error"]["details"].get("reason"), reason, out["error"])
+        rc, out = self.run_(self.doc(cut_point={"frames": 75, "fps": 30}, cover={"start": 2, "end": 2.6}))
+        self.assertEqual(out["error"]["code"], "INVALID_TIME_RANGE", out["error"])
+        doc = self.doc()
+        doc["project"]["operations"].insert(0, {"id": "t", "type": "TRIM", "input": "ST", "params": {"start": 0, "end": 1}})
+        doc["project"]["operations"][1]["params"]["transition"]["stinger"] = "t"
+        rc, out = self.run_(doc)
+        self.assertEqual(out["error"]["details"].get("reason"), "kind_mismatch")
+        self.assertEqual(self.calls(), [])

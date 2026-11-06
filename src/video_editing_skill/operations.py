@@ -180,7 +180,8 @@ MEDIA: Dict[str, Dict[str, Any]] = {
                "requires": {"video": True, "audio": False, "image": False},
                "output": {"frame_size": "params.width x params.height, else the first input", "fps": "params.fps, else the first input",
                           "audio": "stereo AAC when any input has audio (silence is inserted for inputs without); none when no input has audio"},
-               "refused_before_execution": ["source without a video stream or duration", "an input shorter than twice the transition"]},
+               "refused_before_execution": ["source without a video stream or duration", "an input shorter than twice the transition",
+                                            "transition stinger: see contract.stinger.refused"]},
     "SPEED": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
               "output": {"frame_size": "as input", "audio": "as input, pitch preserved (atempo)", "fps": "as input", "duration": "input duration / factor"},
               "refused_before_execution": ["source without a video stream or duration", "factor outside [1/4, 4]", "input frame with an odd width or height (odd_frame)"]},
@@ -348,6 +349,24 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
         if tr is not None:
             if not isinstance(tr, dict):
                 raise EditError("INVALID_REQUEST", f"{what}.transition: must be an object")
+        if isinstance(tr, dict) and tr.get("type") == "stinger":
+            # a graphic with alpha laid over each join; the clips switch at its cut point, where it covers the frame (ADR-023).
+            # Its length is the file's; the cut point and the covered window are data the stinger's maker states (stinger.json)
+            _keys(tr, what + ".transition", ("type", "stinger", "cut_point", "cover"), ("type", "stinger", "cut_point", "cover"))
+            if not isinstance(tr["stinger"], str) or not tr["stinger"]:
+                raise EditError("INVALID_REQUEST", f"{what}.transition.stinger: must reference a video source id")
+            cp = Time.parse(tr["cut_point"], what + ".transition.cut_point")
+            cover = tr["cover"]
+            if not isinstance(cover, dict):
+                raise EditError("INVALID_REQUEST", f"{what}.transition.cover: must be an object {{start, end}}: the window the graphic covers the whole frame")
+            cov = _range(cover, what + ".transition.cover")
+            if not (cov["start"].value <= cp.value < cov["end"].value):
+                raise EditError("INVALID_REQUEST", f"{what}.transition: cut_point {cp.text(3)}s is not inside the covered window "
+                                f"[{cov['start'].text(3)}, {cov['end'].text(3)})s: the switch must happen under full cover",
+                                {"reason": "stinger_not_covering"})
+            p["transition"] = {"type": "stinger", "stinger": tr["stinger"], "cut_point": cp, "cover": cov}
+            tr = None
+        if tr is not None:
             _keys(tr, what + ".transition", ("type", "duration"), ("type", "duration"))
             d = Time.parse(tr["duration"], what + ".transition.duration")
             if not (Fraction(1, 100) <= d.value <= Fraction(10)):

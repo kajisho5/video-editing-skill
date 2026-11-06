@@ -14,7 +14,9 @@ from typing import Any, Dict, List, Optional
 
 from . import SKILL_ID, VERSION
 from .canonical import sha256_file, stable_hash
-from .compiler import Step, _fps_text, compile_project, output_extension
+from fractions import Fraction
+
+from .compiler import ALLOWED_FLAGS, Step, _fps_text, compile_project, output_extension
 from .errors import EditError
 from .ffmpeg_skill import FfmpegSkill, cancelled, missing_capabilities, probe, run_tool, tool_error
 from .operations import ENCODING_DEFAULTS, MEDIA, even, params_to_json, punch_window
@@ -128,6 +130,15 @@ class Executor:
                                 {"operation": ref, "tool": op.tool, "missing": [f"tool:{op.tool}"]}, retryable=False)
             gaps = missing_capabilities(self.engine_doctor, TOOL_REQUIREMENTS[op.tool]) if self.engine_doctor else []
             gaps += [f"flag:{f}" for f in self.skill.missing_flags(script, self.steps[ref].flags())]   # detected, not version-guessed
+            if op.stinger is not None:   # butt join, then the stinger over each join, then (with sound) its audio mixed in (ADR-023)
+                needs = [("overlay", ["--video", "--place", "--position", "--margin", "--scale"])]
+                if self.profile(op.stinger).get("audio"):
+                    needs += [("broll", ["--insert", "--at", "--duration", "--audio"]), ("audio", ["--replace"])]
+                for tool, flags in needs:
+                    if tool not in self.skill.tools:
+                        gaps.append(f"tool:ffmpeg-skill/{tool}")
+                    else:
+                        gaps += [f"flag:ffmpeg-skill/{tool} {f}" for f in self.skill.missing_flags(tool, flags)]
             if op.type == "PUNCH_IN":   # cut the range out, crop and scale it back, join the parts (ADR-020)
                 for tool, flags in (("cut", ["--start", "--end", "--accurate"]), ("fit", ["--aspect", "--fit", "--width"]),
                                     ("join", ["--transition", "--width", "--height", "--fps"]), ("crop", ["--x", "--y", "--width", "--height"])):
@@ -159,7 +170,7 @@ class Executor:
         prof: Dict[str, Any] = {"audio": first["audio"], "width": first["width"], "height": first["height"], "fps": first["fps"],
                                 "hdr": first["hdr"], "vfr": False, "provenance": "EXPECTED"}
         if op.type == "CONCAT":
-            ins = [self.profile(r) for r in op.inputs]
+            ins = [self.profile(r) for r in op.video_inputs]
             audios = [i["audio"] for i in ins]
             prof["audio"] = True if any(a is True for a in audios) else (False if all(a is False for a in audios) else None)
         if op.type == "IMAGE_INSERT":   # insert.py writes a silent SDR clip whatever the still is
@@ -284,7 +295,9 @@ class Executor:
         for ref in self.project.order:
             op = self.project.operations[ref]
             req = MEDIA[op.type]["requires"]
-            video_inputs = op.inputs[:-1] if op.type == "OVERLAY" else ([] if op.type == "IMAGE_INSERT" else op.inputs)
+            video_inputs = [] if op.type == "IMAGE_INSERT" else op.video_inputs
+            if op.stinger is not None:
+                self._check_stinger(ref)
             if op.type == "CONCAT":
                 hdrs = {r: self.profile(r).get("hdr") for r in video_inputs}
                 if any(h is True for h in hdrs.values()) and any(h is False for h in hdrs.values()):
@@ -352,7 +365,9 @@ class Executor:
                     raise EditError("INVALID_TIME_RANGE", f"operation {ref!r}: end {b.text(3)}s is beyond the input duration {limit.text(3)}s")
                 if b.value > limit.value:
                     self.project.warnings.append(f"operation {ref!r}: end {b.text(3)}s clamped to the input duration {limit.text(3)}s")
-            if op.type == "CONCAT" and op.params.get("transition"):
+            if op.type == "CONCAT" and op.stinger is not None:
+                self._check_stinger_ranges(ref)
+            elif op.type == "CONCAT" and op.params.get("transition"):
                 d = op.params["transition"]["duration"].value
                 for i in op.inputs:
                     c = self.clips.get(i)
@@ -469,6 +484,8 @@ class Executor:
                 d["segments"] = self.segments_plan(ref)
             if self.project.operations[ref].type == "PUNCH_IN" and self.source_probes:
                 d["punch_in"] = self.punch_plan(ref)
+            if self.project.operations[ref].stinger is not None and self.source_probes:
+                d["stinger"] = self.stinger_plan(ref)
             if preview:
                 d["preview"] = self._preview(ref)
             steps.append(d)
@@ -478,6 +495,9 @@ class Executor:
         """ffmpeg-skill --dry-run for one step: the commands it would run. Nothing is written."""
         if self.project.operations[ref].type == "PUNCH_IN":
             return {"ok": True, "commands": [], "note": "PUNCH_IN runs ffmpeg-skill cut, crop, fit and join in turn; each call's commands are recorded when it runs"}
+        if self.project.operations[ref].stinger is not None:
+            return {"ok": True, "commands": [], "note": "a stinger CONCAT runs ffmpeg-skill join, overlay (and broll + audio for its sound) in turn; "
+                                                         "each call's commands are recorded when it runs"}
         try:
             argv = self._argv(ref, dry_run=True)
             run = run_tool(self.skill, self.steps[ref].script, argv, timeout=120, dry_run=True)
@@ -622,6 +642,8 @@ class Executor:
             commands, seconds, segments = self._run_segments(ref, partial, t0)
         elif op.type == "PUNCH_IN":
             commands, seconds = self._run_punch_in(ref, partial, t0)
+        elif op.stinger is not None:
+            commands, seconds = self._run_stinger(ref, partial, t0)
         else:
             argv = self._argv(ref)
             self.log(f"run {ref}: {st.tool}")
@@ -651,6 +673,8 @@ class Executor:
         self.results.append(self._record(op, st, "completed", t0, final, digest, doc, commands, seconds, segments=segments))
         if op.type == "PUNCH_IN":
             self.results[-1]["punch_in"] = self.punch_plan(ref)
+        if op.stinger is not None:
+            self.results[-1]["stinger"] = self.stinger_plan(ref)
         if engine_doc is not None and op.type in ("TRIM", "CUT") and op.params.get("precision") in ("keyframe", "auto"):
             self.results[-1]["cuts"] = self._cut_report(op, engine_doc)
 
@@ -751,6 +775,170 @@ class Executor:
             self.results.append(self._record(op, st, "failed", t0, None, None, None, commands, seconds, err, segments=report))
             raise err
         return commands, seconds, report
+
+    # ------------------------------------------------------------ stinger transition (ADR-023)
+    _ALPHA_FORMATS = ("yuva", "rgba", "bgra", "argb", "abgr", "gbrap", "ya8", "ya16", "pal8")
+
+    def stinger_plan(self, ref: str) -> Dict[str, Any]:
+        """Where each stinger goes: for every join, the cut (the first frame of the next clip), the stinger's start (cut - cut_point)
+        and end, all on the output timeline; plus what the stinger is."""
+        op = self.project.operations[ref]
+        tr = op.params["transition"]
+        sd = self.durations.get(op.stinger) if op.stinger else None
+        joins = []
+        t = Time(Fraction(0))
+        known = True
+        for r in op.video_inputs[:-1]:
+            c = self.clips.get(r)
+            d = c.duration if c is not None and c.duration is not None else self.durations.get(r)
+            if d is None:
+                known = False
+                break
+            t = t + d
+            joins.append({"cut_at": t.to_dict(), "stinger_start": (t - tr["cut_point"]).to_dict(),
+                          "stinger_end": (t - tr["cut_point"] + sd).to_dict() if sd is not None else None})
+        prof = self.profile(op.stinger) if op.stinger else {}
+        return {"source": op.stinger, "cut_point": tr["cut_point"].to_dict(), "cover": {k: tr["cover"][k].to_dict() for k in ("start", "end")},
+                "duration": sd.to_dict() if sd is not None else None, "audio": prof.get("audio"), "joins": joins if known else None,
+                "cover_check": "declared: the caller's covered window (stinger.json); not measured on the pixels here"}
+
+    def _check_stinger(self, ref: str) -> None:
+        op = self.project.operations[ref]
+        st = op.stinger
+        assert st is not None
+        doc = self.source_probes.get(st) or {}
+        v = doc.get("video") or {}
+        what = f"operation {ref!r} (CONCAT stinger {st!r})"
+        pix = str(v.get("pix_fmt") or "")
+        if not pix.startswith(self._ALPHA_FORMATS):
+            raise EditError("INVALID_INPUT", f"{what}: the stinger has no alpha plane (pixel format {pix or 'unknown'}); a stinger is laid over the join and must be "
+                            "transparent outside its graphic (ProRes 4444, QuickTime Animation, PNG / QTRLE in MOV)",
+                            {"operation": ref, "input": st, "pix_fmt": pix or None, "reason": "stinger_no_alpha"})
+        frame = self.target_frame(ref)
+        sp = self.profile(st)
+        if frame and frame[0] and frame[1] and sp["width"] and sp["height"] and sp["width"] * frame[1] != sp["height"] * frame[0]:
+            raise EditError("INVALID_INPUT", f"{what}: the stinger frame {sp['width']}x{sp['height']} is not the edit's aspect {frame[0]}x{frame[1]}, so it could "
+                            "not cover the frame", {"operation": ref, "input": st, "reason": "stinger_aspect"})
+        fps = self.target_fps(ref) or self.profile(op.video_inputs[0]).get("fps")
+        sfps = sp.get("fps")
+        if fps and sfps and abs(fps - sfps) > FPS_TOLERANCE:
+            raise EditError("INVALID_INPUT", f"{what}: the stinger runs at {sfps:g} fps and the edit at {fps:g} fps; its cut point would fall between frames",
+                            {"operation": ref, "input": st, "reason": "stinger_fps"})
+        if sfps:
+            cp = op.params["transition"]["cut_point"].value
+            frames = cp * Fraction(sfps).limit_denominator(1001)
+            if abs(frames - round(frames)) > Fraction(1, 1000):
+                raise EditError("INVALID_REQUEST", f"{what}: cut_point {float(cp):.4f}s is not on a frame of the stinger ({sfps:g} fps)",
+                                {"operation": ref, "reason": "cut_point_not_on_frame"})
+
+    def _check_stinger_ranges(self, ref: str) -> None:
+        op = self.project.operations[ref]
+        tr = op.params["transition"]
+        sd = self.durations.get(op.stinger) if op.stinger else None
+        cp = tr["cut_point"]
+        if sd is not None and not (cp.value < sd.value and tr["cover"]["end"].value <= sd.value + Fraction(1, 1000)):
+            raise EditError("INVALID_TIME_RANGE", f"operation {ref!r}: the stinger is {sd.text(3)}s; its cut point and covered window must lie inside it")
+        ins = op.video_inputs
+        for i, r in enumerate(ins):
+            c = self.clips.get(r)
+            d = c.duration if c is not None and c.duration is not None else self.durations.get(r)
+            if d is None:
+                continue
+            if i < len(ins) - 1 and d.value < cp.value:
+                raise EditError("INVALID_TIME_RANGE", f"operation {ref!r}: input {r!r} ({d.text(3)}s) is shorter than the stinger's lead-in ({cp.text(3)}s)")
+            if i > 0 and sd is not None and d.value < (sd - cp).value:
+                raise EditError("INVALID_TIME_RANGE", f"operation {ref!r}: input {r!r} ({d.text(3)}s) is shorter than the stinger's tail ({(sd - cp).text(3)}s)")
+
+    def _run_stinger(self, ref: str, partial: str, t0: str) -> tuple:
+        """The clips are butt-joined (join.py, no transition: the cut at each join is the first frame of the next clip); the stinger
+        is composited over each join from cut - cut_point (overlay.py --video --place, alpha respected), so the frame at the
+        cut is the stinger's covered frame; with sound, the stinger's audio is mixed under each join (broll.py --audio mix) and
+        that track replaces the composite's (audio.py --replace). Every call is an ffmpeg-skill tool."""
+        op = self.project.operations[ref]
+        st = self.steps[ref]
+        plan = self.stinger_plan(ref)
+        if not plan["joins"] or plan["duration"] is None:
+            raise EditError("INVALID_INPUT", f"operation {ref!r}: the join times or the stinger's length are not known", {"operation": ref})
+        assert op.stinger is not None
+        ext = output_extension(self.project, ref)
+        stinger_path = self._path_of(op.stinger, False)
+        sd = self.durations.get(op.stinger)
+        assert sd is not None
+        frame = self.target_frame(ref)
+        temps: List[str] = []
+        commands: List[str] = []
+        seconds = 0.0
+
+        def call(tool: str, argv_tail: List[str], inputs: List[str]) -> str:
+            nonlocal seconds
+            out = os.path.join(self.work, f"{op.operation_id}.stg{len(temps)}.partial.{os.getpid()}{ext}")
+            _remove(out)
+            temps.append(out)
+            argv = list(inputs) + ["-o", out]
+            i = 0
+            while i < len(argv_tail):   # held to ALLOWED_FLAGS, spelled as the installed engine spells it
+                flag = argv_tail[i]
+                if flag[2:].replace("-", "_") not in ALLOWED_FLAGS[tool]:
+                    raise EditError("INTERNAL_ERROR", f"flag {flag} is not allowed for ffmpeg-skill/{tool}")
+                spelled = self.skill.resolve_flag(tool, flag)
+                if spelled is None:
+                    raise EditError("TOOL_ERROR", f"ffmpeg-skill/{tool} has no {flag} flag", {"tool": f"ffmpeg-skill/{tool}", "missing": [f"flag:{flag}"]}, retryable=False)
+                val = argv_tail[i + 1] if i + 1 < len(argv_tail) and not argv_tail[i + 1].startswith("--") else None
+                if val is None:
+                    argv.append(spelled)
+                    i += 1
+                else:
+                    argv += [f"{spelled}={val}"] if val.startswith("-") else [spelled, val]
+                    i += 2
+            self.log(f"run {ref}: ffmpeg-skill/{tool}")
+            run = run_tool(self.skill, tool, argv, timeout=self.project.options.timeout_seconds)
+            commands.extend(run.commands)
+            seconds += run.seconds
+            if not run.ok:
+                err = tool_error(run, f"operation {ref!r} (CONCAT stinger, ffmpeg-skill/{tool})")
+                for t in temps:
+                    _remove(t)
+                self.results.append(self._record(op, st, "failed", t0, None, None, None, commands, seconds, err))
+                raise err
+            return out
+
+        enc: List[str] = []
+        for k in ("crf", "preset"):
+            if op.encoding and k in op.encoding:
+                enc += ["--" + k, str(op.encoding[k])]
+        try:
+            joined = os.path.join(self.work, f"{op.operation_id}.stg-join.partial.{os.getpid()}{ext}")
+            temps.append(joined)
+            join_argv = st.argv_for([self._path_of(r, False) for r in op.video_inputs], joined, resolve=lambda f: self.skill.resolve_flag("join", f))
+            self.log(f"run {ref}: ffmpeg-skill/join")
+            run = run_tool(self.skill, "join", join_argv, timeout=self.project.options.timeout_seconds)
+            commands.extend(run.commands)
+            seconds += run.seconds
+            if not run.ok:
+                err = tool_error(run, f"operation {ref!r} (ffmpeg-skill/join)")
+                self.results.append(self._record(op, st, "failed", t0, None, None, None, commands, seconds, err))
+                raise err
+            places: List[str] = []
+            for j in plan["joins"]:
+                start = Time.parse(j["stinger_start"]["seconds"])
+                places += ["--place", f"0-{sd.tool_arg()}@{start.tool_arg()}"]
+            width = frame[0] if frame and frame[0] else self.profile(op.video_inputs[0])["width"]
+            picture = call("overlay", ["--video", stinger_path] + places + ["--position", "0,0", "--margin", "0", "--scale", str(width)] + enc, [joined])
+            if plan["audio"]:
+                inserts: List[str] = []
+                for j in plan["joins"]:
+                    inserts += ["--insert", stinger_path, "--at", Time.parse(j["stinger_start"]["seconds"]).tool_arg(), "--duration", sd.tool_arg(),
+                                "--audio", "mix"]
+                mixed = call("broll", inserts, [joined])
+                final = call("audio", ["--replace", mixed], [picture])
+            else:
+                final = picture
+            os.replace(final, partial)
+        finally:
+            for t in temps:
+                if t != partial:
+                    _remove(t)
+        return commands, seconds
 
     # ------------------------------------------------------------ PUNCH_IN (ADR-020)
     def punch_plan(self, ref: str) -> Optional[Dict[str, Any]]:
@@ -924,7 +1112,7 @@ class Executor:
         if op.type == "IMAGE_INSERT":
             return False
         if op.type == "CONCAT":
-            audios = [self.profile(r).get("audio") for r in op.inputs]
+            audios = [self.profile(r).get("audio") for r in op.video_inputs + ([op.stinger] if op.stinger else [])]
             return True if any(a is True for a in audios) else (False if all(a is False for a in audios) else None)
         return self.profile(op.inputs[0]).get("audio")
 

@@ -34,6 +34,8 @@ ALL_OPERATIONS = ["CONCAT", "CROP", "CUT", "FILL", "FIT", "FREEZE", "IMAGE_INSER
 AVAILABLE_OPERATIONS = [t for t in ALL_OPERATIONS if not ((t == "ROTATE" and not HAS_ROTATE) or (t == "FREEZE" and not HAS_FREEZE)
                                                           or (t == "REVERSE" and not HAS_REVERSE) or (t == "IMAGE_INSERT" and not HAS_INSERT)
                                                           or (t in ("CROP", "PUNCH_IN") and not HAS_CROP))]
+# stinger transition (ADR-023): overlay.py --video --place, and broll.py / audio.py --replace for its sound (2.x and later)
+HAS_STINGER = READY and all(t in FFMPEG_SKILL.tools for t in ("broll", "audio")) and FFMPEG_SKILL.missing_flags("overlay", ["--video", "--place"]) == []
 HAS_JOIN_COPY = READY and FFMPEG_SKILL.missing_flags("join", ["--copy"]) == []   # join.py --copy, from 2.24.0 (segment cache, ADR-018)
 # fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
 # exceed the source": the exact frame each rule must deliver, written out (old, bounded).
@@ -973,6 +975,94 @@ class GeneratedClipTests(unittest.TestCase):
         src = {s["id"]: s for s in out["execution"]["sources"]}
         self.assertEqual(src["G"]["ai_generated"]["provenance"], "DECLARED")
         self.assertNotIn("ai_generated", src["E"])
+
+
+def frame_px(path, n, points, w=320):
+    """RGB of a few pixels of decoded frame n."""
+    raw = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-vf", f"select=eq(n\\,{n})", "-frames:v", "1", "-f", "rawvideo",
+                          "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE, check=True).stdout
+    return [tuple(raw[(y * w + x) * 3:(y * w + x) * 3 + 3]) for x, y in points]
+
+
+def colour(px):
+    r, g, b = px
+    return "red" if r > 150 and g < 90 and b < 90 else "blue" if b > 150 and r < 90 and g < 90 else "green" if g > 80 and r < 60 and b < 60 else "other"
+
+
+@unittest.skipUnless(READY, REASON)
+class StingerTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 13 (ADR-023): a red and a blue clip (2 s each, 30 fps) joined with a 1.2 s stinger cut at 0.5 s.
+    The stinger covers the left half throughout and the whole frame only at its frame 15 (0.5 s): the frame before the cut
+    shows red on the right, the cut frame is all stinger, the frame after shows blue. So the switch is at exactly frame 60."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-stinger-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        ff = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+        cls.a, cls.b, cls.st = (os.path.join(cls.media, n) for n in ("a.mp4", "b.mp4", "stinger.mov"))
+        for path, col, freq in ((cls.a, "red", 440), (cls.b, "blue", 660)):
+            subprocess.run(ff + ["-f", "lavfi", "-i", f"color=c={col}:s=320x180:r=30", "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=48000",
+                                 "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", path], check=True)
+        subprocess.run(ff + ["-f", "lavfi", "-i", "color=c=black@0.0:s=320x180:r=30:d=1.2,format=rgba,"
+                             "drawbox=x=0:y=0:w=160:h=180:color=green@1:t=fill:replace=1,"
+                             "drawbox=x=0:y=0:w=320:h=180:color=green@1:t=fill:replace=1:enable='eq(n,15)'",
+                             "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=1.2",
+                             "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-c:a", "pcm_s16le", "-shortest", cls.st], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def doc(self, cut_point=0.5, cover=None):
+        tr = {"type": "stinger", "stinger": "S", "cut_point": cut_point, "cover": cover or {"start": 0.5, "end": {"frames": 16, "fps": 30}}}
+        return request([{"id": "A", "path": self.a}, {"id": "B", "path": self.b}, {"id": "S", "path": self.st}],
+                       [{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {"transition": tr}}],
+                       [{"id": "o", "operation": "c", "path": "out/stinger.mp4"}])
+
+    def run_cli(self, doc):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        return rc, out, os.path.join(ws, "out", "stinger.mp4")
+
+    @unittest.skipIf(HAS_STINGER, "this ffmpeg-skill has overlay --place, broll and audio --replace")
+    def test_refused_without_the_engine_tools(self):
+        rc, out, _ = self.run_cli(self.doc())
+        self.assertEqual(out["error"]["code"], "TOOL_ERROR", out)
+
+    @unittest.skipUnless(HAS_STINGER, "needs overlay.py --place, broll.py and audio.py --replace (ffmpeg-skill 2.x+)")
+    def test_switch_at_the_cut_point_frame(self):
+        rc, out, path = self.run_cli(self.doc())
+        self.assertEqual(rc, 0, json.dumps(out.get("error")))
+        self.assertAlmostEqual(duration(path), 4.0, delta=0.05)
+        left, right = (40, 90), (280, 90)
+        seen = {n: [colour(p) for p in frame_px(path, n, [left, right])] for n in (44, 45, 59, 60, 61, 80, 81, 100)}
+        self.assertEqual(seen[44], ["red", "red"], "before the stinger: clip A untouched")
+        self.assertEqual(seen[45], ["green", "red"], "stinger frame 0 at 1.5 s = 2.0 - 0.5")
+        self.assertEqual(seen[59], ["green", "red"], "the last frame of A, under the stinger's bar")
+        self.assertEqual(seen[60], ["green", "green"], "the cut frame: fully covered")
+        self.assertEqual(seen[61], ["green", "blue"], "the first frame after the cut shows B")
+        self.assertEqual(seen[80], ["green", "blue"], "stinger frame 35, its last")
+        self.assertEqual(seen[81], ["blue", "blue"], "after the stinger: clip B untouched")
+        rec = out["execution"]["operations"][0]
+        self.assertEqual(rec["stinger"]["joins"][0]["cut_at"]["rational"], "2/1")
+        self.assertEqual(rec["stinger"]["joins"][0]["stinger_start"]["rational"], "3/2")
+        ov = out["execution"]["outputs"][0]["timeline"]["tracks"][1]["segments"][0]
+        self.assertEqual((ov["kind"], ov["cut_at"]["rational"]), ("stinger", "2/1"))
+        # the stinger's sound is mixed in under the join: louder there than in the clip alone
+        def mean_db(ss):
+            err = subprocess.run(["ffmpeg", "-hide_banner", "-ss", str(ss), "-t", "0.6", "-i", path, "-vn", "-af", "volumedetect", "-f", "null", "-"],
+                                 capture_output=True, text=True).stderr
+            return float(re.search(r"mean_volume: (-?[\d.]+) dB", err).group(1))
+        self.assertGreater(mean_db(1.7), mean_db(0.3) + 1.0)
+
+    def test_cut_point_outside_the_covered_window_is_refused(self):
+        rc, out, path = self.run_cli(self.doc(cut_point=0.4))
+        self.assertEqual((out["error"]["code"], out["error"]["details"].get("reason")), ("INVALID_REQUEST", "stinger_not_covering"))
+        self.assertFalse(os.path.exists(path))
 
 
 @unittest.skipUnless(READY, REASON)

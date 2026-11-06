@@ -16,7 +16,7 @@ Modes (written to <root>/MODE):
   no_ffmpeg      doctor reports ffmpeg / ffprobe missing (tools never run)
   no_xfade       doctor reports filter:xfade / filter:acrossfade missing (CONCAT unavailable, the rest fine)
   stale_reuse    probe reports no video stream for a *finished* work-dir intermediate (a reuse candidate), never for a partial
-Probe facts: a video whose name contains "noaudio" has no audio stream; an image whose bytes start with "corrupt" does
+Probe facts: "alpha" in a video's name -> pix_fmt yuva444p10le (a stinger, ADR-023); a video whose name contains "noaudio" has no audio stream; an image whose bytes start with "corrupt" does
 not decode (no frame size); a video whose name contains "silent" is fine but has no audio (alias of noaudio); "hdr" in the
 name -> hdr: true (the fake encodes such sources as hevc, like the engine); "rot90" -> rotation: 90 (stored 640x360, shown
 360x640); "vfr" -> variable_frame_rate_suspected: true; "wide" -> 1280x720 @ 25 fps. Frame targets follow fit.py / join.py
@@ -94,6 +94,8 @@ SCRIPT = textwrap.dedent('''
                  "variable_frame_rate_suspected": ("vfr" in base and not h)}
         if NEW_PROBE:
             video["bt2020_or_hdr"] = hdr
+        if "alpha" in base and not h:   # a stinger with an alpha plane (ProRes 4444)
+            video["pix_fmt"] = "yuva444p10le"
         if h.get("encoding"):
             video["encoding"] = h["encoding"]
         if mode == "bad_probe" and ".partial." in path:
@@ -243,18 +245,21 @@ _BASE_FLAGS = {"probe": [], "cut": ["--start", "--end", "--segments", "--accurat
                "join": ["--transition", "--duration", "--width", "--height", "--fps", "--fit", "--pad-color"],
                "fit": ["--duration", "--method", "--max-speed", "--smooth", "--aspect", "--fit", "--width", "--pad-color", "--crop-x", "--crop-y", "--fps",
                        "--rotate", "--flip"],
-               "overlay": ["--image", "--position", "--margin", "--scale", "--opacity", "--start", "--end", "--fade"],
+               "overlay": ["--image", "--video", "--position", "--margin", "--scale", "--opacity", "--start", "--end", "--fade"],
+               "broll": ["--insert", "--at", "--duration", "--audio"], "audio": ["--replace"],
                "freeze": ["--at", "--hold", "--mode"], "reverse": ["--no-audio"],
                "insert": ["--duration", "--width", "--height", "--fps", "--zoom", "--zoom-amount", "--pan"],
                "crop": ["--x", "--y", "--width", "--height", "--fps"]}
 # tools a layout's checkout does not ship (ffmpeg-skill: reverse.py, insert.py and crop.py from 0.11.0, freeze.py from 0.16.0)
-_LAYOUT_ABSENT = {"0.10": ("freeze", "reverse", "insert", "crop"), "0.x": ("freeze",)}
+# broll.py from 2.x (stinger sound, ADR-023); audio.py is in every release
+_LAYOUT_ABSENT = {"0.10": ("freeze", "reverse", "insert", "crop", "broll"), "0.x": ("freeze", "broll")}
 _LAYOUT_FLAGS = {"0.10": ["--crf", "--preset"], "0.x": ["--crf", "--preset"], "1.x": ["--crf", "--quality", "--preset", "--overwrite"],
                  "2.x": ["--quality", "--preset", "--overwrite"], "help-only": ["--quality", "--preset", "--overwrite"],
                  "3.x": ["--quality", "--preset", "--overwrite"]}
 # join.py --copy from 2.24.0 (segment cache, ADR-018): every 2.x / 3.x layout here stands for a current release
-_LAYOUT_EXTRA = {"2.x": {"join": ["--copy"]}, "help-only": {"join": ["--copy"]},
-                 "3.x": {"cut": ["--keep-hevc", "--no-keep-hevc", "--edit-list", "--no-edit-list", "--vfr-guard"], "join": ["--copy"]}}
+# overlay.py --place from 2.x (stinger, ADR-023)
+_LAYOUT_EXTRA = {"2.x": {"join": ["--copy"], "overlay": ["--place"]}, "help-only": {"join": ["--copy"], "overlay": ["--place"]},
+                 "3.x": {"cut": ["--keep-hevc", "--no-keep-hevc", "--edit-list", "--no-edit-list", "--vfr-guard"], "join": ["--copy"], "overlay": ["--place"]}}
 
 
 def layout_flags(layout: str) -> dict:
@@ -278,7 +283,7 @@ def make_fake_skill(root: str, mode: str = "ok", version: str = "0.10.0", layout
     scripts = os.path.join(root, "scripts")
     os.makedirs(scripts, exist_ok=True)
     skip = _LAYOUT_ABSENT.get(layout, ()) if absent is None else tuple(absent)
-    for name in [t for t in ("probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop") if t not in skip] + list(extra):
+    for name in [t for t in ("probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop", "broll", "audio") if t not in skip] + list(extra):
         with open(os.path.join(scripts, name + ".py"), "w", encoding="utf-8") as fh:
             fh.write(SCRIPT)
     with open(os.path.join(scripts, "_contract.py"), "w", encoding="utf-8") as fh:

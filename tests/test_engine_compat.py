@@ -247,7 +247,7 @@ class Engine0xTests(LayoutCase):
         self.assertTrue(rep["ok"], rep["problems"])
         self.assertNotIn("FREEZE", rep["supported_operations"])
         self.assertIn("REVERSE", rep["supported_operations"])
-        self.assertEqual(rep["engine"]["tools_optional_missing"], ["freeze"])
+        self.assertEqual(rep["engine"]["tools_optional_missing"], ["freeze", "broll"])
         self.assertEqual(len(rep["notes"]), 1)
         self.assertIn("FREEZE", rep["summary"])
         rows = {c["check"]: c for c in rep["checks"]}

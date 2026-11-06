@@ -63,6 +63,7 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Why: logo wipes and graphic transitions between scenes are common in event and YouTube edits, and the switch must happen under full cover（なぜ要るか：スティンガーを挟み、画面が完全に覆われた瞬間に前後のクリップを切り替えられる）
   - Needs: a stinger with a cut point (hyperframes-skill stinger templates, or any alpha file with its cut point given)
   - Done when: two clips joined with a 1.2 s stinger cut at 0.5 s switch at exactly that frame (framemd5 around the cut), and qc-skill's stinger cut-point check passes on the result
+  - Partly done (ADR-023): CONCAT `transition: {type: stinger, stinger, cut_point, cover}`; `StingerTests` shows the switch at exactly the cut frame (frame 60 fully covered, 59 shows A, 61 shows B, decoded pixels), the stinger's sound mixed in, the timeline reporting the cut there, and a cut point outside the stated cover refused. **Not met:** qc-skill has no stinger cut-point check yet (to run on the result), and full cover is checked against the stated cover window only — no ffmpeg-skill tool measures a stinger's alpha at one frame. Left unchecked until qc-skill's check exists
 
 ## Boundaries
 
