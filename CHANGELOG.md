@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.16 - 2026-11-06
+
+- CONDENSE: a rule per labelled span (roadmap step 16) (#38) (a3702f9)
+
 ## v0.4.15 - 2026-11-06
 
 - Spans with no motion or no sound, combined by and / or (roadmap step 15) (#37) (5abaeb3)
