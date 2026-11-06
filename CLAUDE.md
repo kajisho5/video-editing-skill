@@ -29,8 +29,8 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 Two independent version axes, both on `skill_contract()`:
 
-- **`version`** (currently `"0.4.0"`) — this package's release version. Free to move on any release.
-- **`contract_version`** (currently `"4.0"`) — the version of the *pinned shape*
+- **`version`** (currently `"0.5.0"`) — this package's release version. Free to move on any release.
+- **`contract_version`** (currently `"5.0"`) — the version of the *pinned shape*
   (`PINNED_BLOCKS` in `contract.py`). Bumps only when a pinned block changes in a breaking way.
   A dependent pins a range against `contract_version`, never `version`.
 
@@ -243,11 +243,14 @@ exception to ADR-001.
 - (ADR-027, step 17) — CONDENSE `output: removed`: review file of only the cut spans + `condense.review` list.
 - (ADR-028, step 18) — `outputs[].max_size {mb: 25}`: export --max-mb (two-pass), measured, retried into [90 %, 100 %];
   unreachable -> OUTPUT_ERROR with the engine's reason; under_floor when the picture needs fewer bits.
+- (ADR-029) — `contract_version` "4.0" -> "5.0", `version` 0.5.0 (bumped by hand): ADR-018 .. ADR-028 changed pinned blocks
+  (PUNCH_IN, CONDENSE, `precision: auto`, `stinger`; `capability_names`, `request_shape`, `response_shape`) while 0.4.8 ..
+  0.4.18 kept "4.0". No behaviour change; `versioning.next` moves to "0.6.0" unchanged.
 
 ## Picking the next task
 
 There is no standing task queue; the next gap is found, not assigned. To find it: re-read this
-file and `docs/decisions.md` for anything marked planned-but-undone (e.g. `contract.versioning.next["0.5.0"]`
+file and `docs/decisions.md` for anything marked planned-but-undone (e.g. `contract.versioning.next["0.6.0"]`
 and `kajisho5/video-editing-skill#11` items 2 and 3), re-check `AI-video-production-OS`'s
 `docs/ROADMAP.md` / `docs/ECOSYSTEM_CHANGELOG.md` for
 this Skill's outstanding per-repo items, and re-run `contract --check` and the test suite to make

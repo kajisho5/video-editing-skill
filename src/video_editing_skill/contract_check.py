@@ -151,8 +151,8 @@ def verify_implementation(contract: Optional[Dict[str, Any]] = None, root: Optio
         problems.append("contract.frame_semantics differs from operations.FRAME_SEMANTICS")
     if c.get("media_policy") != MEDIA_POLICY or set(MEDIA_POLICY) != {"refused_before_execution", "normalized_by_skill", "delegated_to_engine", "by_stream"}:
         problems.append("contract.media_policy differs from operations.MEDIA_POLICY")
-    if "0.5.0" not in (ver.get("next") or {}):
-        problems.append("contract.versioning.next does not describe 0.5.0")
+    if "0.6.0" not in (ver.get("next") or {}):
+        problems.append("contract.versioning.next does not describe 0.6.0")
     problems += verify_docs(root)
     return problems
 
