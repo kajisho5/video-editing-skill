@@ -117,9 +117,18 @@ gains `ffmpeg-skill/insert`; `engine.version_range` / `dependencies` stay `>=0.1
 detected tool, not on a raised floor). Breaking by the same convention as ADR-014 and shipped in the same release:
 one `version` / `contract_version` bump and one agent re-pin cover both.
 
-## 0.5.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011 / ADR-014, `kajisho5/video-editing-skill#11`)
+## 0.5.0 (shipped; docs/decisions.md ADR-029)
 
-`versioning.next["0.5.0"]` lists breaking-change candidates for a future version, none currently in progress:
+`version` `0.4.18` → `0.5.0`, `contract_version` `"4.0"` → `"5.0"`, both by hand. Releases 0.4.8 to 0.4.18 changed
+pinned blocks under `"4.0"`: `operations` gained `PUNCH_IN` and `CONDENSE`, TRIM / CUT gained `precision: auto`,
+CONCAT gained the `stinger` transition, and `capability_names`, `request_shape` (`options.segment_cache`,
+`sources[].ai_generated`, `outputs[].max_size`) and `response_shape` changed with them (ADR-018 to ADR-028). This
+release changes no behaviour; it gives that shape its own `contract_version`. `video-production-agent` widens its
+`SUPPORTED_SKILL_VERSIONS` and re-pins.
+
+## 0.6.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011 / ADR-014, `kajisho5/video-editing-skill#11`)
+
+`versioning.next["0.6.0"]` (formerly `next["0.5.0"]`, carried over unchanged) lists breaking-change candidates for a future version, none currently in progress:
 `RESIZE.height` — found, by live verification against ffmpeg-skill 0.10.0, to be blocked on the engine
 (`fit.py` has no `--height` flag), not the small addition it was first framed as; `OVERLAY` video-layer + chroma-key parameters
 (`overlay.py --video`/`--chromakey`), per ADR-002's own "extend OVERLAY rather than add a type" prescription —

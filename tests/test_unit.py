@@ -396,8 +396,8 @@ class FreezeReverseParamTests(unittest.TestCase):
                                                          "ffmpeg-skill/broll", "ffmpeg-skill/audio", "ffmpeg-skill/silence", "ffmpeg-skill/scenes",
                                                          "ffmpeg-skill/export"])
         self.assertEqual((provided["video.crop"], c["operations"]["CROP"]["tool"]), ("video-editing/crop", "ffmpeg-skill/crop"))
-        self.assertFalse(any("CROP" in n for n in c["versioning"]["next"]["0.5.0"]))
-        self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.5.0"]))
+        self.assertFalse(any("CROP" in n for n in c["versioning"]["next"]["0.6.0"]))
+        self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.6.0"]))
 
 
 class ImageInsertTests(unittest.TestCase):
@@ -464,7 +464,7 @@ class ImageInsertTests(unittest.TestCase):
         self.assertEqual(c["media_compatibility"]["IMAGE_INSERT"]["requires"], {"video": False, "audio": False, "image": True})
         self.assertIn("ffmpeg-skill/insert", c["engine"]["tools_optional"])
         self.assertEqual(c["engine"]["version_range"], ">=0.10.0")   # gated on the tool, not by raising the floor
-        self.assertFalse(any("IMAGE_INSERT" in n for n in c["versioning"]["next"]["0.5.0"]))
+        self.assertFalse(any("IMAGE_INSERT" in n for n in c["versioning"]["next"]["0.6.0"]))
 
 
 class TimelineTests(unittest.TestCase):
@@ -1020,13 +1020,15 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json"), encoding="utf-8") as fh:
             self.assertEqual(c["request_shape"], json.load(fh)["request_shape"])
 
-    def test_pinned_blocks_are_unchanged_since_0_4_0(self):
+    def test_pinned_blocks_are_unchanged_since_0_5_0(self):
         """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the golden copy.
 
-        Bumped from 0.3.0 to 0.4.0 deliberately (docs/decisions.md ADR-012: SPEED gained an optional `smooth`
-        parameter) - a breaking contract_version change video-production-agent's SUPPORTED_SKILL_VERSIONS =
-        ("0.1.",) must widen before it accepts this release, same as 0.2.0 / 0.3.0 (ADR-009 / ADR-011); this test
-        only guards against further *undocumented* drift from here, not against 0.4.0 itself.
+        Bumped from 4.0 to 5.0 deliberately (docs/decisions.md ADR-029: PUNCH_IN, CONDENSE, TRIM / CUT
+        `precision: auto`, CONCAT `stinger` and the request / response shapes that came with them, shipped in
+        0.4.8-0.4.18 under "4.0"). Before that, 0.3.0 to 0.4.0 (ADR-012: SPEED gained an optional `smooth`
+        parameter). Each is a breaking contract_version change video-production-agent's SUPPORTED_SKILL_VERSIONS
+        must widen before it accepts the release, same as 0.2.0 / 0.3.0 (ADR-009 / ADR-011); this test only
+        guards against further *undocumented* drift from here, not against 0.5.0 itself.
 
         `engine` is deliberately excluded from the fields compared below: it is an additive block
         (docs/decisions.md ADR-008), free to drift as the ffmpeg-skill version range this Skill enforces changes
@@ -1040,7 +1042,7 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         # `version` moves with every release (the release workflow bumps it and regenerates the golden copy); the shape this
         # test guards is versioned by contract_version
         self.assertEqual(c["version"], golden["version"])
-        self.assertEqual(c["contract_version"], "4.0")
+        self.assertEqual(c["contract_version"], "5.0")
         for t in c["tools"]:
             g = next(x for x in golden["tools"] if x["tool_id"] == t["tool_id"])
             for f in ("parameters", "required_capabilities", "inputs", "result_keys", "executed_by", "deterministic", "produces_output", "writes_media", "kind"):

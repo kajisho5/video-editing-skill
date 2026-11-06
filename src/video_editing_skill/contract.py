@@ -307,7 +307,7 @@ def skill_contract() -> Dict[str, Any]:
                                "allowed within the same contract_version; the golden copy tests/contract/contract.json is regenerated deliberately in "
                                "the same change, and `contract --check` classifies every difference as breaking or additive",
                        "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
-                       "next": {"0.5.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
+                       "next": {"0.6.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
                                          "(docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
                                          "OVERLAY video-layer + chroma-key params (ffmpeg-skill overlay.py --video/--chromakey), per ADR-002's own \"extend OVERLAY rather than add a "
                                          "type\" prescription -- flagged, not decided or scheduled here (see kajisho5/video-editing-skill#11 item 2)",

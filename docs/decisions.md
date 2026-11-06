@@ -1106,3 +1106,20 @@ MB, the file should land at or just under it on the first request.
 - **Too large a limit.** At 40 MB the 20 s clip stays under the limit; if it lands under 90 %, it says `under_floor`.
 - **Offline.** `tests/test_unit.py::SizeLimitParamTests` covers the units, the refusals and the retry arithmetic.
 
+
+## ADR-029 — `contract_version` 5.0 for the shape 0.4.8 .. 0.4.18 shipped
+
+**Context.** ADR-018 to ADR-028 changed blocks a dependent pins: `operations` gained `PUNCH_IN` (ADR-020) and
+`CONDENSE` (ADR-026), TRIM / CUT gained `precision: auto` (ADR-019), CONCAT gained the `stinger` transition (ADR-023);
+`capability_names`, `request_shape` (`options.segment_cache`, `sources[].ai_generated`, `outputs[].max_size`) and
+`response_shape` changed with them. Each ADR left the bump to the release, but the release workflow only bumps
+`version` (patch / minor from labels), so 0.4.8 to 0.4.18 all published `contract_version` "4.0". By ADR-007 that is
+wrong: a change inside a pinned block is breaking and bumps `contract_version`.
+
+**Decision.** `contract_version` "4.0" → "5.0", and `version` 0.4.18 → 0.5.0 by hand in the same change (CLAUDE.md
+"Contract discipline": this package does not release independently of its contract; the release workflow releases a
+hand-bumped version as written). Nothing else changes: no operation, parameter or argv differs from 0.4.18. The golden
+copy `tests/contract/contract.json` is regenerated. `versioning.next["0.5.0"]` described candidates that 0.5.0 does not
+ship; it moves to `next["0.6.0"]` unchanged, and `contract_check` asks for "0.6.0".
+
+**Consequence.** `video-production-agent` widens its version gate to 0.5.x and re-pins from the v0.5.0 tag.
