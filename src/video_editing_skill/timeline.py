@@ -86,7 +86,7 @@ def build_timelines(project: EditProject, durations: Dict[str, Optional[Time]]) 
             d = op.params["duration"]
             clips[ref] = Clip(d, [Segment(op.inputs[0], ZERO, ZERO, ZERO, d, Fraction(0))])
             continue
-        clips[ref] = _apply(op, [clip_of(r) for r in op.inputs[: (len(op.inputs) - 1 if op.type == "OVERLAY" else None)]], durations)
+        clips[ref] = _apply(op, [clip_of(r) for r in op.video_inputs], durations)
     return clips
 
 
@@ -121,7 +121,8 @@ def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[
         return _reverse(inputs[0])
     if op.type == "CONCAT":
         tr = p.get("transition")
-        d = tr["duration"] if tr else ZERO
+        stinger = tr if tr and tr["type"] == "stinger" else None
+        d = tr["duration"] if tr and not stinger else ZERO
         segs = []
         overlays = []
         offset: Optional[Time] = ZERO
@@ -135,6 +136,14 @@ def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[
                 offset = None
             else:
                 offset = offset + c.duration - (d if i < len(inputs) - 1 else ZERO)
+            if stinger and i < len(inputs) - 1:   # the stinger over this join: it starts cut_point before the cut and covers the frame at it
+                sd = durations.get(stinger["stinger"])
+                cut = offset
+                sov: Dict[str, Any] = {"source": stinger["stinger"], "kind": "stinger", "cut_at": cut.to_dict() if cut is not None else None,
+                                      "timeline_range": None}
+                if cut is not None and sd is not None:
+                    sov["timeline_range"] = {"start": (cut - stinger["cut_point"]).to_dict(), "end": (cut - stinger["cut_point"] + sd).to_dict()}
+                overlays.append(sov)
         return Clip(offset, segs, overlays)
     raise AssertionError(op.type)
 

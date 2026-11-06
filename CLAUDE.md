@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-022). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-023). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -232,6 +232,8 @@ exception to ADR-001.
   per aspect), `examples/multi-aspect.json`; no new type, no contract change.
 - (ADR-022, step 12) — `sources[].ai_generated {generator, licence}` (declared): `marks: [AI_GENERATED]` on every record /
   output containing it; CONCAT conforms the clip. Engine finding: join.py writes 30000/1001 as 2997/100.
+- (ADR-023, step 13) — CONCAT `transition: stinger {stinger, cut_point, cover}`: join, overlay --video --place, broll mix +
+  audio --replace; switch on the cut frame. Cover is declared (not measured); qc-skill has no stinger check yet.
 
 ## Picking the next task
 

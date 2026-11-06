@@ -51,6 +51,28 @@ SEGMENT_CACHE: Dict[str, Any] = {
     "reuse_false": "options.reuse false also bypasses the segment cache (every part is encoded again and the cache is refreshed)",
 }
 
+STINGER: Dict[str, Any] = {
+    "request_field": "CONCAT params.transition: {type: stinger, stinger, cut_point, cover: {start, end}}",
+    "file": "a video source with an alpha plane (ProRes 4444, QuickTime Animation, PNG in MOV, ...), the edit's aspect and frame rate; its length is "
+            "the file's; its sound, if any, is mixed in. hyperframes-skill / remotion-ffmpeg-skill / blender-skill write one with its stinger.json: "
+            "cut_point and cover come from it (the caller reads it and passes them)",
+    "placement": "the clips are butt-joined; at each join the cut is the first frame of the next clip, and the stinger starts cut_point before it, so its "
+                 "frame at cut_point lies on the cut frame",
+    "engine_calls": ["ffmpeg-skill/join (no transition, the CONCAT's size / rate / mode)", "ffmpeg-skill/overlay --video <stinger> --place 0-<length>@<start> per join "
+                     "(alpha respected)", "with sound: ffmpeg-skill/broll --insert <stinger> --at <start> --duration <length> --audio mix per join, then "
+                     "ffmpeg-skill/audio --replace (that mix onto the composite)"],
+    "refused": ["no cut_point or no cover, or cut_point outside cover (INVALID_REQUEST stinger_not_covering)",
+                "cut_point not on a frame of the stinger (INVALID_REQUEST cut_point_not_on_frame)",
+                "a stinger without an alpha plane (INVALID_INPUT stinger_no_alpha), of another aspect (stinger_aspect) or frame rate (stinger_fps)",
+                "an input shorter than the stinger's lead-in (before the join) or tail (after it) (INVALID_TIME_RANGE)",
+                "a stinger that is an operation, not a source (DEPENDENCY_ERROR kind_mismatch)",
+                "an ffmpeg-skill without overlay.py --place, or (stinger with sound) broll.py / audio.py --replace (TOOL_ERROR)"],
+    "report": "execution.operations[].stinger and plan.steps[].stinger: {source, cut_point, cover, duration, audio, joins: [{cut_at, stinger_start, "
+              "stinger_end}]}; the output timeline's overlay track has a {kind: stinger, cut_at, timeline_range} segment per join",
+    "cover_check": "declared: the cover window is the stinger maker's statement and is checked against cut_point; the pixels are not measured here "
+                   "(qc-skill's stinger cut-point check is the measurement)",
+}
+
 AI_GENERATED: Dict[str, Any] = {
     "request_field": "project.sources[].ai_generated: {generator: text, licence: text} (each 1..200 printable characters)",
     "meaning": "declared by the caller, never inferred from the media; reported with provenance DECLARED",
@@ -66,7 +88,9 @@ AI_GENERATED: Dict[str, Any] = {
 PARAM_DOCS: Dict[str, Dict[str, str]] = {
     "TRIM": {"start": "time", "end": "time (> start)", "precision": "frame (default, re-encode) | keyframe (lossless when possible) | auto (stream copy when the copy lands within 0.2 s of the range, e.g. an in point on a keyframe; else a frame-accurate re-encode; reported per cut)"},
     "CUT": {"keep": "[{start, end}, ...] in output order", "precision": "frame | keyframe | auto"},
-    "CONCAT": {"transition": "{type: " + "|".join(TRANSITIONS) + ", duration: time 0.01..10} (optional)",
+    "CONCAT": {"transition": "{type: " + "|".join(TRANSITIONS) + ", duration: time 0.01..10} (optional), or {type: stinger, stinger: video source id "
+                             "(a file with alpha), cut_point: time (the frame the clips switch at), cover: {start, end} (the window the graphic covers the "
+                             "whole frame; must contain cut_point)} (contract.stinger)",
                "width": "even int (optional)", "height": "even int (optional)", "fps": "number or N/D (optional)",
                "mode": "pad | crop (how inputs of another aspect reach the frame)", "pad_color": "named colour or 0xRRGGBB"},
     "SPEED": {"factor": "number or N/D in [1/4, 4], not 1",
@@ -250,6 +274,8 @@ def skill_contract() -> Dict[str, Any]:
                                          "POSITION: not planned as a type (see docs/decisions.md ADR-002)"]}},
         # ---- 0.1.x additive blocks: encoding profile, frame semantics, media policy (docs/decisions.md ADR-003 .. ADR-005)
         "encoding": ENCODING,
+        # ---- stinger transition (docs/decisions.md ADR-023)
+        "stinger": STINGER,
         # ---- AI-generated sources (docs/decisions.md ADR-022)
         "ai_generated": AI_GENERATED,
         # ---- segment cache and partial re-render (docs/decisions.md ADR-018)

@@ -60,6 +60,17 @@ class EditOperation:
     encoding: Optional[Dict[str, Any]] = None             # profile asked for by the output(s) this operation produces
 
     @property
+    def stinger(self) -> Optional[str]:
+        """The stinger source of a CONCAT with transition stinger (ADR-023); it is the last entry of `inputs`."""
+        tr = self.params.get("transition") if self.type == "CONCAT" else None
+        return tr["stinger"] if tr and tr.get("type") == "stinger" else None
+
+    @property
+    def video_inputs(self) -> List[str]:
+        """The inputs that are picture slots: all but OVERLAY's image and CONCAT's stinger."""
+        return self.inputs[:-1] if (self.type == "OVERLAY" or self.stinger is not None) else list(self.inputs)
+
+    @property
     def tool(self) -> str:
         return OPERATIONS[self.type]["tool"]
 
@@ -262,6 +273,8 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
                 raise EditError("INVALID_REQUEST", f"{what}: {t} needs at least two inputs")
         if t == "OVERLAY":
             inputs.append(params["image"])
+        if t == "CONCAT" and (params.get("transition") or {}).get("type") == "stinger":
+            inputs.append(params["transition"]["stinger"])
         ops[ref] = EditOperation(ref, t, inputs, params)
     if not ops:
         raise EditError("INVALID_REQUEST", "project.operations: at least one operation is required")
@@ -271,6 +284,9 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
         for j, r in enumerate(op.inputs):
             # image slots: OVERLAY's params.image and IMAGE_INSERT's input (a still becomes a clip there, ADR-015); every other slot is video
             is_image_slot = (op.type == "OVERLAY" and j == len(op.inputs) - 1) or op.type == "IMAGE_INSERT"
+            if op.stinger is not None and j == len(op.inputs) - 1 and r not in sources:   # the stinger keeps its alpha only as a source file
+                raise EditError("DEPENDENCY_ERROR", f"operation {op.ref!r}: transition.stinger must reference a video source (a file with alpha), not an operation",
+                                {"reason": "kind_mismatch"})
             if r in sources:
                 want = "image" if is_image_slot else "video"
                 if sources[r].kind != want:

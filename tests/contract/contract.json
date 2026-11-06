@@ -184,7 +184,7 @@
       ],
       "input_arity": "many",
       "parameters": {
-        "transition": "{type: fade|dissolve|wipeleft|wiperight|wipeup|wipedown|slideleft|slideright|circleopen|circleclose|fadeblack|fadewhite|smoothleft|smoothright|radial, duration: time 0.01..10} (optional)",
+        "transition": "{type: fade|dissolve|wipeleft|wiperight|wipeup|wipedown|slideleft|slideright|circleopen|circleclose|fadeblack|fadewhite|smoothleft|smoothright|radial, duration: time 0.01..10} (optional), or {type: stinger, stinger: video source id (a file with alpha), cut_point: time (the frame the clips switch at), cover: {start, end} (the window the graphic covers the whole frame; must contain cut_point)} (contract.stinger)",
         "width": "even int (optional)",
         "height": "even int (optional)",
         "fps": "number or N/D (optional)",
@@ -868,7 +868,7 @@
       "tool": "ffmpeg-skill/join",
       "arity": "many",
       "parameters": {
-        "transition": "{type: fade|dissolve|wipeleft|wiperight|wipeup|wipedown|slideleft|slideright|circleopen|circleclose|fadeblack|fadewhite|smoothleft|smoothright|radial, duration: time 0.01..10} (optional)",
+        "transition": "{type: fade|dissolve|wipeleft|wiperight|wipeup|wipedown|slideleft|slideright|circleopen|circleclose|fadeblack|fadewhite|smoothleft|smoothright|radial, duration: time 0.01..10} (optional), or {type: stinger, stinger: video source id (a file with alpha), cut_point: time (the frame the clips switch at), cover: {start, end} (the window the graphic covers the whole frame; must contain cut_point)} (contract.stinger)",
         "width": "even int (optional)",
         "height": "even int (optional)",
         "fps": "number or N/D (optional)",
@@ -1020,13 +1020,17 @@
       "ffmpeg-skill/freeze",
       "ffmpeg-skill/reverse",
       "ffmpeg-skill/insert",
-      "ffmpeg-skill/crop"
+      "ffmpeg-skill/crop",
+      "ffmpeg-skill/broll",
+      "ffmpeg-skill/audio"
     ],
     "tools_optional": [
       "ffmpeg-skill/freeze",
       "ffmpeg-skill/reverse",
       "ffmpeg-skill/insert",
-      "ffmpeg-skill/crop"
+      "ffmpeg-skill/crop",
+      "ffmpeg-skill/broll",
+      "ffmpeg-skill/audio"
     ],
     "location": "VIDEO_EDITING_FFMPEG_SKILL_DIR | --ffmpeg-skill-dir | ~/.claude/skills/ffmpeg-skill | ./vendor/ffmpeg-skill | ../ffmpeg-skill",
     "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout",
@@ -1340,7 +1344,8 @@
       },
       "refused_before_execution": [
         "source without a video stream or duration",
-        "an input shorter than twice the transition"
+        "an input shorter than twice the transition",
+        "transition stinger: see contract.stinger.refused"
       ]
     },
     "CROP": {
@@ -1748,6 +1753,26 @@
       "a profile on an output produced by TRIM / CUT with precision keyframe or auto: stream copy ignores it (INVALID_REQUEST)",
       "two outputs of one operation with different profiles (DEPENDENCY_ERROR)"
     ]
+  },
+  "stinger": {
+    "request_field": "CONCAT params.transition: {type: stinger, stinger, cut_point, cover: {start, end}}",
+    "file": "a video source with an alpha plane (ProRes 4444, QuickTime Animation, PNG in MOV, ...), the edit's aspect and frame rate; its length is the file's; its sound, if any, is mixed in. hyperframes-skill / remotion-ffmpeg-skill / blender-skill write one with its stinger.json: cut_point and cover come from it (the caller reads it and passes them)",
+    "placement": "the clips are butt-joined; at each join the cut is the first frame of the next clip, and the stinger starts cut_point before it, so its frame at cut_point lies on the cut frame",
+    "engine_calls": [
+      "ffmpeg-skill/join (no transition, the CONCAT's size / rate / mode)",
+      "ffmpeg-skill/overlay --video <stinger> --place 0-<length>@<start> per join (alpha respected)",
+      "with sound: ffmpeg-skill/broll --insert <stinger> --at <start> --duration <length> --audio mix per join, then ffmpeg-skill/audio --replace (that mix onto the composite)"
+    ],
+    "refused": [
+      "no cut_point or no cover, or cut_point outside cover (INVALID_REQUEST stinger_not_covering)",
+      "cut_point not on a frame of the stinger (INVALID_REQUEST cut_point_not_on_frame)",
+      "a stinger without an alpha plane (INVALID_INPUT stinger_no_alpha), of another aspect (stinger_aspect) or frame rate (stinger_fps)",
+      "an input shorter than the stinger's lead-in (before the join) or tail (after it) (INVALID_TIME_RANGE)",
+      "a stinger that is an operation, not a source (DEPENDENCY_ERROR kind_mismatch)",
+      "an ffmpeg-skill without overlay.py --place, or (stinger with sound) broll.py / audio.py --replace (TOOL_ERROR)"
+    ],
+    "report": "execution.operations[].stinger and plan.steps[].stinger: {source, cut_point, cover, duration, audio, joins: [{cut_at, stinger_start, stinger_end}]}; the output timeline's overlay track has a {kind: stinger, cut_at, timeline_range} segment per join",
+    "cover_check": "declared: the cover window is the stinger maker's statement and is checked against cut_point; the pixels are not measured here (qc-skill's stinger cut-point check is the measurement)"
   },
   "ai_generated": {
     "request_field": "project.sources[].ai_generated: {generator: text, licence: text} (each 1..200 printable characters)",

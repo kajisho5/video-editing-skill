@@ -877,3 +877,57 @@ convention. The bump is left to the release, and video-production-agent re-pins.
 `tests/test_engine_contract.py::GeneratedSourceMarkTests` checks that the mark reaches only results that contain the
 source, and that the declaration does not change operation ids.
 
+## ADR-023 — Stinger transition: butt join, the stinger composited over each join, the switch at its cut point
+
+**Context.** ECOSYSTEM_ROADMAP step 13. A stinger is a graphic with alpha that covers the whole picture for a moment, and
+the edit cuts underneath it. It is an editing transition here, not live switching or playout. Velisa does neither.
+
+**Decision.** CONCAT gets `transition: {type: stinger, stinger: <video source id>, cut_point: time, cover: {start, end}}`.
+- **The stinger file.** A source file, not an operation: an encode would lose the alpha. It must have an alpha plane
+  (refused otherwise: `stinger_no_alpha`), and the edit's aspect and frame rate. Its length is the file's. As OVERLAY's
+  image is, the stinger is the operation's last input, so its bytes are part of the operation's identity and provenance.
+- **`cut_point` and `cover`.** Data from the stinger's maker. stinger.json is what hyperframes-skill step 15 will write
+  beside the file: the cut point and the fully covered window. The caller reads stinger.json and passes both values;
+  this Skill does not open sidecar files. Without either, the request is refused by schema. A cut point outside the
+  cover is `stinger_not_covering`, and one that is not on a frame of the stinger is `cut_point_not_on_frame`.
+- **Placement.** The clips are butt-joined. At each join, the cut is the first frame of the next clip, and the stinger
+  starts `cut_point` before it, so the stinger's covered frame lies on the cut frame. Each input must be at least as
+  long as the lead-in (before its join) and the tail (after it).
+- **Engine calls**, each an ffmpeg-skill tool:
+  1. `join.py`, no transition, with the CONCAT's size / rate / mode;
+  2. `overlay.py --video <stinger> --place 0-<len>@<start>`, once per join (alpha respected, measured below);
+  3. with sound, `broll.py --insert <stinger> --at <start> --duration <len> --audio mix` per join, because overlay.py drops
+     a layer's sound;
+  4. then `audio.py --replace`, which puts that mix onto the composite.
+
+  `broll` and `audio` join `OPTIONAL_TOOLS`, so their flags are detected. A checkout without overlay `--place` (0.11.0)
+  or without broll is refused before execution.
+- **Report.** The record and the plan carry `stinger: {source, cut_point, cover, duration, audio, joins: [{cut_at,
+  stinger_start, stinger_end}]}`. The output timeline gets an overlay-track segment `{kind: stinger, cut_at,
+  timeline_range}` per join, so the timeline reports the cut at that frame.
+
+**Not done (left unchecked in the roadmap).**
+- **Full cover is declared, not measured.** No ffmpeg-skill tool reports a stinger's alpha at one frame. export.py's
+  alpha statistics are internal to its own verification, and measuring here would mean running ffmpeg outside
+  ffmpeg-skill. So "a stinger that does not cover the frame there is refused" holds only against the declared cover
+  window.
+- **No qc-skill check exists yet.** "qc-skill's stinger cut-point check passes on the result" cannot be met: qc-skill
+  (1.0.0) has no stinger cut-point check yet (Velisa ROADMAP lists it as a qc-skill step). The real-media test makes the
+  same measurement itself, on decoded pixels.
+
+**Versioning.** `operations.CONCAT.parameters.transition` changes (pinned), and the `engine.tools_optional` list gains
+broll and audio (agent-pinned): breaking by ADR-007's convention. The bump is left to the release, and
+video-production-agent re-pins. There is a new additive block, `stinger`.
+
+**Verified.** `tests/test_integration.py::StingerTests`, against ffmpeg-skill 3.2.0 (0.11.0: refused, tested).
+- **Fixture.** A red and a blue 2 s clip at 30 fps, and a 1.2 s ProRes 4444 stinger with sound. The stinger covers the
+  left half throughout and the whole frame only at its frame 15 (0.5 s). The cut point is 0.5 s and the cover is [0.5,
+  16/30).
+- **Before and after.** Frame 44 is all red and frame 81 all blue: the clips are untouched outside the stinger.
+- **Around the cut.** Frames 45 and 59 show the bar over red. Frame 60, the cut at 2.0 s, is all stinger. Frames 61 and
+  80 show the bar over blue. So the switch is at exactly frame 60 and happens under full cover.
+- **Report.** The timeline reports `cut_at` 2/1 and the stinger start 3/2.
+- **Sound.** The mix is louder under the join than in the clip alone.
+- **Refusals.** A cut point outside the cover is refused before anything runs. Offline (fake engine), the no-alpha,
+  off-frame, too-long, and operation-as-stinger refusals are covered too.
+
