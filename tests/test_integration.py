@@ -36,6 +36,7 @@ AVAILABLE_OPERATIONS = [t for t in ALL_OPERATIONS if not ((t == "ROTATE" and not
                                                           or (t in ("CROP", "PUNCH_IN") and not HAS_CROP))]
 # stinger transition (ADR-023): overlay.py --video --place, and broll.py / audio.py --replace for its sound (2.x and later)
 HAS_STINGER = READY and all(t in FFMPEG_SKILL.tools for t in ("broll", "audio")) and FFMPEG_SKILL.missing_flags("overlay", ["--video", "--place"]) == []
+HAS_SHOTS = READY and "scenes" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("scenes", ["--shots"]) == []   # static spans (ADR-025)
 HAS_JOIN_COPY = READY and FFMPEG_SKILL.missing_flags("join", ["--copy"]) == []   # join.py --copy, from 2.24.0 (segment cache, ADR-018)
 # fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
 # exceed the source": the exact frame each rule must deliver, written out (old, bounded).
@@ -1063,6 +1064,64 @@ class StingerTests(unittest.TestCase):
         rc, out, path = self.run_cli(self.doc(cut_point=0.4))
         self.assertEqual((out["error"]["code"], out["error"]["details"].get("reason")), ("INVALID_REQUEST", "stinger_not_covering"))
         self.assertFalse(os.path.exists(path))
+
+
+@unittest.skipUnless(READY, REASON)
+class MotionSpanTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 15 (ADR-025): 2 s of motion, 3 s of a still picture, 2 s of motion; the sound is silent from
+    2.5 s to 4.5 s. The still span is found to within one frame, and combined with the silence by and / or."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-motion-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "fixed_camera.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=2", "-f", "lavfi", "-i", "color=gray:s=320x180:r=30:d=3",
+                        "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=2",
+                        "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=2.5", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=2",
+                        "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=2.5",
+                        "-filter_complex", "[0][1][2]concat=n=3:v=1:a=0[v];[3][4][5]concat=n=3:v=0:a=1[a]", "-map", "[v]", "-map", "[a]",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.src], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def propose(self, body):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        doc = dict({"schema": "video-editing/propose@1", "source": self.src}, **body)
+        rc, out, err = cli(["propose", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        return rc, out
+
+    @unittest.skipIf(HAS_SHOTS, "this ffmpeg-skill has scenes --shots")
+    def test_refused_without_scenes_shots(self):
+        rc, out = self.propose({"static": {}})
+        self.assertEqual(out["error"]["code"], "TOOL_ERROR", out)
+
+    @unittest.skipUnless(HAS_SHOTS, "needs ffmpeg-skill scenes.py --shots (2.x+)")
+    def test_still_span_within_one_frame_and_combined(self):
+        frame = 1 / 30
+        rc, out = self.propose({"static": {}})
+        self.assertEqual(rc, 0, out)
+        (p,) = out["proposals"]
+        self.assertEqual(p["label"], "static")
+        self.assertLessEqual(abs(float(p["start"]["seconds"]) - 2.0), frame + 1e-6, p)
+        self.assertLessEqual(abs(float(p["end"]["seconds"]) - 5.0), frame + 1e-6, p)
+        rc, out = self.propose({"static": {}, "silence": {"threshold_db": -50, "min_seconds": 0.5}, "combine": {"mode": "and"}})
+        (p,) = out["proposals"]
+        self.assertEqual(p["labels"], ["silence", "static"])
+        self.assertLessEqual(abs(float(p["start"]["seconds"]) - 2.5), 0.05, p)
+        self.assertLessEqual(abs(float(p["end"]["seconds"]) - 4.5), 0.05, p)
+        rc, out = self.propose({"static": {}, "silence": {"threshold_db": -50, "min_seconds": 0.5}, "combine": {"mode": "or"}})
+        (p,) = out["proposals"]
+        self.assertEqual(p["label"], "silence+static")
+        self.assertLessEqual(abs(float(p["start"]["seconds"]) - 2.0), frame + 1e-6, p)
+        self.assertLessEqual(abs(float(p["end"]["seconds"]) - 5.0), frame + 1e-6, p)
+        self.assertFalse(out["applied"])
 
 
 @unittest.skipUnless(READY, REASON)

@@ -192,7 +192,10 @@ def cmd_propose(args: argparse.Namespace) -> int:
     from .proposals import PROPOSALS_SCHEMA, check_proposals_doc, propose
     policy = _policy(args)
     raw = _read_request(args.request)
-    body = propose(raw, policy)
+    skill = None
+    if isinstance(raw, dict) and ("silence" in raw or "static" in raw):
+        skill, _versions, _doctor = _engine(args)
+    body = propose(raw, policy, skill)
     doc = {"ok": True, "schema": PROPOSALS_SCHEMA, "skill": {"id": SKILL_ID, "version": VERSION}, "command": "propose", "request_sha256": stable_hash(raw)}
     doc.update(body)
     problems = check_proposals_doc(doc)

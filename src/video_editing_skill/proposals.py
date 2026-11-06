@@ -195,11 +195,101 @@ def _confidence(v: Any, what: str) -> float:
     return float(v)
 
 
-def propose(doc: Any, policy: Any) -> Dict[str, Any]:
+# ---- spans measured on the media (ADR-025): silence (ffmpeg-skill silence --list) and no motion (ffmpeg-skill scenes --shots)
+SILENCE_DEFAULTS = {"threshold_db": -35.0, "min_seconds": 0.6}
+
+
+def _spans_union(spans: List[Tuple[Fraction, Fraction]]) -> List[Tuple[Fraction, Fraction]]:
+    out: List[Tuple[Fraction, Fraction]] = []
+    for a, b in sorted(spans):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def _spans_intersection(x: List[Tuple[Fraction, Fraction]], y: List[Tuple[Fraction, Fraction]]) -> List[Tuple[Fraction, Fraction]]:
+    out = []
+    for a, b in x:
+        for c, d in y:
+            lo, hi = max(a, c), min(b, d)
+            if lo < hi:
+                out.append((lo, hi))
+    return _spans_union(out)
+
+
+def _engine_json(skill: Any, tool: str, argv: List[str], what: str) -> Dict[str, Any]:
+    from .ffmpeg_skill import run_tool, tool_error
+    if tool not in skill.tools:
+        raise EditError("TOOL_ERROR", f"{what} needs ffmpeg-skill/{tool}, which this checkout does not provide", {"missing": [f"tool:ffmpeg-skill/{tool}"]}, retryable=False)
+    missing = skill.missing_flags(tool, [a.split("=", 1)[0] for a in argv if a.startswith("--")])
+    if missing:
+        raise EditError("TOOL_ERROR", f"{what} needs ffmpeg-skill/{tool} {' '.join(missing)}, which this checkout does not offer",
+                        {"missing": [f"flag:ffmpeg-skill/{tool} {m}" for m in missing]}, retryable=False)
+    run = run_tool(skill, tool, argv, timeout=3600)
+    if not run.ok or not isinstance(run.document, dict):
+        raise tool_error(run, f"{what} (ffmpeg-skill/{tool})")
+    return run.document
+
+
+def _secs(v: Any) -> Fraction:
+    return Fraction(repr(float(v))).limit_denominator(100000)
+
+
+def measure_spans(skill: Any, path: str, silence: Optional[Dict[str, Any]], static: Optional[Dict[str, Any]], fps: Optional[float]) -> Dict[str, Any]:
+    """Silent and motionless spans of one video, as the engine measures them, snapped to its frame grid."""
+    def snap(t: Fraction) -> Fraction:
+        if not fps:
+            return t
+        f = Fraction(fps).limit_denominator(1001)
+        return Fraction(round(t * f)) / f
+    out: Dict[str, Any] = {}
+    if silence is not None:
+        argv = [path, "--list", f"--threshold={silence['threshold_db']:g}", "--min-silence", f"{silence['min_seconds']:g}"]
+        doc = _engine_json(skill, "silence", argv, "silence")
+        out["silence"] = _spans_union([(snap(_secs(a)), snap(_secs(b))) for a, b in (doc.get("silences") or []) if float(b) > float(a)])
+    if static is not None:
+        doc = _engine_json(skill, "scenes", [path, "--shots"], "static")
+        shots = doc.get("shots")
+        if not isinstance(shots, list):
+            raise EditError("TOOL_ERROR", "static: ffmpeg-skill/scenes --shots reported no shots", retryable=False)
+        out["static"] = _spans_union([(snap(_secs(s["start"])), snap(_secs(s["end"]))) for s in shots
+                                      if isinstance(s, dict) and s.get("label") == "static" and float(s["end"]) > float(s["start"])])
+        out["static_shots"] = [{"start": s.get("start"), "end": s.get("end"), "label": s.get("label"), "flow_magnitude": s.get("flow_magnitude")}
+                               for s in shots if isinstance(s, dict)]
+    return out
+
+
+def combine_spans(measured: Dict[str, Any], mode: str, min_seconds: Fraction) -> List[Dict[str, Any]]:
+    """`and`: only where every asked measurement holds (silent and static); `or`: wherever any holds, labelled with all that do."""
+    kinds = [k for k in ("silence", "static") if k in measured]
+    if mode == "and":
+        spans = measured[kinds[0]]
+        for k in kinds[1:]:
+            spans = _spans_intersection(spans, measured[k])
+        labelled = [(a, b, kinds) for a, b in spans]
+    else:
+        labelled = []
+        for a, b in _spans_union([s for k in kinds for s in measured[k]]):
+            labels = [k for k in kinds if any(c < b and a < d for c, d in measured[k])]
+            labelled.append((a, b, labels))
+    out = []
+    for a, b, labels in labelled:
+        if b - a < min_seconds:
+            continue
+        label = "+".join(labels) if mode == "and" else ("+".join(labels) if len(labels) > 1 else labels[0])
+        reason = " and ".join({"silence": "no sound above the threshold", "static": "no motion in the picture (a static shot)"}[k] for k in labels)
+        out.append({"kind": "span", "label": label, "labels": list(labels), "action": "cut", "start": Time(a).to_dict(), "end": Time(b).to_dict(),
+                    "confidence": 1.0, "reason": f"{reason}, {float(b - a):.3f}s", "rule": f"measured ({mode})"})
+    return out
+
+
+def propose(doc: Any, policy: Any, skill: Any = None) -> Dict[str, Any]:
     """`video-editing propose`: read a propose request, return proposals. Writes nothing, applies nothing."""
     import json
     from .canonical import sha256_file
-    _keys(doc, "request", ("schema", "retakes"), ("schema",))
+    _keys(doc, "request", ("schema", "retakes", "source", "silence", "static", "combine"), ("schema",))
     if doc["schema"] != PROPOSE_SCHEMA:
         raise EditError("INVALID_REQUEST", f"request.schema must be {PROPOSE_SCHEMA!r}", {"got": doc["schema"]})
     inputs: List[Dict[str, Any]] = []
@@ -222,8 +312,48 @@ def propose(doc: Any, policy: Any) -> Dict[str, Any]:
         proposals += res["proposals"]
         summary["retakes"] = {"profile": profile, "words": len(words), "proposed": len(res["proposals"]), "below_threshold": res["below_threshold"],
                               "min_confidence": res["min_confidence"]}
+    if "silence" in doc or "static" in doc:
+        from .ffmpeg_skill import probe
+        from .paths import VIDEO_EXTENSIONS
+        if "source" not in doc or not isinstance(doc["source"], str):
+            raise EditError("INVALID_REQUEST", "source: silence / static measure a video: give its path")
+        if skill is None:
+            raise EditError("TOOL_ERROR", "silence / static need ffmpeg-skill", retryable=False)
+        path = policy.resolve_input(doc["source"], "source", VIDEO_EXTENSIONS)
+        sil: Optional[Dict[str, Any]] = None
+        st: Optional[Dict[str, Any]] = None
+        if "silence" in doc:
+            _keys(doc["silence"], "silence", ("threshold_db", "min_seconds"))
+            sil = dict(SILENCE_DEFAULTS)
+            for k, lo, hi in (("threshold_db", -90, -5), ("min_seconds", 0.05, 3600)):
+                if k in doc["silence"]:
+                    v = doc["silence"][k]
+                    if isinstance(v, bool) or not isinstance(v, (int, float)) or not (lo <= v <= hi):
+                        raise EditError("INVALID_REQUEST", f"silence.{k}: must be a number between {lo} and {hi}")
+                    sil[k] = float(v)
+        if "static" in doc:
+            _keys(doc["static"], "static", ())
+            st = {}
+        comb = doc.get("combine", {})
+        _keys(comb, "combine", ("mode", "min_seconds"))
+        mode = comb.get("mode", "or")
+        if mode not in ("and", "or"):
+            raise EditError("INVALID_REQUEST", "combine.mode: must be and | or")
+        min_s = Time.parse(comb.get("min_seconds", 0), "combine.min_seconds").value
+        pdoc = probe(skill, path)
+        fps = ((pdoc.get("video") or {}).get("fps")) or None
+        measured = measure_spans(skill, path, sil, st, fps)
+        spans = combine_spans(measured, mode, min_s)
+        base = len(proposals)
+        for i, sp in enumerate(spans, base + 1):
+            sp["id"] = f"p{i}"
+        proposals += spans
+        inputs.append({"role": "source", "path": path, "sha256": sha256_file(path)})
+        summary["spans"] = {"mode": mode, "fps": fps, "silence": [[Time(a).to_dict(), Time(b).to_dict()] for a, b in measured.get("silence", [])] if sil is not None else None,
+                            "static": [[Time(a).to_dict(), Time(b).to_dict()] for a, b in measured.get("static", [])] if st is not None else None,
+                            "static_shots": measured.get("static_shots"), "proposed": len(spans), "engine": f"ffmpeg-skill@{skill.version}"}
     if not inputs:
-        raise EditError("INVALID_REQUEST", "request: ask for at least one detection (retakes)")
+        raise EditError("INVALID_REQUEST", "request: ask for at least one detection (retakes, silence, static)")
     return {"status": "proposed", "applied": False, "inputs": inputs, "proposals": proposals, "summary": summary,
             "next": "approve proposals by id; pass the approved ones to CONDENSE as segments (label retake -> rule cut). Nothing is cut until then."}
 

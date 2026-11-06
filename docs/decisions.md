@@ -973,3 +973,40 @@ wrapper to use it.
 - **Refusals and the CLI.** Bad timings and unknown profiles or ids are refused. The CLI writes nothing to the
   workspace.
 
+## ADR-025 — Spans by motion and sound: the engine measures, `propose` combines
+
+**Context.** ECOSYSTEM_ROADMAP step 15: find the dead spans of a fixed-camera recording (nobody in frame) from the
+picture, and combine them with the sound.
+
+**Decision.** `propose` takes `source` (a video under an allowed root) together with:
+- `static: {}`: the shots that `ffmpeg-skill scenes --shots` labels `static`. That label comes from a measured
+  optical-flow proxy, and the shot boundaries come from the engine's scene detection.
+- `silence: {threshold_db, min_seconds}`: `ffmpeg-skill silence --list` with `--threshold` and `--min-silence`.
+
+Both are measurements by ffmpeg-skill tools; this Skill runs no frame differencing of its own (ADR-001 / ADR-013). The
+edges are snapped to the source's frame grid. `combine: {mode, min_seconds}` joins them:
+- `and` keeps only the time where every asked measurement holds, labelled `silence+static`.
+- `or` keeps every span where any holds, labelled with each measurement that touches it.
+
+Each span is a proposal (`kind: span`, `labels`, `action: cut`, `reason`). As with retakes, nothing is applied: approved
+spans become CONDENSE segments, and the rule for each label (cut, keep, speed) is chosen there (step 16). `silence` and
+`scenes` join `OPTIONAL_TOOLS`, so their flags are detected. 0.11.0's scenes.py has no `--shots`, so a static request is
+refused there (`TOOL_ERROR`).
+
+**Limit, stated in the contract.** The static span's edges are the shot boundaries scene detection finds. A span whose
+picture goes still without a visible change at its edges (a person walking slowly out of a fixed shot) is found only as
+far as the engine's shots go. Finer motion spans would need a motion-measurement mode in ffmpeg-skill (a proposal there,
+not a change from here).
+
+**Versioning.** It is additive: the `proposals` block gains `spans` and the request shape gains keys. `engine.tools_optional`
+gains silence and scenes. The agent pins that block, so the agent re-pins.
+
+**Verified.**
+- `tests/test_integration.py::MotionSpanTests`, against ffmpeg-skill 3.2.0 (0.11.0: refused, tested). The fixture has 2 s of
+  motion, a 3 s still picture and 2 s of motion, with the sound silent from 2.5 to 4.5 s:
+  - the still span is found at 2.0 to 5.0 s, to within one frame;
+  - `and` with the silence gives 2.5 to 4.5 s (within 50 ms);
+  - `or` gives 2.0 to 5.0 s, labelled `silence+static`;
+  - the response stays `applied: false`.
+- `tests/test_unit.py::SpanCombineTests` covers the and / or arithmetic.
+
