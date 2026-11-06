@@ -573,7 +573,7 @@
     {
       "tool_id": "video-editing/punch_in",
       "skill_id": "video-editing",
-      "version": "0.4.7",
+      "version": "0.4.9",
       "operation_type": "PUNCH_IN",
       "capability": "video.punch_in",
       "description": "zoom in by a scale on a subject box the caller gives (e.g. detection-skill's face box) for a time range: a hard cut in and out, the window centred on the box and kept inside the frame, the frame size unchanged",
