@@ -128,6 +128,11 @@ class Executor:
                                 {"operation": ref, "tool": op.tool, "missing": [f"tool:{op.tool}"]}, retryable=False)
             gaps = missing_capabilities(self.engine_doctor, TOOL_REQUIREMENTS[op.tool]) if self.engine_doctor else []
             gaps += [f"flag:{f}" for f in self.skill.missing_flags(script, self.steps[ref].flags())]   # detected, not version-guessed
+            if self.segmented(ref):   # each keep range is cut alone and the parts joined by stream copy (ADR-018)
+                if "join" not in self.skill.tools:
+                    gaps.append("tool:ffmpeg-skill/join")
+                else:
+                    gaps += [f"flag:ffmpeg-skill/join {f}" for f in self.skill.missing_flags("join", ["--transition", "--copy"])]
             if gaps:
                 raise EditError("TOOL_ERROR", f"operation {ref!r} ({op.type}) needs {', '.join(gaps)}, which ffmpeg-skill's doctor did not find",
                                 {"operation": ref, "tool": op.tool, "missing": gaps}, retryable=False)
@@ -345,7 +350,62 @@ class Executor:
                                    "skill_version": VERSION, "container": output_extension(self.project, ref)}
             if op.encoding:
                 key["encoding"] = dict(op.encoding)
+            if self.segmented(ref):   # a segment render is other bytes than the single-pass one: never reused for it
+                key["render"] = "segments"
             self.keys[ref] = stable_hash(key)
+
+    # ------------------------------------------------------------ segment cache (ADR-018)
+    def segmented(self, ref: str) -> bool:
+        """options.segment_cache: a frame-precision CUT renders every keep range on its own (cut.py --start / --end --accurate),
+        keeps each part in a content-keyed cache and joins the parts by stream copy (join.py --copy). A keyframe-precision CUT
+        already stream-copies, and every other type is one engine call, so only this case changes."""
+        op = self.project.operations[ref]
+        return bool(self.project.options.segment_cache) and op.type == "CUT" and op.params.get("precision") == "frame"
+
+    def _segments_dir(self) -> str:
+        return os.path.join(self.work, "segments")
+
+    def segment_key(self, ref: str, rng: Dict[str, Time]) -> str:
+        """What a cached part depends on, and nothing else: the input's identity (the source's bytes or the upstream
+        operation's id), the range, the encoding asked for, the container, the tool and its versions, and the flags the
+        installed engine release adds. The rest of the keep list is not part of it, so changing one range leaves the others'
+        keys as they were."""
+        op = self.project.operations[ref]
+        inp = op.inputs[0]
+        ident = self.project.sources[inp].identity if inp in self.project.sources else self.project.operations[inp].operation_id
+        return stable_hash({"kind": "segment", "input": ident, "start": rng["start"].to_dict()["rational"], "end": rng["end"].to_dict()["rational"],
+                            "tool": "ffmpeg-skill/cut", "tool_versions": self.tool_versions, "skill_version": VERSION,
+                            "container": output_extension(self.project, ref), "encoding": dict(op.encoding) if op.encoding else None,
+                            "engine_args": sorted(self._engine_args(op))})
+
+    def _segment_paths(self, ref: str, key: str) -> tuple:
+        base = os.path.join(self._segments_dir(), "seg_" + key[:24])
+        return base + output_extension(self.project, ref), base + ".json"
+
+    def _cached_segment(self, ref: str, key: str) -> Optional[Dict[str, Any]]:
+        if not self.project.options.reuse:
+            return None
+        media, rec_path = self._segment_paths(ref, key)
+        if not (os.path.isfile(media) and os.path.isfile(rec_path)):
+            return None
+        try:
+            import json
+            with open(rec_path, encoding="utf-8") as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        if rec.get("key") != key or rec.get("size") != os.path.getsize(media) or rec.get("sha256") != sha256_file(media):
+            return None
+        return rec
+
+    def segments_plan(self, ref: str) -> List[Dict[str, Any]]:
+        op = self.project.operations[ref]
+        out = []
+        for i, rng in enumerate(op.params["keep"]):
+            key = self.segment_key(ref, rng)
+            out.append({"index": i, "range": {"start": rng["start"].to_dict(), "end": rng["end"].to_dict()}, "key": key,
+                        "cached": self._cached_segment(ref, key) is not None})
+        return out
 
     # ------------------------------------------------------------ plan
     def plan(self, preview: bool = True) -> Dict[str, Any]:
@@ -388,6 +448,8 @@ class Executor:
             d["timeline"] = self.clips[ref].to_dict() if ref in self.clips else None
             d["intermediate"] = os.path.join(self.work, self.project.operations[ref].operation_id + output_extension(self.project, ref))
             d["reusable"] = self._reusable(ref) is not None
+            if self.segmented(ref):
+                d["segments"] = self.segments_plan(ref)
             if preview:
                 d["preview"] = self._preview(ref)
             steps.append(d)
@@ -533,19 +595,24 @@ class Executor:
         _remove(final)
         _remove(os.path.join(self.work, op.operation_id + ".json"))
         self._sweep_partials(op.operation_id)
-        argv = self._argv(ref)
-        self.log(f"run {ref}: {st.tool}")
-        run = run_tool(self.skill, st.script, argv, timeout=self.project.options.timeout_seconds)
-        if not run.ok:
-            _remove(partial)
-            err = tool_error(run, f"operation {ref!r} ({st.tool})")
-            self.results.append(self._record(op, st, "failed", t0, None, None, None, run.commands, run.seconds, err))
-            raise err
+        segments: Optional[Dict[str, Any]] = None
+        if self.segmented(ref):
+            commands, seconds, segments = self._run_segments(ref, partial, t0)
+        else:
+            argv = self._argv(ref)
+            self.log(f"run {ref}: {st.tool}")
+            run = run_tool(self.skill, st.script, argv, timeout=self.project.options.timeout_seconds)
+            commands, seconds = run.commands, run.seconds
+            if not run.ok:
+                _remove(partial)
+                err = tool_error(run, f"operation {ref!r} ({st.tool})")
+                self.results.append(self._record(op, st, "failed", t0, None, None, None, run.commands, run.seconds, err))
+                raise err
         try:
             doc = self._validate(ref, partial)
         except EditError as exc:
             _remove(partial)
-            self.results.append(self._record(op, st, "failed", t0, None, None, None, run.commands, run.seconds, exc))
+            self.results.append(self._record(op, st, "failed", t0, None, None, None, commands, seconds, exc, segments=segments))
             raise
         os.replace(partial, final)
         digest = sha256_file(final)
@@ -556,7 +623,114 @@ class Executor:
             json.dump(record, fh, sort_keys=True)
         os.replace(tmp, os.path.join(self.work, op.operation_id + ".json"))
         self.produced[ref] = final
-        self.results.append(self._record(op, st, "completed", t0, final, digest, doc, run.commands, run.seconds))
+        self.results.append(self._record(op, st, "completed", t0, final, digest, doc, commands, seconds, segments=segments))
+
+    def _run_segments(self, ref: str, partial: str, t0: str) -> tuple:
+        """The segment render of a CUT (ADR-018): every keep range is taken from the cache when its key is there, else cut on
+        its own and validated before it is cached; then the parts are joined by stream copy into `partial`. Returns
+        (commands, seconds, report). When the engine refuses the copy join (its parts' streams do not line up), the
+        operation is rendered in one pass as without the cache, and the report says so."""
+        op = self.project.operations[ref]
+        st = self.steps[ref]
+        os.makedirs(self._segments_dir(), exist_ok=True)
+        commands: List[str] = []
+        seconds = 0.0
+        parts: List[Dict[str, Any]] = []
+        files: List[str] = []
+        src_path = self._path_of(op.inputs[0], False)
+        want_audio = self.profile(op.inputs[0]).get("audio")
+        for i, rng in enumerate(op.params["keep"]):
+            if cancelled():
+                raise EditError("CANCELLED", f"interrupted in operation {ref} (segment {i})")
+            key = self.segment_key(ref, rng)
+            media, rec_path = self._segment_paths(ref, key)
+            part = {"index": i, "range": {"start": rng["start"].to_dict(), "end": rng["end"].to_dict()}, "key": key}
+            cached = self._cached_segment(ref, key)
+            if cached is not None:
+                part.update({"status": "reused", "sha256": cached["sha256"], "seconds": 0.0})
+                parts.append(part)
+                files.append(media)
+                continue
+            seg_partial = os.path.join(self._segments_dir(), f"seg_{key[:24]}.partial.{os.getpid()}{output_extension(self.project, ref)}")
+            for stale in (seg_partial, media, rec_path):
+                _remove(stale)
+            args: Dict[str, Any] = {"start": rng["start"].tool_arg(), "end": rng["end"].tool_arg(), "accurate": True}
+            for k in ("crf", "preset"):
+                if op.encoding and k in op.encoding:
+                    args[k] = op.encoding[k]
+            seg_step = Step(op, "ffmpeg-skill/cut", args, [op.inputs[0]])
+            argv = seg_step.argv_for([src_path], seg_partial, resolve=lambda flag: self.skill.resolve_flag("cut", flag), engine_args=self._engine_args(op))
+            self.log(f"run {ref} segment {i}: ffmpeg-skill/cut")
+            run = run_tool(self.skill, "cut", argv, timeout=self.project.options.timeout_seconds)
+            commands += run.commands
+            seconds += run.seconds
+            if not run.ok:
+                _remove(seg_partial)
+                err = tool_error(run, f"operation {ref!r} segment {i} (ffmpeg-skill/cut)")
+                self.results.append(self._record(op, st, "failed", t0, None, None, None, commands, seconds, err, segments=self._segments_report(parts, None)))
+                raise err
+            try:
+                doc = self._validate_segment(ref, i, seg_partial, (rng["end"] - rng["start"]).seconds, want_audio)
+            except EditError as exc:
+                _remove(seg_partial)
+                self.results.append(self._record(op, st, "failed", t0, None, None, None, commands, seconds, exc, segments=self._segments_report(parts, None)))
+                raise
+            os.replace(seg_partial, media)
+            digest = sha256_file(media)
+            import json
+            tmp = rec_path + ".partial"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"key": key, "sha256": digest, "size": os.path.getsize(media), "probe": doc}, fh, sort_keys=True)
+            os.replace(tmp, rec_path)
+            part.update({"status": "encoded", "sha256": digest, "seconds": run.seconds})
+            parts.append(part)
+            files.append(media)
+        if len(files) == 1:
+            shutil.copyfile(files[0], partial)
+            return commands, seconds, self._segments_report(parts, "single")
+        join = Step(op, "ffmpeg-skill/join", {"transition": "none", "copy": True}, [])
+        argv = join.argv_for(files, partial, resolve=lambda flag: self.skill.resolve_flag("join", flag))
+        self.log(f"run {ref}: ffmpeg-skill/join --copy ({len(files)} segments)")
+        run = run_tool(self.skill, "join", argv, timeout=self.project.options.timeout_seconds)
+        commands += run.commands
+        seconds += run.seconds
+        if run.ok:
+            return commands, seconds, self._segments_report(parts, "stream_copy")
+        _remove(partial)
+        reason = tool_error(run, "join --copy").message
+        self.log(f"{ref}: the engine refused the stream-copy join ({reason}); rendering in one pass")
+        argv = self._argv(ref)
+        run = run_tool(self.skill, st.script, argv, timeout=self.project.options.timeout_seconds)
+        commands += run.commands
+        seconds += run.seconds
+        report = self._segments_report(parts, "single_pass_fallback")
+        report["fallback_reason"] = reason
+        if not run.ok:
+            _remove(partial)
+            err = tool_error(run, f"operation {ref!r} ({st.tool})")
+            self.results.append(self._record(op, st, "failed", t0, None, None, None, commands, seconds, err, segments=report))
+            raise err
+        return commands, seconds, report
+
+    @staticmethod
+    def _segments_report(parts: List[Dict[str, Any]], join: Optional[str]) -> Dict[str, Any]:
+        return {"mode": "segments", "join": join, "parts": parts,
+                "encoded": sum(1 for p in parts if p.get("status") == "encoded"), "reused": sum(1 for p in parts if p.get("status") == "reused")}
+
+    def _validate_segment(self, ref: str, index: int, path: str, expected: float, want_audio: Optional[bool]) -> Dict[str, Any]:
+        what = f"operation {ref!r} segment {index}"
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            raise EditError("OUTPUT_ERROR", f"{what}: the tool reported success but wrote nothing")
+        doc = probe(self.skill, path)
+        if not doc.get("video") or not doc.get("duration"):
+            raise EditError("VALIDATION_ERROR", f"{what}: no video stream or duration")
+        tol = DURATION_TOLERANCE["frame"]
+        if abs(float(doc["duration"]) - expected) > tol:
+            raise EditError("VALIDATION_ERROR", f"{what}: duration {float(doc['duration']):.3f}s differs from the expected {expected:.3f}s by more than {tol}s",
+                            {"observed": float(doc["duration"]), "expected": expected, "tolerance": tol})
+        if want_audio is True and not doc.get("audio"):
+            raise EditError("VALIDATION_ERROR", f"{what}: the audio stream was lost", {"reason": "audio_lost"})
+        return doc
 
     def _sweep_partials(self, operation_id: str) -> None:
         """Partial files of this operation left by a crashed earlier process (any pid). One run per workspace at a time is
@@ -671,7 +845,8 @@ class Executor:
         return docs
 
     def _record(self, op, st: Step, status: str, started: str, path: Optional[str], digest: Optional[str], doc: Optional[Dict[str, Any]],
-                commands: List[str], seconds: float, err: Optional[EditError] = None, note: Optional[str] = None) -> Dict[str, Any]:
+                commands: List[str], seconds: float, err: Optional[EditError] = None, note: Optional[str] = None,
+                segments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         inputs = []
         for r in op.inputs:
             if r in self.project.sources:
@@ -693,6 +868,8 @@ class Executor:
             rec["error"] = err.to_dict()
         if note is not None:
             rec["note"] = note
+        if segments is not None:
+            rec["segments"] = segments
         return rec
 
 

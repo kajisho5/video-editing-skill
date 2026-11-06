@@ -252,7 +252,9 @@ _LAYOUT_ABSENT = {"0.10": ("freeze", "reverse", "insert", "crop"), "0.x": ("free
 _LAYOUT_FLAGS = {"0.10": ["--crf", "--preset"], "0.x": ["--crf", "--preset"], "1.x": ["--crf", "--quality", "--preset", "--overwrite"],
                  "2.x": ["--quality", "--preset", "--overwrite"], "help-only": ["--quality", "--preset", "--overwrite"],
                  "3.x": ["--quality", "--preset", "--overwrite"]}
-_LAYOUT_EXTRA = {"3.x": {"cut": ["--keep-hevc", "--no-keep-hevc", "--edit-list", "--no-edit-list", "--vfr-guard"]}}
+# join.py --copy from 2.24.0 (segment cache, ADR-018): every 2.x / 3.x layout here stands for a current release
+_LAYOUT_EXTRA = {"2.x": {"join": ["--copy"]}, "help-only": {"join": ["--copy"]},
+                 "3.x": {"cut": ["--keep-hevc", "--no-keep-hevc", "--edit-list", "--no-edit-list", "--vfr-guard"], "join": ["--copy"]}}
 
 
 def layout_flags(layout: str) -> dict:

@@ -34,6 +34,7 @@ ALL_OPERATIONS = ["CONCAT", "CROP", "CUT", "FILL", "FIT", "FREEZE", "IMAGE_INSER
 AVAILABLE_OPERATIONS = [t for t in ALL_OPERATIONS if not ((t == "ROTATE" and not HAS_ROTATE) or (t == "FREEZE" and not HAS_FREEZE)
                                                           or (t == "REVERSE" and not HAS_REVERSE) or (t == "IMAGE_INSERT" and not HAS_INSERT)
                                                           or (t == "CROP" and not HAS_CROP))]
+HAS_JOIN_COPY = READY and FFMPEG_SKILL.missing_flags("join", ["--copy"]) == []   # join.py --copy, from 2.24.0 (segment cache, ADR-018)
 # fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
 # exceed the source": the exact frame each rule must deliver, written out (old, bounded).
 BOUNDED = READY and FFMPEG_SKILL.fit_bounds_by_source()
@@ -646,6 +647,76 @@ class OperationE2ETests(unittest.TestCase):
         self.assertEqual(sorted(rep["supported_operations"]), AVAILABLE_OPERATIONS)
         self.assertTrue(rep["engine"]["capabilities_reported"])
         self.assertEqual(rep["engine"]["version"], FFMPEG_SKILL.version)
+
+
+def framemd5(path):
+    """Decoded-frame hashes of every stream (picture and sound), timestamps included."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0", "-f", "framemd5", "-"],
+                         stdout=subprocess.PIPE, check=True, text=True).stdout
+    return [ln for ln in out.splitlines() if ln and not ln.startswith("#")]
+
+
+@unittest.skipUnless(READY, REASON)
+class SegmentCacheLongFormTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 8 (ADR-018): a 1-hour source, three cuts; after one cut changes, only that segment is encoded
+    again, and the result equals a render of the changed request from an empty cache (framemd5)."""
+    KEEP = [{"start": 600, "end": 603}, {"start": 1800, "end": 1802}, {"start": 3500, "end": 3504}]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-long-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.long = os.path.join(cls.media, "long.mp4")
+        if HAS_JOIN_COPY:   # small picture, low rate: an hour of media in a few seconds of encoding and ~16 MB
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10",
+                            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "3600", "-c:v", "libx264", "-preset", "veryfast",
+                            "-crf", "35", "-g", "50", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "24k", "-ac", "1", cls.long], check=True)
+        else:   # the refusal needs no media beyond a short clip
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10",
+                            "-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p", cls.long], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def run_cli(self, ws, keep, expect=0):
+        doc = request([{"id": "L", "path": self.long}], [{"id": "c", "type": "CUT", "input": "L", "params": {"keep": keep}}],
+                      [{"id": "o", "operation": "c", "path": "out/cut.mp4"}], options={"segment_cache": True, "overwrite": True})
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        self.assertEqual(rc, expect, json.dumps(out.get("error"), indent=1) + err)
+        return out
+
+    @unittest.skipIf(HAS_JOIN_COPY, "this ffmpeg-skill has join.py --copy")
+    def test_refused_without_join_copy(self):
+        from video_editing_skill.errors import EXIT_CODES
+        out = self.run_cli(tempfile.mkdtemp(prefix="ws-", dir=self.root), [{"start": 0, "end": 1}, {"start": 2, "end": 3}], expect=EXIT_CODES["TOOL_ERROR"])
+        self.assertEqual(out["error"]["code"], "TOOL_ERROR")
+        self.assertIn("flag:ffmpeg-skill/join --copy", out["error"]["details"]["missing"])
+
+    @unittest.skipUnless(HAS_JOIN_COPY, "needs ffmpeg-skill join.py --copy (2.24.0+); the refusal is tested instead")
+    def test_one_changed_cut_re_encodes_only_that_segment(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        first = self.run_cli(ws, self.KEEP)["execution"]["operations"][0]["segments"]
+        self.assertEqual((first["encoded"], first["reused"], first["join"]), (3, 0, "stream_copy"))
+        changed = [dict(r) for r in self.KEEP]
+        changed[1] = {"start": 1800, "end": 1803}
+        out = self.run_cli(ws, changed)
+        seg = out["execution"]["operations"][0]["segments"]
+        self.assertEqual([p["status"] for p in seg["parts"]], ["reused", "encoded", "reused"])
+        self.assertEqual((seg["encoded"], seg["reused"], seg["join"]), (1, 2, "stream_copy"))
+        partial = os.path.join(ws, "out", "cut.mp4")
+        self.assertAlmostEqual(duration(partial), 10.0, delta=0.15)
+        # the same changed request from an empty cache: every segment encoded, and the same frames
+        fresh = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        full = self.run_cli(fresh, changed)["execution"]["operations"][0]["segments"]
+        self.assertEqual(full["encoded"], 3)
+        self.assertEqual(framemd5(partial), framemd5(os.path.join(fresh, "out", "cut.mp4")))
+        # and the same request a third time writes nothing new
+        again = self.run_cli(ws, changed)
+        self.assertEqual(again["status"], "reused")
 
 
 @unittest.skipUnless(READY, REASON)

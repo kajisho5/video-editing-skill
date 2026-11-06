@@ -31,6 +31,26 @@ TOOL_REQUIREMENTS = {
     "ffmpeg-skill/probe": ["ffprobe"],
 }
 
+SEGMENT_CACHE: Dict[str, Any] = {
+    "request_field": "options.segment_cache (bool, default false)",
+    "applies_to": "CUT with precision frame; every other type is one engine call and is reused as a whole (contract.identity.reuse)",
+    "render": ["each keep range is cut on its own: ffmpeg-skill/cut --start --end --accurate (plus the output's encoding profile)",
+               "each part is validated (video, duration within the frame tolerance, audio kept) and stored under <work>/segments/ with its record",
+               "the parts are joined by stream copy: ffmpeg-skill/join --transition none --copy (one part: copied as is)"],
+    "segment_key": "sha256(input identity, range start / end as rationals, tool, tool versions, skill version, container, encoding, engine release flags); "
+                   "the rest of the keep list is not part of it",
+    "partial_re_render": "after a change only the parts whose key is new are encoded; the rest are taken from the cache (status reused)",
+    "same_request_twice": "the operation itself is reused (idempotency_key); nothing is encoded or written in the work directory",
+    "report": "execution.operations[].segments: {mode: segments, join: stream_copy | single | single_pass_fallback, parts: [{index, range, key, status: "
+              "encoded | reused, sha256, seconds}], encoded, reused, fallback_reason?}; plan.steps[].segments: [{index, range, key, cached}]",
+    "differs_from_single_pass": ["the joins are butted: cut.py's declick fades (--segments) are not applied to a stream-copy join",
+                                 "the bytes differ from the single-pass render, so the idempotency key carries render: segments"],
+    "fallback": "when ffmpeg-skill refuses the copy join (the parts' picture and sound do not line up within its limit), the operation is rendered in one "
+                "pass as without the cache; the parts stay cached and the record says single_pass_fallback with the engine's reason",
+    "needs": "ffmpeg-skill/join --copy (from ffmpeg-skill 2.24.0, detected); without it a request asking for the cache is refused before execution (TOOL_ERROR)",
+    "reuse_false": "options.reuse false also bypasses the segment cache (every part is encoded again and the cache is refreshed)",
+}
+
 PARAM_DOCS: Dict[str, Dict[str, str]] = {
     "TRIM": {"start": "time", "end": "time (> start)", "precision": "frame (default, re-encode) | keyframe (lossless when possible)"},
     "CUT": {"keep": "[{start, end}, ...] in output order", "precision": "frame | keyframe"},
@@ -153,7 +173,8 @@ def skill_contract() -> Dict[str, Any]:
                         "operations": [{"id": "label", "type": "one of operations", "input": "source or operation id", "inputs": "[ids] for CONCAT", "params": {}}],
                         "outputs": [{"id": "label", "operation": "operation id", "path": "relative path under the workspace (.mp4 | .mov | .mkv)",
                                      "encoding": "optional {crf, preset} (contract.encoding); refused where noted there"}]},
-            "options": {"timeout_seconds": "1..86400 (default 3600)", "overwrite": "bool (default false)", "reuse": "bool (default true)"},
+            "options": {"timeout_seconds": "1..86400 (default 3600)", "overwrite": "bool (default false)", "reuse": "bool (default true)",
+                        "segment_cache": "bool (default false): a frame-precision CUT renders each keep range alone, cached by content, joined by stream copy (contract.segment_cache)"},
         },
         "time": {"forms": ["number (seconds)", "'ss.fff' | 'mm:ss' | 'hh:mm:ss.fff'", "{seconds}", "{rational: 'N/D'}", "{frames, timebase}", "{frames, fps}"],
                  "representation": "exact rationals; serialised as {seconds: 'fixed 6 places', rational: 'N/D'}",
@@ -212,6 +233,8 @@ def skill_contract() -> Dict[str, Any]:
                                          "POSITION: not planned as a type (see docs/decisions.md ADR-002)"]}},
         # ---- 0.1.x additive blocks: encoding profile, frame semantics, media policy (docs/decisions.md ADR-003 .. ADR-005)
         "encoding": ENCODING,
+        # ---- segment cache and partial re-render (docs/decisions.md ADR-018)
+        "segment_cache": SEGMENT_CACHE,
         "frame_semantics": FRAME_SEMANTICS,
         "media_policy": MEDIA_POLICY,
     }

@@ -17,7 +17,7 @@ ENCODING_FLAGS = ("crf", "preset")   # the typed encoding profile (operations.va
                                      # (crf is passed as --quality where the engine has it: ffmpeg_skill.FLAG_SPELLINGS)
 ALLOWED_FLAGS: Dict[str, tuple] = {
     "cut": ("start", "end", "segments", "accurate", "no_keep_hevc") + ENCODING_FLAGS,   # no_keep_hevc: set by the executor only (ADR-017)
-    "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color") + ENCODING_FLAGS,
+    "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color", "copy") + ENCODING_FLAGS,   # copy: segment joins only (ADR-018)
     "fit": ("duration", "method", "max_speed", "smooth", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps", "rotate", "flip") + ENCODING_FLAGS,
     "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
     "freeze": ("at", "hold", "mode") + ENCODING_FLAGS,

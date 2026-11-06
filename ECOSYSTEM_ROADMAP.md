@@ -38,9 +38,10 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Done when: a tag produces a release
 - [x] **7. ffmpeg-skill 3.0.0** — [#26](https://github.com/kajisho5/video-editing-skill/pull/26) — cut.py's new defaults checked against TRIM / CUT; ADR-017
   - Done when: the real-media suite passes against 3.0.0 and 2.x in CI
-- [ ] **8. Segment cache and partial re-render** — CUT / CONCAT keep a cache of encoded segments keyed by the source hash, the range and the encode settings; after a change only the segments that changed are encoded and the rest are joined by stream copy. Running the same request twice writes nothing new. Field review 2026-11-05 (Velisa ROADMAP, third round)
+- [x] **8. Segment cache and partial re-render** — CUT / CONCAT keep a cache of encoded segments keyed by the source hash, the range and the encode settings; after a change only the segments that changed are encoded and the rest are joined by stream copy. Running the same request twice writes nothing new. Field review 2026-11-05 (Velisa ROADMAP, third round)
   - Why: fixing one cut in a long programme takes minutes, not a full re-encode（なぜ要るか：長尺の1カットだけ直すとき全体を書き出し直さない）
   - Done when: a 1-hour fixture with one changed cut re-encodes only that segment (counted), and the result equals a full render (framemd5)
+  - Done (ADR-018): `options.segment_cache` — a frame-precision CUT is cut range by range into a content-keyed cache and joined by `join.py --copy`; `SegmentCacheLongFormTests` (1-hour source, 3 cuts) re-encodes 1 part after one change (`encoded: 1, reused: 2`) and matches an empty-cache render by framemd5; a repeated request is `reused`. Needs ffmpeg-skill 2.24.0+ (`--copy`), refused before execution without it. CONCAT's own join still re-encodes (it conforms size, rate and stereo audio); its partial re-render comes from its inputs
 - [ ] **9. Keyframe-aware long-form cuts** — TRIM / CUT on 2-8 h sources choose a stream copy when the in and out fall on keyframes, and re-encode only the GOPs at the boundaries otherwise (smart render), reported per cut
   - Why: trimming the head and tail of an 8-hour recording needs no re-encode（なぜ要るか：長尺の頭と尻を落とすだけなら再エンコード不要）
   - Needs: Velisa ROADMAP, Proposals to ffmpeg-skill 1 (cut-point candidates); until then whole re-encode as today

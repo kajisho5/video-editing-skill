@@ -483,3 +483,75 @@ class NormalizationEncodingAndPathsTests(FakeEngineHarness):
         rc, out = self.run_(doc, expect=0)
         self.assertFalse(os.path.exists(stale), "a partial of the same operation from another pid is removed before running")
         self.assertEqual(out["status"], "completed")
+
+
+class SegmentCacheTests(FakeEngineHarness):
+    """options.segment_cache (ADR-018): a frame-precision CUT is cut range by range into a content-keyed cache and joined by
+    stream copy; only parts whose key is new are encoded."""
+
+    KEEP = [{"start": 0, "end": 0.5}, {"start": 0.75, "end": 1.25}, {"start": 1.5, "end": 2}]
+
+    def doc(self, keep=None, **options):
+        return request(self.sources(), [{"id": "c", "type": "CUT", "input": "A", "params": {"keep": keep or self.KEEP}}],
+                       [{"id": "x", "operation": "c", "path": "out/c.mp4"}], options=dict({"segment_cache": True, "overwrite": True}, **options))
+
+    def work_files(self):
+        work = os.path.join(self.ws, ".video-editing", "work")
+        return {os.path.join(d, f): os.path.getmtime(os.path.join(d, f)) for d, _, fs in os.walk(work) for f in fs}
+
+    def test_segments_are_cut_alone_cached_and_joined_by_copy(self):
+        rc, out = self.run_(self.doc(), expect=0)
+        rec = out["execution"]["operations"][0]
+        seg = rec["segments"]
+        self.assertEqual((seg["mode"], seg["join"], seg["encoded"], seg["reused"]), ("segments", "stream_copy", 3, 0))
+        self.assertEqual([p["status"] for p in seg["parts"]], ["encoded"] * 3)
+        self.assertEqual(len({p["key"] for p in seg["parts"]}), 3)
+        with open(os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".mp4"), "rb") as fh:
+            header = json.loads(fh.read()[4:].decode())
+        self.assertEqual(header["tool"], "join")
+        self.assertIn("--copy", header["args"])
+        self.assertIn("none", header["args"])
+        self.assertAlmostEqual(header["duration"], 1.5)
+
+    def test_same_request_twice_writes_nothing_new(self):
+        self.run_(self.doc(), expect=0)
+        before = self.work_files()
+        rc, out = self.run_(self.doc(), expect=0)
+        self.assertEqual(out["status"], "reused")
+        self.assertEqual(self.work_files(), before, "a repeated request writes nothing in the work directory")
+
+    def test_one_changed_range_encodes_only_that_segment(self):
+        self.run_(self.doc(), expect=0)
+        keep = [dict(r) for r in self.KEEP]
+        keep[1] = {"start": 0.75, "end": 1.4}
+        rc, out = self.run_(self.doc(keep), expect=0)
+        seg = out["execution"]["operations"][0]["segments"]
+        self.assertEqual([p["status"] for p in seg["parts"]], ["reused", "encoded", "reused"])
+        self.assertEqual((seg["encoded"], seg["reused"]), (1, 2))
+        rc, plan = self.run_(self.doc(keep), "plan", expect=0)
+        self.assertEqual([p["cached"] for p in plan["plan"]["steps"][0]["segments"]], [True, True, True])
+
+    def test_reuse_false_encodes_every_segment_again(self):
+        self.run_(self.doc(), expect=0)
+        rc, out = self.run_(self.doc(reuse=False), expect=0)
+        self.assertEqual(out["execution"]["operations"][0]["segments"]["encoded"], 3)
+
+    def test_without_the_cache_nothing_changes(self):
+        doc = self.doc()
+        doc["options"] = {"overwrite": True}
+        rc, out = self.run_(doc, expect=0)
+        self.assertNotIn("segments", out["execution"]["operations"][0])
+        rc, plan = self.run_(doc, "plan", expect=0)
+        self.assertNotIn("segments", plan["plan"]["steps"][0])
+
+    def test_engine_without_join_copy_is_refused_before_execution(self):
+        root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-0x-")
+        try:
+            make_fake_skill(root, version="0.11.0", layout="0.x")
+            rc, out, err = cli(["run", "-", "--json", "--workspace", self.ws], stdin=json.dumps(self.doc()).encode(),
+                               env={"VIDEO_EDITING_FFMPEG_SKILL_DIR": root})
+            self.assertEqual(out["error"]["code"], "TOOL_ERROR", out)
+            self.assertIn("flag:ffmpeg-skill/join --copy", out["error"]["details"]["missing"])
+            self.assertEqual(self.calls(), [])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)

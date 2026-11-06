@@ -92,9 +92,10 @@ class EditOptions:
     timeout_seconds: float = 3600.0
     overwrite: bool = False
     reuse: bool = True
+    segment_cache: bool = False   # CUT renders each keep range alone, cached by content, joined by stream copy (ADR-018)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"timeout_seconds": self.timeout_seconds, "overwrite": self.overwrite, "reuse": self.reuse}
+        return {"timeout_seconds": self.timeout_seconds, "overwrite": self.overwrite, "reuse": self.reuse, "segment_cache": self.segment_cache}
 
 
 @dataclass
@@ -161,14 +162,14 @@ def parse_options(raw: Any) -> EditOptions:
     if raw is None:
         return EditOptions()
     d = _obj(raw, "options")
-    _keys(d, "options", ("timeout_seconds", "overwrite", "reuse"))
+    _keys(d, "options", ("timeout_seconds", "overwrite", "reuse", "segment_cache"))
     o = EditOptions()
     if "timeout_seconds" in d:
         t = d["timeout_seconds"]
         if isinstance(t, bool) or not isinstance(t, (int, float)) or not (1 <= t <= 86400):
             raise EditError("INVALID_REQUEST", "options.timeout_seconds: must be a number between 1 and 86400")
         o.timeout_seconds = float(t)
-    for k in ("overwrite", "reuse"):
+    for k in ("overwrite", "reuse", "segment_cache"):
         if k in d:
             if not isinstance(d[k], bool):
                 raise EditError("INVALID_REQUEST", f"options.{k}: must be a boolean")

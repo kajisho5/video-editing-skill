@@ -234,6 +234,7 @@ class ProjectTests(unittest.TestCase):
             (lambda d: d["project"]["sources"][0].update(kind="audio"), "INVALID_REQUEST"),
             (lambda d: d.update(options={"timeout_seconds": 0}), "INVALID_REQUEST"),
             (lambda d: d.update(options={"workspace": "/"}), "INVALID_REQUEST"),
+            (lambda d: d.update(options={"segment_cache": "yes"}), "INVALID_REQUEST"),
             (lambda d: d["project"]["operations"][0].update(type="POSITION", params={"x": 0, "y": 0}), "UNSUPPORTED_OPERATION"),
             (lambda d: d["project"]["outputs"][0].update(path="out/final.avi"), "UNSUPPORTED_FORMAT"),
             (lambda d: d["project"]["sources"][0].update(path="in/missing.mp4"), "MISSING_INPUT"),

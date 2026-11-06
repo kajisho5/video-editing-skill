@@ -661,3 +661,63 @@ floors. No job combined 3.0 with Python 3.9 or FFmpeg 5.x, so no job had to be s
 (a libx265 SDR fixture) fails on 3.0.0 without this change and passes on all three. `tests/test_engine_compat.py` gains
 a fake `3.x` layout whose cut.py keeps HEVC unless `--no-keep-hevc` is passed, and a 2.x case where the flag must not
 be passed.
+
+## ADR-018 — Segment cache and partial re-render for CUT (`options.segment_cache`)
+
+**Context.** ECOSYSTEM_ROADMAP step 8 (field review 2026-11-05): fixing one cut in a long programme re-encoded the whole
+CUT, because a frame-precision CUT is one `cut.py --segments ... --accurate` call and its result is reused only as a whole
+(ADR-001's operation-level reuse: a changed range is a new `operation_id`).
+
+**Decision.** A new request option, `options.segment_cache` (bool, default false). With it, a frame-precision CUT is
+rendered part by part:
+
+1. every keep range is cut alone, `cut.py <input> --start a --end b --accurate` (plus the output's encoding profile and
+   `--no-keep-hevc` where the release has it, ADR-017);
+2. each part is validated (video stream, duration within the frame tolerance of `b - a`, audio kept when the input has
+   it) and stored as `<work>/segments/seg_<key>.<ext>` with a record `{key, sha256, size, probe}`;
+3. the parts are joined by stream copy, `join.py <parts...> --transition none --copy` (one part is copied as is), and
+   the joined file is validated as every operation output is.
+
+A part's key is `sha256(input identity, range start / end as rationals, tool, tool versions, skill version, container,
+encoding, engine release flags)`. The rest of the keep list is not in it, so after one range changes the other parts
+keep their keys and are taken from the cache (`status: reused`); only the changed one is encoded. A part is reused when
+its file's size and sha256 match its record. The operation's own idempotency key gains `render: segments`, so a segment
+render and a single-pass render never stand in for each other. Running the same request twice reuses the operation
+itself and writes nothing in the work directory.
+
+**Why an option, default off.** The segment render butts the joins: cut.py's `--segments` declick fade (20 ms either side
+of each join) is not applied to a stream-copy join, and the bytes differ from the single-pass render. Turning it on for
+everyone would change every existing CUT's output. A caller that edits long programmes iteratively asks for it.
+
+**Fallback.** ffmpeg-skill refuses a copy join whose parts' picture and sound do not line up within 50 ms (found live:
+16 kHz AAC parts start their sound 64 ms early, the encoder's priming; at 44.1 / 48 kHz it is 21-23 ms and the join is
+accepted). Then the operation is rendered in one pass as without the cache; the parts stay cached, and the record says
+`join: single_pass_fallback` with the engine's reason. Nothing is hidden and no tolerance is widened.
+
+**Engine.** `join.py --copy` exists from ffmpeg-skill 2.24.0. It is detected (ADR-013), not version-guessed. On a checkout
+without it (the pinned 0.11.0) a request asking for the cache is refused before anything runs (`TOOL_ERROR`,
+`flag:ffmpeg-skill/join --copy`). The floor is not raised. `compiler.ALLOWED_FLAGS["join"]` gains `copy`, which only the
+executor sets for a segment join.
+
+**CONCAT.** The roadmap names CUT and CONCAT. CONCAT's own join stays one re-encode: it conforms size, frame rate and the
+audio layout (stereo), and a transition needs the pixels, so a copy join would change its contract. A CONCAT's partial
+re-render comes from its inputs: each input is an operation reused as a whole, or a segment-cached CUT. A copy-join mode
+for CONCAT when its inputs already match is left as a follow-up. It is not claimed here.
+
+**Report.** `execution.operations[].segments`: `{mode: segments, join: stream_copy | single | single_pass_fallback,
+parts: [{index, range, key, status: encoded | reused, sha256, seconds}], encoded, reused, fallback_reason?}`. In
+`plan.steps[].segments`: `[{index, range, key, cached}]`. The contract describes all of it in a new additive block,
+`segment_cache`.
+
+**Versioning.** `request_shape.options` gains `segment_cache`. `request_shape` is pinned by agents
+(`versioning.also_pinned_by_agents`), so this is breaking by ADR-007's convention. As with ADR-014 to ADR-016, the
+`version` / `contract_version` bump is left to the release, and video-production-agent re-pins. A request without the
+option compiles and runs exactly as before. The golden copy is regenerated.
+
+**Verified, not assumed.** `tests/test_integration.py::SegmentCacheLongFormTests` builds a 1-hour source (160x90 at 10
+fps, 48 kHz AAC) and cuts three ranges (at 10, 30 and 58 minutes). After the middle range changes, the run encodes
+exactly one part (`encoded: 1, reused: 2`). The output's framemd5 (picture and sound) equals that of the same changed
+request rendered from an empty cache, and a third run is `reused`. Against ffmpeg-skill main (3.2.0); against 0.11.0
+the refusal is tested instead. Offline: `tests/test_engine_contract.py::SegmentCacheTests` (fake engine) covers
+counting, the repeated request, `reuse: false`, the plan's `cached` flags and the refusal.
+

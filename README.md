@@ -182,7 +182,8 @@ the same `contract_version` — this is how 0.1.0 gained `media_compatibility`, 
   `options.overwrite`. `outputs[].encoding` (optional): `{"crf": 14..28, "preset": "ultrafast" … "veryslow"}` for the
   operation that produces the output (see `contract.encoding`; codec, bitrate modes, audio, pixel format are fixed
   by ffmpeg-skill and reported, not configured).
-- `options`: `timeout_seconds` (per tool call, 1..86400, default 3600), `overwrite`, `reuse`.
+- `options`: `timeout_seconds` (per tool call, 1..86400, default 3600), `overwrite`, `reuse`, `segment_cache`
+  (default false; see "Segment cache" below).
 - The workspace, the allowed input roots and the ffmpeg-skill location are **CLI flags / environment**, not
   request fields.
 
@@ -356,6 +357,12 @@ values are reported under `project`, never as observations.
   key, size and hash match re-validates them (probe, duration, frame, audio) and reuses them (`status: "reused"`,
   `execution.reused: true`, `outputs[].reused`); a candidate that no longer validates is run again.
   `options.reuse: false` disables it.
+- **Segment cache** (`options.segment_cache: true`, ADR-018): a frame-precision `CUT` cuts every keep range on its own
+  (ffmpeg-skill `cut --start --end --accurate`), keeps each part in `<work>/segments/` under a key made of the input's
+  identity, the range, the encoding and the engine versions, and joins the parts by stream copy (`join --copy`). After
+  one range of a long programme changes, only that part is encoded again; the record says so per part
+  (`execution.operations[].segments`: `encoded` / `reused`). The joins are butted (no declick fade), so the bytes differ
+  from the single-pass render. Needs ffmpeg-skill 2.24.0+ (`join --copy`, detected); refused before execution without it.
 - Nothing machine-specific enters an identity: paths, timestamps, the work directory and the engine location are
   reported, not hashed.
 - Output settings are explicit (frame precision re-encodes; CONCAT can pin width / height / fps). Encoded

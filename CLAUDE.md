@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-016). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-018). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -220,6 +220,10 @@ exception to ADR-001.
   `video_crop` SkillSpec that calls `ffmpeg-skill/crop` directly is the duplicate to retire on the agent side.
   Also in the same PR (roadmap step 6): `CHANGELOG.md`, release workflow (release-drafter + autolabel + tag-based
   release, as in the sibling skills), dependabot, actions pinned by SHA.
+
+- (ADR-018, `ECOSYSTEM_ROADMAP.md` step 8) — `options.segment_cache`: a frame-precision CUT is cut range by range into
+  `<work>/segments/` (content-keyed), joined by `join.py --copy`; one changed range re-encodes one part. Needs
+  ffmpeg-skill 2.24.0+ (`--copy`, detected; refused before execution without it). CONCAT's own join is unchanged.
 
 ## Picking the next task
 
