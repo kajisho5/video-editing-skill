@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.0 - 2026-11-06
+
+- fix(contract): contract_version 5.0 and version 0.5.0 for the shape 0.4.8-0.4.18 shipped (#41) (95e55e7)
+
 ## v0.4.18 - 2026-11-06
 
 - Deliver an output under a target file size (roadmap step 18) (#40) (32f10bb)
