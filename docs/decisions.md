@@ -1048,3 +1048,23 @@ bump is left to the release, and the agent re-pins and needs a lowering.
 - `tests/test_unit.py::CondenseParamTests` (pieces, timeline, refusals) and `test_engine_contract.CondenseFakeTests` (the
   calls, `nothing_kept`).
 
+## ADR-027 — Review of the planned cuts: CONDENSE `output: removed`
+
+**Context.** ECOSYSTEM_ROADMAP step 17: before cutting, check what will be cut.
+
+**Decision.** CONDENSE takes `output: result | removed` (default `result`, the edit). With `removed`, it writes a review
+file instead: only the pieces its rules cut, in order, at speed 1, each cut frame-accurately and joined. The engine
+calls are the same as for the edit (`cut.py --accurate`, `join.py`). The record and the plan carry `condense.review`:
+every removed span with its label, its source range and its range in the review file, plus `removed` (the total). A
+review with nothing cut is refused (`nothing_removed`). One request can carry the review and the edit as two CONDENSE
+operations with the same segments and rules, so both are made from one approved list.
+
+**Versioning.** `operations.CONDENSE.parameters` gains `output` (pinned). It ships in the same unreleased batch as
+ADR-026, with the bump left to the release, and the agent re-pins.
+
+**Verified.**
+- `tests/test_integration.py::CondenseTests::test_review_file_lasts_the_removed_spans`, against 3.2.0 and 0.11.0: two
+  retakes of 0.5 s and 1.2 s (and a silence kept at 2x) give a review file of 1.7 s (within 0.1 s). The review list
+  places the second span at 0.5 s. The edit from the same request lasts 6 - 1.7 - 0.25 s, within the frame tolerance.
+- `tests/test_unit.py::CondenseReviewTests` covers the timeline, and the fake-engine tests cover `nothing_removed`.
+

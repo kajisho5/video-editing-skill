@@ -1260,3 +1260,19 @@ class CondenseParamTests(unittest.TestCase):
         for params in bad:
             with self.assertRaises(EditError, msg=params):
                 operations.validate_params("CONDENSE", params, "op")
+
+
+class CondenseReviewTests(unittest.TestCase):
+    """CONDENSE output removed (ADR-027): only the cut spans, at speed 1, back to back."""
+
+    def test_review_timeline(self):
+        p = operations.validate_params("CONDENSE", {"segments": [{"start": 1, "end": 2, "label": "retake"}, {"start": 3, "end": 4, "label": "silence"},
+                                                                 {"start": 5, "end": 5.5, "label": "retake"}],
+                                                    "rules": {"retake": "cut", "silence": {"speed": 2}}, "output": "removed"}, "op")
+        from video_editing_skill.timeline import _condense, Clip, Segment
+        src = Clip(Time.parse(6), [Segment("A", Time.parse(0), Time.parse(6), Time.parse(0), Time.parse(6))])
+        c = _condense(src, p)
+        self.assertEqual(c.duration.value, Fraction(3, 2))
+        self.assertEqual([(s.source_start.value, s.source_end.value, s.speed) for s in c.segments], [(1, 2, 1), (5, Fraction(11, 2), 1)])
+        with self.assertRaises(EditError):
+            operations.validate_params("CONDENSE", dict(p, output="both", segments=[{"start": 0, "end": 1, "label": "a"}], rules={"a": "cut"}), "op")

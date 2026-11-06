@@ -19,7 +19,7 @@ from fractions import Fraction
 from .compiler import ALLOWED_FLAGS, Step, _fps_text, compile_project, output_extension
 from .errors import EditError
 from .ffmpeg_skill import FfmpegSkill, cancelled, missing_capabilities, probe, run_tool, tool_error
-from .operations import ENCODING_DEFAULTS, MEDIA, condense_pieces, even, params_to_json, punch_window
+from .operations import ENCODING_DEFAULTS, MEDIA, condense_pieces, condense_played, even, params_to_json, punch_window
 from .paths import is_within
 from .project import EditProject
 from .timebase import Time
@@ -359,7 +359,10 @@ class Executor:
                 ranges = [(r["start"], r["end"]) for r in op.params["keep"]]
             elif op.type == "CONDENSE":
                 ranges = [(r["start"], r["end"]) for r in op.params["segments"]]
-                if not any(pc["action"] != "cut" for pc in condense_pieces(op.params, limit)):
+                if not condense_played(op.params, condense_pieces(op.params, limit)):
+                    if op.params.get("output") == "removed":
+                        raise EditError("INVALID_REQUEST", f"operation {ref!r} (CONDENSE output removed): no span is cut, so there is nothing to review",
+                                        {"reason": "nothing_removed"})
                     raise EditError("INVALID_REQUEST", f"operation {ref!r} (CONDENSE): every span is cut; nothing would be kept", {"reason": "nothing_kept"})
             elif op.type == "FREEZE" and "at" in op.params:
                 at = op.params["at"]
@@ -980,7 +983,17 @@ class Executor:
                          "factor": params_to_json({"f": f})["f"] if f is not None else None,
                          "output_seconds": "0.000000" if pc["action"] == "cut" else length.scale(1 / (f or Fraction(1))).to_dict()["seconds"]})
         removed = sum(((pc["end"] - pc["start"]).value for pc in pieces if pc["action"] == "cut"), Fraction(0))
-        return {"pieces": rows, "removed": Time(removed).to_dict(), "input_duration": d.to_dict()}
+        doc: Dict[str, Any] = {"output": op.params.get("output", "result"), "pieces": rows, "removed": Time(removed).to_dict(), "input_duration": d.to_dict()}
+        if op.params.get("output") == "removed":   # the review list: each removed span and where it plays in the review file
+            t = Time(Fraction(0))
+            review = []
+            for pc in condense_played(op.params, pieces):
+                length = pc["end"] - pc["start"]
+                review.append({"label": pc["label"], "source_range": {"start": pc["start"].to_dict(), "end": pc["end"].to_dict()},
+                               "review_range": {"start": t.to_dict(), "end": (t + length).to_dict()}})
+                t = t + length
+            doc["review"] = review
+        return doc
 
     def _engine_call(self, op, st: Step, t0: str, tool: str, args: Dict[str, Any], inputs: List[str], temps: List[str], acc: Dict[str, Any],
                      engine_args: Optional[Dict[str, Any]] = None) -> str:
@@ -1018,9 +1031,7 @@ class Executor:
         acc: Dict[str, Any] = {"commands": [], "seconds": 0.0}
         try:
             parts: List[str] = []
-            for pc in condense_pieces(op.params, d):
-                if pc["action"] == "cut":
-                    continue
+            for pc in condense_played(op.params, condense_pieces(op.params, d)):
                 part = self._engine_call(op, st, t0, "cut", {"start": pc["start"].tool_arg(), "end": pc["end"].tool_arg(), "accurate": True}, [src], temps, acc,
                                          cut_args)
                 if pc["action"] == "speed":

@@ -699,3 +699,10 @@ class CondenseFakeTests(FakeEngineHarness):
                       [{"id": "x", "operation": "c", "path": "out/c.mp4"}])
         rc, out = self.run_(doc)
         self.assertEqual(out["error"]["details"].get("reason"), "nothing_kept")
+
+    def test_review_with_nothing_cut_is_refused(self):
+        doc = request(self.sources(), [{"id": "c", "type": "CONDENSE", "input": "A",
+                                        "params": {"segments": [{"start": 0, "end": 1, "label": "x"}], "rules": {"x": {"speed": 2}}, "output": "removed"}}],
+                      [{"id": "x", "operation": "c", "path": "out/c.mp4"}])
+        rc, out = self.run_(doc)
+        self.assertEqual(out["error"]["details"].get("reason"), "nothing_removed")

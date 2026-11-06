@@ -474,7 +474,7 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
         p["width"] = _even(params["width"], what + ".width")
         p["height"] = _even(params["height"], what + ".height")
     elif op_type == "CONDENSE":
-        _keys(params, what, ("segments", "rules", "default"), ("segments", "rules"))
+        _keys(params, what, ("segments", "rules", "default", "output"), ("segments", "rules"))
         segs = params["segments"]
         if not isinstance(segs, list) or not segs or len(segs) > 5000:
             raise EditError("INVALID_REQUEST", f"{what}.segments: must be a non-empty list (max 5000) of {{start, end, label}}")
@@ -506,6 +506,8 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
         if missing:
             raise EditError("INVALID_REQUEST", f"{what}.rules: no rule for labels {missing}", {"reason": "missing_rule", "labels": missing})
         p["default"] = _span_rule(params.get("default", "keep"), what + ".default")
+        # output removed (ADR-027): a review file of only the spans the rules cut, joined in order, to check before cutting
+        p["output"] = _enum(params.get("output", "result"), what + ".output", ("result", "removed"))
     elif op_type == "PUNCH_IN":
         # the subject box is the caller's (detection-skill's face box, ADR-001: no detection here); the window is computed
         # once the input frame is measured (punch_window) and refused there if it cannot hold the box
@@ -548,6 +550,13 @@ def _span_rule(rule: Any, what: str) -> Dict[str, Any]:
             raise EditError("INVALID_REQUEST", f"{what}.speed: must be between {fraction_text(MIN_SPEED)} and {fraction_text(MAX_SPEED)}, not 1")
         return {"action": "speed", "factor": f}
     raise EditError("INVALID_REQUEST", f"{what}: must be cut | keep | {{speed: factor}}")
+
+
+def condense_played(params: Dict[str, Any], pieces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The pieces CONDENSE writes, in order: the kept and sped ones (output result), or only the cut ones at speed 1 (output removed)."""
+    if params.get("output") == "removed":
+        return [dict(pc, action="keep", reviewed=pc["action"]) for pc in pieces if pc["action"] == "cut"]
+    return [pc for pc in pieces if pc["action"] != "cut"]
 
 
 def condense_pieces(params: Dict[str, Any], duration: Time) -> List[Dict[str, Any]]:

@@ -68,6 +68,7 @@ Provided (capabilities are declared only where an implementation exists):
 | `video.image_insert` | `IMAGE_INSERT` turn one image source into a silent clip of `duration` seconds (`width` / `height` / `fps` optional) that `CONCAT` and every other type can take | `ffmpeg-skill/insert` |
 | `video.crop` | `CROP` keep exactly the pixel rectangle `{x, y, width, height}` the caller gives (even sizes, inside the frame as displayed; no scaling or padding) | `ffmpeg-skill/crop` |
 | `video.condense` | `CONDENSE` apply a rule per labelled span — `segments: [{start, end, label}]`, `rules: {label: cut \| keep \| {speed: f}}`, `default` for the rest (keep): approved proposals (retakes, silences, static spans) become segments here (ADR-026) | `ffmpeg-skill/cut` + `fit` + `join` |
+| (review) | `CONDENSE` with `output: "removed"`: a review file of only the spans the rules would cut, joined in order, with the list of where each came from (ADR-027) | `ffmpeg-skill/cut` + `join` |
 | `video.punch_in` | `PUNCH_IN` zoom by `scale` (1..4) on a `subject` box the caller gives (detection-skill's face box) from `start` to `end`: a hard cut in and out, the window centred on the box and kept inside the frame, the frame size unchanged (ADR-020) | `ffmpeg-skill/cut` + `crop` + `fit` + `join` |
 
 `FREEZE`, `REVERSE`, `IMAGE_INSERT` and `CROP` run on ffmpeg-skill tools older checkouts do not ship (`freeze.py` from 0.16.0,

@@ -18,7 +18,7 @@ duration_known: false and downstream timeline ranges are omitted (never guessed)
 from fractions import Fraction
 from typing import Any, Dict, List, Optional
 
-from .operations import condense_pieces
+from .operations import condense_pieces, condense_played
 from .project import EditOperation, EditProject
 from .timebase import Time
 
@@ -180,10 +180,8 @@ def _condense(src: Clip, p: Dict[str, Any]) -> Clip:
         return Clip(None, list(src.segments), [])
     segs: List[Segment] = []
     total = ZERO
-    for pc in condense_pieces(p, src.duration):
-        if pc["action"] == "cut":
-            continue
-        f = pc.get("factor", Fraction(1))
+    for pc in condense_played(p, condense_pieces(p, src.duration)):
+        f = pc.get("factor", Fraction(1)) if pc["action"] == "speed" else Fraction(1)
         for s in _cut(src, [(pc["start"], pc["end"])]).segments:
             ts = total + s.timeline_start.scale(1 / f) if s.timeline_start is not None else None
             te = total + s.timeline_end.scale(1 / f) if s.timeline_end is not None else None
