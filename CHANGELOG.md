@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.7 - 2026-11-06
+
+- docs(roadmap): field review steps (2026-11-05) (#28) (cd06f2e)
+
 ## v0.4.6 - 2026-11-06
 
 - test: FREEZE's held frame follows ffmpeg-skill 3.1.6 (the frame shown at T) (#29) (a732c7b)
