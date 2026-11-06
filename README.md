@@ -360,6 +360,9 @@ values are reported under `project`, never as observations.
   key, size and hash match re-validates them (probe, duration, frame, audio) and reuses them (`status: "reused"`,
   `execution.reused: true`, `outputs[].reused`); a candidate that no longer validates is run again.
   `options.reuse: false` disables it.
+- **Target file size** (ADR-028): `outputs[].max_size: {"mb": 25}` delivers that output through ffmpeg-skill `export
+  --max-mb` (two-pass H.264 at the bitrate the duration allows), measures it and retries until it lands between 90 % and
+  100 % of the limit; a limit too small for a watchable picture fails with the reason. `.mp4` only; not with `encoding`.
 - **Retake proposals** (ADR-024): `video-editing propose - --json --workspace W` with
   `{"schema": "video-editing/propose@1", "retakes": {"transcript": "in/words.json", "profile": "en"}}` lists repeats,
   restarts, broken-off words and hesitation words as cut proposals with reasons (`applied: false`, nothing written).

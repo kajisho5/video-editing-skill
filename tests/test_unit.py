@@ -393,7 +393,8 @@ class FreezeReverseParamTests(unittest.TestCase):
         self.assertEqual((provided["video.freeze"], provided["video.reverse"]), ("video-editing/freeze", "video-editing/reverse"))
         self.assertEqual((c["operations"]["FREEZE"]["tool"], c["operations"]["REVERSE"]["tool"]), ("ffmpeg-skill/freeze", "ffmpeg-skill/reverse"))
         self.assertEqual(c["engine"]["tools_optional"], ["ffmpeg-skill/freeze", "ffmpeg-skill/reverse", "ffmpeg-skill/insert", "ffmpeg-skill/crop",
-                                                         "ffmpeg-skill/broll", "ffmpeg-skill/audio", "ffmpeg-skill/silence", "ffmpeg-skill/scenes"])
+                                                         "ffmpeg-skill/broll", "ffmpeg-skill/audio", "ffmpeg-skill/silence", "ffmpeg-skill/scenes",
+                                                         "ffmpeg-skill/export"])
         self.assertEqual((provided["video.crop"], c["operations"]["CROP"]["tool"]), ("video-editing/crop", "ffmpeg-skill/crop"))
         self.assertFalse(any("CROP" in n for n in c["versioning"]["next"]["0.5.0"]))
         self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.5.0"]))
@@ -1276,3 +1277,35 @@ class CondenseReviewTests(unittest.TestCase):
         self.assertEqual([(s.source_start.value, s.source_end.value, s.speed) for s in c.segments], [(1, 2, 1), (5, Fraction(11, 2), 1)])
         with self.assertRaises(EditError):
             operations.validate_params("CONDENSE", dict(p, output="both", segments=[{"start": 0, "end": 1, "label": "a"}], rules={"a": "cut"}), "op")
+
+
+class SizeLimitParamTests(unittest.TestCase):
+    """outputs[].max_size (ADR-028): units, refusals, the retry arithmetic."""
+
+    def setUp(self):
+        self.ws = make_workspace()
+        write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
+        self.policy = PathPolicy(self.ws)
+
+    def doc(self, out):
+        return request([{"id": "A", "path": "in/a.mp4"}], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}], [out])
+
+    def test_units_and_refusals(self):
+        p = parse_request(self.doc({"id": "o", "operation": "t", "path": "out/o.mp4", "max_size": {"mb": 25}}), self.policy, hash_sources=False)
+        self.assertEqual(p.outputs["o"].max_bytes, 25_000_000)
+        p = parse_request(self.doc({"id": "o", "operation": "t", "path": "out/o.mp4", "max_size": {"mib": 8}}), self.policy, hash_sources=False)
+        self.assertEqual(p.outputs["o"].max_bytes, 8 * 1024 * 1024)
+        for out, reason in (({"max_size": {"mb": 25}, "encoding": {"crf": 20}}, "size_and_encoding"), ({"max_size": {"mb": 25}, "path": "out/o.mov"}, "size_needs_mp4")):
+            with self.assertRaises(EditError) as cm:
+                parse_request(self.doc(dict({"id": "o", "operation": "t", "path": "out/o.mp4"}, **out)), self.policy, hash_sources=False)
+            self.assertEqual(cm.exception.details["reason"], reason)
+        for bad in ({"mb": 0}, {"mb": 1, "kb": 1}, {"tb": 1}, {"kb": 10}, {"mb": True}):
+            with self.assertRaises(EditError, msg=bad):
+                parse_request(self.doc({"id": "o", "operation": "t", "path": "out/o.mp4", "max_size": bad}), self.policy, hash_sources=False)
+
+    def test_retry_arithmetic(self):
+        from video_editing_skill.executor import Executor
+        self.assertIsNone(Executor.next_size_target(2.0, 1_950_000, 2_000_000))
+        self.assertLess(Executor.next_size_target(2.0, 2_100_000, 2_000_000), 2.0 * 2_000_000 / 2_100_000)
+        up = Executor.next_size_target(2.0, 1_600_000, 2_000_000)
+        self.assertAlmostEqual(up, 2.0 * 0.95 * 2_000_000 / 1_600_000)

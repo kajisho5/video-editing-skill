@@ -247,7 +247,7 @@ _BASE_FLAGS = {"probe": [], "cut": ["--start", "--end", "--segments", "--accurat
                        "--rotate", "--flip"],
                "overlay": ["--image", "--video", "--position", "--margin", "--scale", "--opacity", "--start", "--end", "--fade"],
                "broll": ["--insert", "--at", "--duration", "--audio"], "audio": ["--replace"],
-               "silence": ["--list", "--threshold", "--min-silence"], "scenes": [],
+               "silence": ["--list", "--threshold", "--min-silence"], "scenes": [], "export": ["--preset", "--no-scale", "--allow-long"],
                "freeze": ["--at", "--hold", "--mode"], "reverse": ["--no-audio"],
                "insert": ["--duration", "--width", "--height", "--fps", "--zoom", "--zoom-amount", "--pan"],
                "crop": ["--x", "--y", "--width", "--height", "--fps"]}
@@ -259,9 +259,10 @@ _LAYOUT_FLAGS = {"0.10": ["--crf", "--preset"], "0.x": ["--crf", "--preset"], "1
                  "3.x": ["--quality", "--preset", "--overwrite"]}
 # join.py --copy from 2.24.0 (segment cache, ADR-018): every 2.x / 3.x layout here stands for a current release
 # overlay.py --place from 2.x (stinger, ADR-023)
-_LAYOUT_EXTRA = {"2.x": {"join": ["--copy"], "overlay": ["--place"], "scenes": ["--shots"]}, "help-only": {"join": ["--copy"], "overlay": ["--place"], "scenes": ["--shots"]},
+_LAYOUT_EXTRA = {"2.x": {"join": ["--copy"], "overlay": ["--place"], "scenes": ["--shots"], "export": ["--max-mb"]},
+                 "help-only": {"join": ["--copy"], "overlay": ["--place"], "scenes": ["--shots"], "export": ["--max-mb"]},
                  "3.x": {"cut": ["--keep-hevc", "--no-keep-hevc", "--edit-list", "--no-edit-list", "--vfr-guard"], "join": ["--copy"], "overlay": ["--place"],
-                         "scenes": ["--shots"]}}
+                         "scenes": ["--shots"], "export": ["--max-mb"]}}
 
 
 def layout_flags(layout: str) -> dict:
@@ -285,7 +286,7 @@ def make_fake_skill(root: str, mode: str = "ok", version: str = "0.10.0", layout
     scripts = os.path.join(root, "scripts")
     os.makedirs(scripts, exist_ok=True)
     skip = _LAYOUT_ABSENT.get(layout, ()) if absent is None else tuple(absent)
-    for name in [t for t in ("probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop", "broll", "audio", "silence", "scenes")
+    for name in [t for t in ("probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop", "broll", "audio", "silence", "scenes", "export")
                  if t not in skip] + list(extra):
         with open(os.path.join(scripts, name + ".py"), "w", encoding="utf-8") as fh:
             fh.write(SCRIPT)

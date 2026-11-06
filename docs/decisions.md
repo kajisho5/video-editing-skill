@@ -1068,3 +1068,41 @@ ADR-026, with the bump left to the release, and the agent re-pins.
   places the second span at 0.5 s. The edit from the same request lasts 6 - 1.7 - 0.25 s, within the frame tolerance.
 - `tests/test_unit.py::CondenseReviewTests` covers the timeline, and the fake-engine tests cover `nothing_removed`.
 
+## ADR-028 — Target file size: ffmpeg-skill export --max-mb, measured and retried
+
+**Context.** ECOSYSTEM_ROADMAP step 18: deliveries with a size cap (mail, chat, upload limits). Given a limit such as 25
+MB, the file should land at or just under it on the first request.
+
+**Decision.** An output takes `max_size: {mb: 25}`: exactly one of `bytes`, `kb`, `mb`, `gb` (10^3 steps) or `kib`,
+`mib`, `gib` (2^10 steps), from 100 kB to 50 GB.
+- **The encode.** The output is delivered through `ffmpeg-skill export <intermediate> --preset youtube --no-scale
+  --allow-long --max-mb <target MiB>`. That is a two-pass x264 encode at the video bitrate the running time leaves after
+  the audio (AAC 192k), at the produced frame size and rate. The engine does the bitrate arithmetic; this Skill does not
+  run ffmpeg.
+- **Measure and retry.** The written size is measured. Over the limit, the next target is `target x limit / size x 0.97`.
+  Under 90 % of the limit, it is `target x 0.95 x limit / size`. This repeats up to 5 encodes.
+- **A picture that cannot use the bits.** When a larger target stops growing the file (two sizes within 1 %), the picture
+  needs fewer bits than the limit allows. The file is delivered under the limit with `under_floor: true` and a note. It
+  is never padded.
+- **Failure.** A limit the engine refuses fails with `OUTPUT_ERROR` `size_limit_unreachable`, with the attempts and the
+  engine's own reason. The engine refuses a video bitrate under 100 kb/s ("not watchable") and anything past 400 Mb/s.
+  So does a run of 5 encodes that never lands in range. Nothing is delivered then.
+- **Not done.** Nothing is lowered automatically to make a small limit fit, neither the frame size nor the audio
+  bitrate. The failure says why, and the caller decides (RESIZE first, or a shorter cut).
+- **Refusals before execution.** `max_size` with `encoding` is refused (a quality and a size: give one;
+  `size_and_encoding`), as is a path that is not `.mp4` (`size_needs_mp4`). So is an ffmpeg-skill without
+  `export --max-mb` (2.x+, detected; `export` joins `OPTIONAL_TOOLS`).
+- **Report.** `execution.outputs[].size_limit: {limit_bytes, bytes, ratio, attempts, two_pass, under_floor}`.
+
+**Versioning.** `request_shape.outputs` gains `max_size` (agent-pinned), and there is a new additive block,
+`size_limit`. The bump is left to the release, and the agent re-pins.
+
+**Verified.** `tests/test_integration.py::SizeLimitTests`, against ffmpeg-skill 3.2.0. On 0.11.0 the refusal is tested.
+- **Three fixtures in range.** Each lands in [90 %, 100 %] of its limit:
+  - 640x360, 20 s with sound, at 2 MB;
+  - 1280x720, 8 s, no sound, at 3 MB;
+  - 320x180, 60 s with sound, at 4 MB.
+- **Too small a limit.** 60 s into 300 kB fails with the engine's "not watchable" reason, and no file is delivered.
+- **Too large a limit.** At 40 MB the 20 s clip stays under the limit; if it lands under 90 %, it says `under_floor`.
+- **Offline.** `tests/test_unit.py::SizeLimitParamTests` covers the units, the refusals and the retry arithmetic.
+

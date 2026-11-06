@@ -23,6 +23,7 @@ ALLOWED_FLAGS: Dict[str, tuple] = {
     "overlay": ("image", "video", "place", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,   # video / place: stinger only
     "broll": ("insert", "at", "duration", "audio"),   # stinger sound only (ADR-023): the stinger's audio mixed in under each join
     "audio": ("replace",),                            # stinger sound only: the mixed track onto the composited picture
+    "export": ("preset", "no_scale", "allow_long", "max_mb"),   # outputs[].max_size only (ADR-028)
     "freeze": ("at", "hold", "mode") + ENCODING_FLAGS,
     "reverse": ENCODING_FLAGS,
     "insert": ("duration", "width", "height", "fps") + ENCODING_FLAGS,

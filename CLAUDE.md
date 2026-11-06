@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-027). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-028). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -241,6 +241,8 @@ exception to ADR-001.
 - (ADR-026, step 16) — `CONDENSE {segments, rules: {label: cut | keep | {speed}}, default}`: cut / fit --duration / join;
   where approved proposals are applied.
 - (ADR-027, step 17) — CONDENSE `output: removed`: review file of only the cut spans + `condense.review` list.
+- (ADR-028, step 18) — `outputs[].max_size {mb: 25}`: export --max-mb (two-pass), measured, retried into [90 %, 100 %];
+  unreachable -> OUTPUT_ERROR with the engine's reason; under_floor when the picture needs fewer bits.
 
 ## Picking the next task
 

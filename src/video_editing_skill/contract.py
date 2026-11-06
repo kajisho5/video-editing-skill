@@ -253,7 +253,8 @@ def skill_contract() -> Dict[str, Any]:
                                                              "ai_generated": "optional {generator, licence}: the caller declares the source AI-generated (contract.ai_generated)"}],
                         "operations": [{"id": "label", "type": "one of operations", "input": "source or operation id", "inputs": "[ids] for CONCAT", "params": {}}],
                         "outputs": [{"id": "label", "operation": "operation id", "path": "relative path under the workspace (.mp4 | .mov | .mkv)",
-                                     "encoding": "optional {crf, preset} (contract.encoding); refused where noted there"}]},
+                                     "encoding": "optional {crf, preset} (contract.encoding); refused where noted there",
+                                     "max_size": "optional {bytes | kb | mb | gb | kib | mib | gib: number} (MB = 10^6 bytes): fit the file under it (contract.size_limit)"}]},
             "options": {"timeout_seconds": "1..86400 (default 3600)", "overwrite": "bool (default false)", "reuse": "bool (default true)",
                         "segment_cache": "bool (default false): a frame-precision CUT renders each keep range alone, cached by content, joined by stream copy (contract.segment_cache)"},
         },
@@ -314,6 +315,19 @@ def skill_contract() -> Dict[str, Any]:
                                          "POSITION: not planned as a type (see docs/decisions.md ADR-002)"]}},
         # ---- 0.1.x additive blocks: encoding profile, frame semantics, media policy (docs/decisions.md ADR-003 .. ADR-005)
         "encoding": ENCODING,
+        # ---- target file size (docs/decisions.md ADR-028)
+        "size_limit": {"request_field": "project.outputs[].max_size: {mb: 25} (one of bytes, kb, mb, gb = 10^3 steps; kib, mib, gib = 2^10 steps); 100 kB .. 50 GB",
+                       "engine": "ffmpeg-skill/export --preset youtube --no-scale --allow-long --max-mb <target MiB>: a two-pass x264 encode at the video bitrate "
+                                 "the running time leaves after the audio (AAC 192k), at the produced frame size and rate",
+                       "retry": "measured after each encode: over the limit -> target x limit / size x 0.97; under 90 % -> target x 0.95 x limit / size; up to 5 "
+                                "encodes; the delivered file lies in [90 %, 100 %] of the limit",
+                       "refused": ["with outputs[].encoding (a quality and a size: give one; INVALID_REQUEST size_and_encoding)",
+                                   "a path that is not .mp4 (INVALID_REQUEST size_needs_mp4)",
+                                   "an ffmpeg-skill without export --max-mb (2.x+; TOOL_ERROR before execution)",
+                                   "a limit the engine cannot meet (under its lowest watchable video bitrate, 100 kb/s, for the duration; or none of 5 encodes "
+                                   "in range): OUTPUT_ERROR size_limit_unreachable with the attempts and the engine's reason; nothing is delivered"],
+                       "not_done": "no automatic downscale or audio-bitrate reduction to make a small limit fit: the failure says so and the caller decides",
+                       "report": "execution.outputs[].size_limit: {limit_bytes, bytes, ratio, attempts: [{target_mib, bytes, ratio}], two_pass}"},
         # ---- cut proposals (docs/decisions.md ADR-024)
         "proposals": proposals_block(),
         # ---- stinger transition (docs/decisions.md ADR-023)

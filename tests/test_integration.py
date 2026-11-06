@@ -37,6 +37,7 @@ AVAILABLE_OPERATIONS = [t for t in ALL_OPERATIONS if not ((t == "ROTATE" and not
 # stinger transition (ADR-023): overlay.py --video --place, and broll.py / audio.py --replace for its sound (2.x and later)
 HAS_STINGER = READY and all(t in FFMPEG_SKILL.tools for t in ("broll", "audio")) and FFMPEG_SKILL.missing_flags("overlay", ["--video", "--place"]) == []
 HAS_SHOTS = READY and "scenes" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("scenes", ["--shots"]) == []   # static spans (ADR-025)
+HAS_EXPORT_SIZE = READY and "export" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("export", ["--max-mb", "--no-scale", "--allow-long"]) == []
 HAS_JOIN_COPY = READY and FFMPEG_SKILL.missing_flags("join", ["--copy"]) == []   # join.py --copy, from 2.24.0 (segment cache, ADR-018)
 # fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
 # exceed the source": the exact frame each rule must deliver, written out (old, bounded).
@@ -1211,6 +1212,80 @@ class CondenseTests(unittest.TestCase):
         self.assertEqual([(x["source_range"]["start"]["rational"], x["review_range"]["start"]["rational"]) for x in rec["condense"]["review"]],
                          [("1/1", "0/1"), ("3/1", "1/2")])
         self.assertEqual(rec["condense"]["removed"]["rational"], "17/10")
+
+
+@unittest.skipUnless(READY, REASON)
+class SizeLimitTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 18 (ADR-028): three fixtures, each delivered at or under its limit and at 90 % of it or more;
+    a limit no watchable bitrate can meet is refused with the reason."""
+    FIXTURES = {   # name: (lavfi video, seconds, audio?, limit in MB)
+        "talk": ("testsrc2=s=640x360:r=30", 20, True, 2.0),
+        "hd": ("mandelbrot=s=1280x720:r=25", 8, False, 3.0),
+        "long": ("testsrc2=s=320x180:r=30,noise=alls=30:allf=t", 60, True, 4.0),
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-size-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        for name, (vid, secs, audio, _) in cls.FIXTURES.items():
+            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", vid]
+            if audio:
+                cmd += ["-f", "lavfi", "-i", f"sine=f=440:sample_rate=48000:d={secs}", "-c:a", "aac"]
+            subprocess.run(cmd + ["-t", str(secs), "-c:v", "libx264", "-preset", "veryfast", "-crf", "12", "-pix_fmt", "yuv420p",
+                                  os.path.join(cls.media, name + ".mp4")], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def run_size(self, name, limit):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        secs = self.FIXTURES[name][1]
+        doc = request([{"id": "S", "path": os.path.join(self.media, name + ".mp4")}],
+                      [{"id": "t", "type": "TRIM", "input": "S", "params": {"start": 0, "end": secs}}],
+                      [{"id": "o", "operation": "t", "path": "out/o.mp4", "max_size": limit}])
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        return rc, out, os.path.join(ws, "out", "o.mp4")
+
+    @unittest.skipIf(HAS_EXPORT_SIZE, "this ffmpeg-skill has export --max-mb")
+    def test_refused_without_export_max_mb(self):
+        rc, out, _ = self.run_size("talk", {"mb": 2})
+        self.assertEqual(out["error"]["code"], "TOOL_ERROR", out)
+
+    @unittest.skipUnless(HAS_EXPORT_SIZE, "needs ffmpeg-skill export --max-mb (2.x+)")
+    def test_each_fixture_lands_between_90_and_100_percent(self):
+        for name, (_, _, _, mb) in self.FIXTURES.items():
+            with self.subTest(name):
+                rc, out, path = self.run_size(name, {"mb": mb})
+                self.assertEqual(rc, 0, json.dumps(out.get("error")))
+                limit = int(mb * 1000 ** 2)
+                size = os.path.getsize(path)
+                self.assertLessEqual(size, limit)
+                self.assertGreaterEqual(size, 0.9 * limit, out["execution"]["outputs"][0].get("size_limit"))
+                rep = out["execution"]["outputs"][0]["size_limit"]
+                self.assertEqual((rep["limit_bytes"], rep["bytes"]), (limit, size))
+
+    @unittest.skipUnless(HAS_EXPORT_SIZE, "needs ffmpeg-skill export --max-mb (2.x+)")
+    def test_a_simple_picture_under_the_floor_is_delivered_and_said_so(self):
+        """A picture that needs fewer bits than the limit: a larger target stops growing the file, so it is delivered under the
+        limit with under_floor: true rather than refused or padded."""
+        rc, out, path = self.run_size("talk", {"mb": 40})
+        self.assertEqual(rc, 0, json.dumps(out.get("error")))
+        rep = out["execution"]["outputs"][0]["size_limit"]
+        self.assertLessEqual(os.path.getsize(path), 40_000_000)
+        if rep["ratio"] < 0.9:
+            self.assertTrue(rep["under_floor"], rep)
+
+    @unittest.skipUnless(HAS_EXPORT_SIZE, "needs ffmpeg-skill export --max-mb (2.x+)")
+    def test_a_limit_too_small_fails_with_the_reason(self):
+        rc, out, path = self.run_size("long", {"kb": 300})   # 60 s in 300 kB leaves under 100 kb/s for the picture
+        self.assertEqual((out["error"]["code"], out["error"]["details"]["reason"]), ("OUTPUT_ERROR", "size_limit_unreachable"), out["error"])
+        self.assertIn("watchable", out["error"]["message"])
+        self.assertFalse(os.path.exists(path))
 
 
 @unittest.skipUnless(READY, REASON)

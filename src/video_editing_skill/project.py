@@ -94,11 +94,14 @@ class EditOutput:
     raw_path: str
     path: str
     encoding: Optional[Dict[str, Any]] = None
+    max_bytes: Optional[int] = None   # outputs[].max_size: written by ffmpeg-skill export --max-mb, two-pass, retried to fit (ADR-028)
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"id": self.ref, "operation": self.operation, "path": self.path}
         if self.encoding:
             d["encoding"] = dict(self.encoding)
+        if self.max_bytes is not None:
+            d["max_bytes"] = self.max_bytes
         return d
 
 
@@ -210,6 +213,23 @@ def _ai_generated(raw: Any, what: str) -> Optional[Dict[str, str]]:
     return out
 
 
+_SIZE_UNITS = {"bytes": 1, "kb": 1000, "mb": 1000 ** 2, "gb": 1000 ** 3, "kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3}
+
+
+def _max_size(raw: Any, what: str) -> int:
+    """{mb: 25} (or bytes / kb / gb / kib / mib / gib: exactly one key) -> bytes. MB is 1,000,000 bytes, MiB 1,048,576."""
+    d = _obj(raw, what)
+    if len(d) != 1 or next(iter(d)) not in _SIZE_UNITS:
+        raise EditError("INVALID_REQUEST", f"{what}: must be one of {{bytes | kb | mb | gb | kib | mib | gib: number}}", {"allowed": list(_SIZE_UNITS)})
+    unit, v = next(iter(d.items()))
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not v > 0:
+        raise EditError("INVALID_REQUEST", f"{what}.{unit}: must be a positive number")
+    n = int(v * _SIZE_UNITS[unit])
+    if not (100_000 <= n <= 50 * 1000 ** 3):
+        raise EditError("INVALID_REQUEST", f"{what}: must be between 100 kB and 50 GB")
+    return n
+
+
 # ---------------------------------------------------------------- main entry
 def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> EditProject:
     """Validate a request document against the schema, the path policy and the operation allowlist."""
@@ -318,7 +338,7 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
     for i, raw in enumerate(_list(proj["outputs"], "project.outputs", MAX_OUTPUTS)):
         what = f"project.outputs[{i}]"
         o = _obj(raw, what)
-        _keys(o, what, ("id", "operation", "path", "encoding"), ("id", "operation", "path"))
+        _keys(o, what, ("id", "operation", "path", "encoding", "max_size"), ("id", "operation", "path"))
         ref = _ref(o["id"], what + ".id")
         if ref in outputs:
             raise EditError("INVALID_REQUEST", f"{what}: duplicate output id {ref!r}")
@@ -344,7 +364,14 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
         if os.path.normcase(path) in seen_paths:
             raise EditError("DEPENDENCY_ERROR", f"{what}: two outputs share the path", {"reason": "conflicting_outputs"})
         seen_paths.add(os.path.normcase(path))
-        outputs[ref] = EditOutput(ref, op_ref, raw_path, path, encoding)
+        max_bytes = _max_size(o["max_size"], what + ".max_size") if o.get("max_size") is not None else None
+        if max_bytes is not None:
+            if encoding is not None:
+                raise EditError("INVALID_REQUEST", f"{what}: max_size sets the bitrate from the size and encoding sets a quality; give one of them",
+                                {"reason": "size_and_encoding"})
+            if os.path.splitext(raw_path)[1].lower() != ".mp4":
+                raise EditError("INVALID_REQUEST", f"{what}: max_size writes H.264 / AAC in .mp4; use an .mp4 path", {"reason": "size_needs_mp4"})
+        outputs[ref] = EditOutput(ref, op_ref, raw_path, path, encoding, max_bytes)
     if not outputs:
         raise EditError("INVALID_REQUEST", "project.outputs: at least one output is required")
 

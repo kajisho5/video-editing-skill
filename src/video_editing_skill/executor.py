@@ -114,6 +114,7 @@ class Executor:
             self.durations[ref] = Time.from_float(float(d))
         self.clips = build_timelines(self.project, self.durations)
         self._check_engine()
+        self._check_size_outputs()
         self._check_ranges()
         self._check_media()
         self._compute_keys()
@@ -1228,11 +1229,77 @@ class Executor:
             return True if any(a is True for a in audios) else (False if all(a is False for a in audios) else None)
         return self.profile(op.inputs[0]).get("audio")
 
+    def _check_size_outputs(self) -> None:
+        """outputs[].max_size needs ffmpeg-skill export --max-mb (2.x+), detected; refused before execution without it."""
+        if not any(o.max_bytes for o in self.project.outputs.values()):
+            return
+        if "export" not in self.skill.tools:
+            raise EditError("TOOL_ERROR", "max_size needs ffmpeg-skill/export, which this checkout does not provide", {"missing": ["tool:ffmpeg-skill/export"]},
+                            retryable=False)
+        gaps = self.skill.missing_flags("export", ["--preset", "--no-scale", "--allow-long", "--max-mb"])
+        if gaps:
+            raise EditError("TOOL_ERROR", f"max_size needs ffmpeg-skill/export {' '.join(gaps)}", {"missing": [f"flag:ffmpeg-skill/export {g}" for g in gaps]},
+                            retryable=False)
+
+    SIZE_ATTEMPTS = 5
+    SIZE_FLOOR = 0.90   # an output under 90 % of its limit is encoded again at a larger target
+
+    @staticmethod
+    def next_size_target(target_mib: float, size: int, limit: int) -> Optional[float]:
+        """The next --max-mb after an encode of `size` bytes against `limit`: smaller when over (with 3 % room), larger when under
+        SIZE_FLOOR of it (aiming at 95 %), None when it landed between."""
+        if size > limit:
+            return target_mib * limit / size * 0.97
+        if size < Executor.SIZE_FLOOR * limit:
+            return target_mib * 0.95 * limit / size
+        return None
+
+    def _deliver_sized(self, ref: str, src: str, partial: str, limit: int) -> Dict[str, Any]:
+        """Two-pass H.264 into `limit` bytes through ffmpeg-skill export --max-mb (it works out the video bitrate from the
+        duration and the audio's), at the source's frame size; measured and retried until it lands in [90 %, 100 %] of the limit."""
+        target = limit * 0.97 / (1024 * 1024)
+        attempts: List[Dict[str, Any]] = []
+        for _ in range(self.SIZE_ATTEMPTS):
+            _remove(partial)
+            argv = [src, "-o", partial]
+            for flag, val in (("--preset", "youtube"), ("--no-scale", None), ("--allow-long", None), ("--max-mb", f"{target:.4f}")):
+                spelled = self.skill.resolve_flag("export", flag) or flag
+                argv += [spelled] + ([val] if val is not None else [])
+            self.log(f"output {ref}: ffmpeg-skill/export --max-mb {target:.3f}")
+            run = run_tool(self.skill, "export", argv, timeout=self.project.options.timeout_seconds)
+            if not run.ok:
+                _remove(partial)
+                err = tool_error(run, f"output {ref!r} (ffmpeg-skill/export --max-mb)")
+                raise EditError("OUTPUT_ERROR", f"output {ref!r}: cannot fit {limit} bytes: {err.message}",
+                                {"reason": "size_limit_unreachable", "limit_bytes": limit, "attempts": attempts, "engine": err.details}, retryable=False)
+            size = os.path.getsize(partial)
+            attempts.append({"target_mib": round(target, 4), "bytes": size, "ratio": round(size / limit, 4)})
+            nxt = self.next_size_target(target, size, limit)
+            done = {"limit_bytes": limit, "bytes": size, "ratio": round(size / limit, 4), "attempts": attempts, "two_pass": True,
+                    "engine": "ffmpeg-skill/export --preset youtube --no-scale --allow-long --max-mb", "under_floor": False}
+            if nxt is None:
+                return done
+            if size <= limit and len(attempts) >= 2 and abs(size - attempts[-2]["bytes"]) <= 0.01 * size:
+                # a larger target no longer makes a larger file: the picture needs fewer bits than the limit allows. Under the limit is
+                # what was asked; it is delivered and said so, never padded
+                done.update(under_floor=True, note="the encoder uses fewer bits than the limit allows for this picture; a larger target did not grow the file")
+                return done
+            target = nxt
+        _remove(partial)
+        raise EditError("OUTPUT_ERROR", f"output {ref!r}: no encode landed between {int(self.SIZE_FLOOR * 100)} % and 100 % of {limit} bytes in "
+                        f"{self.SIZE_ATTEMPTS} attempts", {"reason": "size_limit_unreachable", "limit_bytes": limit, "attempts": attempts}, retryable=False)
+
     def _deliver(self) -> None:
+        self.sized: Dict[str, Dict[str, Any]] = {}
         for ref in sorted(self.project.outputs):
             out = self.project.outputs[ref]
             src = self.produced[out.operation]
             os.makedirs(os.path.dirname(out.path), exist_ok=True)
+            if out.max_bytes:
+                partial = os.path.splitext(out.path)[0] + ".partial.mp4"
+                self.sized[ref] = self._deliver_sized(ref, src, partial, out.max_bytes)
+                os.replace(partial, out.path)
+                continue
             partial = out.path + ".partial"
             try:
                 shutil.copyfile(src, partial)
@@ -1254,6 +1321,8 @@ class Executor:
                 d["reused"] = bool(rec and rec["status"] == "reused")
                 d["operation_id"] = self.project.operations[out.operation].operation_id
                 d["timeline"] = self.clips[out.operation].to_dict() if out.operation in self.clips else None
+                if ref in getattr(self, "sized", {}):
+                    d["size_limit"] = self.sized[ref]
                 mark = self.ai_mark(out.operation)
                 if mark:
                     d["marks"], d["ai_generated"] = ["AI_GENERATED"], mark
