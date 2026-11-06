@@ -1092,3 +1092,40 @@ class CropTests(ExecutorHarness):
         with self.assertRaises(EditError) as cm:
             ex._check_media()
         self.assertEqual(cm.exception.details["frame"], [320, 180])
+
+
+class PunchWindowTests(unittest.TestCase):
+    """PUNCH_IN's window (ADR-020): centred on the subject, inside the frame, holding the whole box, even sizes."""
+
+    def test_window(self):
+        from fractions import Fraction
+        from video_editing_skill.operations import punch_window
+        # a face left of centre: the window is pushed right only as far as the frame needs
+        w = punch_window(320, 180, Fraction(2), {"x": 40, "y": 60, "width": 40, "height": 40})
+        self.assertEqual(w, {"x": 0, "y": 34, "width": 160, "height": 90})
+        # centred where there is room
+        w = punch_window(1920, 1080, Fraction(3, 2), {"x": 900, "y": 400, "width": 120, "height": 160})
+        self.assertEqual((w["width"], w["height"]), (1280, 720))
+        self.assertEqual(w["x"], 320)
+        self.assertEqual(w["y"], 120)
+        for scale in (Fraction(11, 10), Fraction(2), Fraction(4)):
+            for box in ({"x": 0, "y": 0, "width": 10, "height": 10}, {"x": 300, "y": 170, "width": 20, "height": 10}, {"x": 150, "y": 80, "width": 2, "height": 2}):
+                win = punch_window(320, 180, scale, box)
+                self.assertTrue(0 <= win["x"] and win["x"] + win["width"] <= 320 and 0 <= win["y"] and win["y"] + win["height"] <= 180, (scale, box, win))
+                self.assertTrue(win["x"] <= box["x"] and box["x"] + box["width"] <= win["x"] + win["width"], (scale, box, win))
+                self.assertTrue(win["y"] <= box["y"] and box["y"] + box["height"] <= win["y"] + win["height"], (scale, box, win))
+                self.assertEqual((win["width"] % 2, win["height"] % 2), (0, 0))
+
+    def test_refusals(self):
+        from fractions import Fraction
+        from video_editing_skill.operations import punch_window
+        with self.assertRaises(EditError) as cm:
+            punch_window(320, 180, Fraction(4), {"x": 0, "y": 0, "width": 100, "height": 20})
+        self.assertEqual(cm.exception.details["reason"], "subject_larger_than_window")
+        with self.assertRaises(EditError) as cm:
+            punch_window(320, 180, Fraction(2), {"x": 300, "y": 0, "width": 40, "height": 20})
+        self.assertEqual(cm.exception.details["reason"], "subject_outside_frame")
+        with self.assertRaises(EditError):
+            operations.validate_params("PUNCH_IN", {"start": 0, "end": 1, "scale": 1, "subject": {"x": 0, "y": 0, "width": 2, "height": 2}}, "op")
+        with self.assertRaises(EditError):
+            operations.validate_params("PUNCH_IN", {"start": 0, "end": 1, "scale": 2, "subject": {"x": 0, "y": 0, "width": 2}}, "op")

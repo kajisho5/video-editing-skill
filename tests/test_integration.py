@@ -30,10 +30,10 @@ HAS_FREEZE = READY and "freeze" in FFMPEG_SKILL.tools
 HAS_REVERSE = READY and "reverse" in FFMPEG_SKILL.tools
 HAS_INSERT = READY and "insert" in FFMPEG_SKILL.tools   # IMAGE_INSERT (ADR-015): insert.py, in 0.11.0 and later
 HAS_CROP = READY and "crop" in FFMPEG_SKILL.tools       # CROP (ADR-016): crop.py, in 0.11.0 and later
-ALL_OPERATIONS = ["CONCAT", "CROP", "CUT", "FILL", "FIT", "FREEZE", "IMAGE_INSERT", "OVERLAY", "RESIZE", "REVERSE", "ROTATE", "SPEED", "TRIM"]
+ALL_OPERATIONS = ["CONCAT", "CROP", "CUT", "FILL", "FIT", "FREEZE", "IMAGE_INSERT", "OVERLAY", "PUNCH_IN", "RESIZE", "REVERSE", "ROTATE", "SPEED", "TRIM"]
 AVAILABLE_OPERATIONS = [t for t in ALL_OPERATIONS if not ((t == "ROTATE" and not HAS_ROTATE) or (t == "FREEZE" and not HAS_FREEZE)
                                                           or (t == "REVERSE" and not HAS_REVERSE) or (t == "IMAGE_INSERT" and not HAS_INSERT)
-                                                          or (t == "CROP" and not HAS_CROP))]
+                                                          or (t in ("CROP", "PUNCH_IN") and not HAS_CROP))]
 HAS_JOIN_COPY = READY and FFMPEG_SKILL.missing_flags("join", ["--copy"]) == []   # join.py --copy, from 2.24.0 (segment cache, ADR-018)
 # fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
 # exceed the source": the exact frame each rule must deliver, written out (old, bounded).
@@ -778,6 +778,68 @@ class KeyframeAwareCutTests(unittest.TestCase):
             self.assertEqual(bool(cuts["reencoded"]), not copied, cuts)
         if not copied:
             self.assertAlmostEqual(duration(path), 2.5, delta=0.1)
+
+
+def rgb_frame(path, t, w, h):
+    """One decoded frame at time t as rows of (r, g, b)."""
+    raw = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{t:.3f}", "-i", path, "-frames:v", "1", "-f", "rawvideo",
+                          "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE, check=True).stdout
+    return [[tuple(raw[(y * w + x) * 3:(y * w + x) * 3 + 3]) for x in range(w)] for y in range(h)]
+
+
+def red_box(frame):
+    """Bounding box (x0, y0, x1, y1) of clearly red pixels, or None."""
+    pts = [(x, y) for y, row in enumerate(frame) for x, (r, g, b) in enumerate(row) if r > 150 and g < 90 and b < 90]
+    if not pts:
+        return None
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+@unittest.skipUnless(READY and HAS_CROP, REASON + " with crop.py")
+class PunchInTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 10 (ADR-020): a 'face' (a red 40x40 box) left of centre; a 2x punch-in on it from 1 s to 3 s
+    keeps the whole box inside the zoomed frame for the whole range, and the frame outside the range is untouched."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-pin-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "face.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x180:r=30",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4",
+                        "-vf", "drawbox=x=40:y=60:w=40:h=40:color=red:t=fill", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.src], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def test_face_left_of_centre_stays_in_the_zoomed_frame(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        doc = request([{"id": "S", "path": self.src}],
+                      [{"id": "p", "type": "PUNCH_IN", "input": "S", "params": {"start": 1, "end": 3, "scale": 2, "subject": {"x": 40, "y": 60, "width": 40, "height": 40}}}],
+                      [{"id": "o", "operation": "p", "path": "out/p.mp4"}])
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertEqual(rc, 0, json.dumps(out.get("error") if isinstance(out, dict) else out) + err)
+        self.assertEqual(out["execution"]["operations"][0]["punch_in"]["window"], {"x": 0, "y": 34, "width": 160, "height": 90})
+        path = os.path.join(ws, "out", "p.mp4")
+        self.assertEqual(size(path), (320, 180))
+        self.assertAlmostEqual(duration(path), 4.0, delta=0.1)
+        for t in (1.05, 1.5, 2.0, 2.5, 2.95):   # the whole range: the box doubled to 80x80, fully inside, away from every edge
+            box = red_box(rgb_frame(path, t, 320, 180))
+            self.assertIsNotNone(box, t)
+            x0, y0, x1, y1 = box
+            self.assertTrue(0 < x0 and x1 < 319 and 0 < y0 and y1 < 179, (t, box))
+            self.assertAlmostEqual(x1 - x0 + 1, 80, delta=4)
+            self.assertAlmostEqual(y1 - y0 + 1, 80, delta=4)
+            self.assertAlmostEqual(x0, 80, delta=4)   # (40 - 0) * 2
+            self.assertAlmostEqual(y0, 52, delta=4)   # (60 - 34) * 2
+        for t in (0.5, 3.5):   # outside the range: the source picture
+            x0, y0, x1, y1 = red_box(rgb_frame(path, t, 320, 180))
+            self.assertAlmostEqual(x0, 40, delta=2)
+            self.assertAlmostEqual(x1 - x0 + 1, 40, delta=3)
 
 
 @unittest.skipUnless(READY, REASON)

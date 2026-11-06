@@ -36,6 +36,7 @@ OPERATION_FLAGS: Dict[str, tuple] = {
     "SPEED": ("--duration", "--method", "--max-speed"), "FIT": ("--aspect", "--fit", "--pad-color"), "FILL": ("--aspect", "--fit"),
     "RESIZE": ("--width",), "ROTATE": ("--rotate", "--flip"), "OVERLAY": ("--image", "--position", "--margin"),
     "FREEZE": ("--hold", "--mode"), "REVERSE": (), "IMAGE_INSERT": ("--duration", "--fps"), "CROP": ("--x", "--y", "--width", "--height"),
+    "PUNCH_IN": ("--x", "--y", "--width", "--height"),
 }
 
 
@@ -187,6 +188,10 @@ def _compile(op: EditOperation) -> Step:
     if op.type == "CROP":
         # crop.py: the rectangle in source pixels of the frame as displayed, exactly as given (ADR-016); no --fps (the input's rate)
         return Step(op, "ffmpeg-skill/crop", {"x": p["x"], "y": p["y"], "width": p["width"], "height": p["height"]}, video_inputs)
+    if op.type == "PUNCH_IN":
+        # several engine calls (cut, crop, fit, join), built by the executor once the input frame is measured (ADR-020); the
+        # step names the tool that makes the zoom, and its rectangle is filled in at run time
+        return Step(op, "ffmpeg-skill/crop", {}, video_inputs)
     if op.type == "IMAGE_INSERT":
         # insert.py: the still is the positional input; --fps is always passed (a still has no rate of its own), --width /
         # --height only when asked (insert.py's rule fills the other from the image aspect). No --zoom / --pan (ADR-015).

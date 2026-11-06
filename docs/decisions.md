@@ -764,3 +764,40 @@ gains `tolerance`.
   `mode` is `copy` where the engine reports it.
 - 2.5 to 5 s: the report agrees with the packets (copy exactly when the packets are the source's, `reencoded` otherwise).
 
+## ADR-020 — PUNCH_IN: a hard-cut zoom on a subject box the caller gives
+
+**Context.** ECOSYSTEM_ROADMAP step 10: the usual punch-in on the speaker, a zoom on the face for a range, following
+detection-skill's face box. ADR-001 still holds. Detection, and choosing which jump cuts get a punch-in ("used at a
+share of jump cuts"), are the caller's: video-production-agent reads detection-skill and decides. This Skill takes the
+box and the range as typed values.
+
+**Decision.** A new operation type `PUNCH_IN {start, end, scale (1, 4], subject {x, y, width, height}}` (capability
+`video.punch_in`). The window is `floor_even(W / scale) x floor_even(H / scale)`. It is centred on the subject box, then
+moved only as far as needed to stay inside the frame, with even offsets where the box allows (`operations.punch_window`).
+A box outside the frame (`subject_outside_frame`) or larger than the window (`subject_larger_than_window`, since it could
+not stay in view) is refused before execution. The engine calls, each an ffmpeg-skill tool:
+1. `cut.py --accurate` cuts out the part before `start`, the range, and the part after `end`;
+2. `crop.py` crops the range to the window;
+3. `fit.py --aspect W:H --fit crop --width W` scales it back to the input frame (the window's aspect is the frame's to
+   within one even step, so at most a pixel row is cropped and nothing is stretched);
+4. `join.py --transition none --width W --height H --fps <input fps>` joins the three parts.
+The intermediate files are removed. The frame size, frame rate and duration are the input's. The timeline mapping is
+unchanged (as for CROP). The record and the plan carry `punch_in: {window, frame, subject, scale, transition: cut,
+range}`.
+
+**Not done.** "Or a short ease" is not provided, because an ease is a crop window that moves over time. `crop.py` takes
+one rectangle and `fit.py --fit crop` one position, which is Velisa's proposal 2 to ffmpeg-skill (a time-varying crop).
+Until it exists, the punch-in is a hard cut in and out, the common form. The sound passes through `join.py`, so it comes
+out stereo AAC (as from CONCAT), not the input's layout. That is stated in `media_compatibility.PUNCH_IN`.
+
+**Engine.** It needs crop.py (optional tool, ffmpeg-skill 0.11.0+). On a checkout without it, doctor reports PUNCH_IN
+MISSING as a note, like CROP, and a request is refused before execution. cut / fit / join flags are checked per request.
+
+**Versioning.** A new type in `operations`, `capabilities` and `tools` (pinned): breaking by ADR-007's convention. The
+bump is left to the release, and video-production-agent re-pins and needs a lowering for it.
+
+**Verified.** `tests/test_integration.py::PunchInTests`, against ffmpeg-skill 3.2.0 and 0.11.0. A 320x180 clip has a red
+40x40 "face" at (40, 60), left of centre. A 2x punch-in from 1 s to 3 s gives the window (0, 34, 160x90). In decoded
+frames at 1.05, 1.5, 2.0, 2.5 and 2.95 s, the box is about 80x80 at (80, 52), fully inside the frame and away from every
+edge. At 0.5 and 3.5 s the source picture is unchanged. The output stays 320x180 and 4 s.
+

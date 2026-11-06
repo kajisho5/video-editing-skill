@@ -289,10 +289,10 @@ class Engine010Tests(LayoutCase):
         # 0.10.0 ships none of freeze.py / reverse.py / insert.py / crop.py: those types are MISSING by the absent tool, a note, not a problem
         self.assertEqual((rows["FREEZE"]["missing"], rows["REVERSE"]["missing"], rows["IMAGE_INSERT"]["missing"], rows["CROP"]["missing"]),
                          (["tool:ffmpeg-skill/freeze"], ["tool:ffmpeg-skill/reverse"], ["tool:ffmpeg-skill/insert"], ["tool:ffmpeg-skill/crop"]))
-        self.assertEqual(sorted(t for t, r in rows.items() if r["status"] == "AVAILABLE"), sorted(set(OPERATION_FLAGS) - {"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT", "CROP"}))
+        self.assertEqual(sorted(t for t, r in rows.items() if r["status"] == "AVAILABLE"), sorted(set(OPERATION_FLAGS) - {"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT", "CROP", "PUNCH_IN"}))
         self.assertTrue(any("ROTATE" in p for p in rep["problems"]))
-        self.assertFalse(any("FREEZE" in p or "REVERSE" in p or "IMAGE_INSERT" in p or "CROP" in p for p in rep["problems"]), rep["problems"])
-        self.assertEqual(sorted(n.split()[1] for n in rep["notes"]), ["CROP", "FREEZE", "IMAGE_INSERT", "REVERSE"])
+        self.assertFalse(any("FREEZE" in p or "REVERSE" in p or "IMAGE_INSERT" in p or "CROP" in p or "PUNCH_IN" in p for p in rep["problems"]), rep["problems"])
+        self.assertEqual(sorted(n.split()[1] for n in rep["notes"]), ["CROP", "FREEZE", "IMAGE_INSERT", "PUNCH_IN", "REVERSE"])
 
     def test_image_insert_refused_up_front(self):
         """No insert.py in this checkout: IMAGE_INSERT is refused before anything runs (the floor is not raised for it)."""

@@ -47,9 +47,10 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Needs: Velisa ROADMAP, Proposals to ffmpeg-skill 1 (cut-point candidates); until then whole re-encode as today
   - Done when: a fixture cut on keyframes is byte-for-byte a stream copy; one cut between keyframes re-encodes at most two GOPs
   - Partly done (ADR-019): `precision: auto` (cut.py lossless mode, `--tolerance 0.2`); `KeyframeAwareCutTests` shows a cut on keyframes is the source's packets byte for byte, and `execution.operations[].cuts` reports copy / re-encode per cut. **Not met:** a cut between keyframes is re-encoded whole, not at most two GOPs. That needs the engine to re-encode only the boundary GOPs and splice them into copied packets (proposal 1 plus a smart-render mode in ffmpeg-skill); doing it here would mean running ffmpeg outside ffmpeg-skill. Left unchecked until the engine offers it
-- [ ] **10. Punch-in on the speaker** — PUNCH_IN: a zoom to a stated scale centred on detection-skill's face box for a range (a hard cut in, or a short ease), kept inside the frame; used at a share of jump cuts
+- [x] **10. Punch-in on the speaker** — PUNCH_IN: a zoom to a stated scale centred on detection-skill's face box for a range (a hard cut in, or a short ease), kept inside the frame; used at a share of jump cuts
   - Why: the common punch-in on the speaker follows the face automatically（なぜ要るか：話者に寄る演出を顔の位置に合わせて入れられる）
   - Done when: a fixture with a face left of centre keeps the face inside the zoomed frame for the whole range
+  - Done (ADR-020): `PUNCH_IN {start, end, scale, subject}` — window centred on the caller's box (detection-skill's face box) and kept inside the frame; `PunchInTests` checks decoded frames across the range (the doubled box stays fully inside). Hard cut only: a short ease needs a time-varying crop (Velisa proposal 2 to ffmpeg-skill). Which jump cuts get one stays the agent's decision (ADR-001)
 - [ ] **11. One edit, several aspects** — one cut list rendered as 16:9, 9:16 and 1:1 in one request, each shot cropped with one window per shot from detection-skill's subject path (CROP), the audio shared
   - Why: the landscape programme and the vertical shorts ship from one edit（なぜ要るか：横の本編と縦型を同じ編集から同時に納品できる）
   - Done when: a three-shot fixture gives three outputs of equal duration, each shot's window inside the source

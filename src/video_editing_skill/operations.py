@@ -77,6 +77,8 @@ FRAME_SEMANTICS = {
               "CONCAT (ffmpeg-skill join.py): params.width x params.height; only one given -> the other from the first input's aspect (round); none -> the first input's frame; then floored to even",
               "IMAGE_INSERT (ffmpeg-skill insert.py): params.width x params.height; only one given -> the other = even(given x the image aspect); none -> even(image width) x "
               "even(image height); the still is scaled to cover that frame and centre-cropped, never stretched",
+              "PUNCH_IN keeps the input frame: the window is floor_even(width / scale) x floor_even(height / scale), centred on the subject box, moved only as far "
+              "as needed to stay inside the frame (even offsets), cropped (crop.py) and scaled back to the input frame (fit.py --fit crop: never stretched)",
               "TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE keep the input frame -- losslessly, no filter maths beyond a turn or a mirror for ROTATE, whose target "
               "frame is the source's width x height, swapped for a 90 / 270 degrees turn; an input with an odd width or height is refused before execution (INVALID_INPUT "
               "odd_frame) because the engine's encoders need even sizes",
@@ -126,6 +128,7 @@ MAX_HOLD = Fraction(600)
 MIN_STILL = Fraction(1, 100)     # IMAGE_INSERT.duration bounds (same as FREEZE.hold: a held picture)
 MAX_STILL = Fraction(600)
 STILL_FPS_DEFAULT = Fraction(30)   # insert.py's own default, always passed explicitly so the clip never depends on it
+MAX_PUNCH = Fraction(4)   # PUNCH_IN.scale: (1, 4]
 MAX_SPEED = Fraction(4)
 MIN_SPEED = Fraction(1, 4)
 MAX_DIMENSION = 8192
@@ -158,6 +161,9 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
                      "summary": "turn a still image (title card, end slate) into a silent video clip of a set duration that CONCAT and every other type can take"},
     "CROP": {"arity": "one", "tool": "ffmpeg-skill/crop", "capability": "video.crop",
              "summary": "keep exactly the pixel rectangle {x, y, width, height} the caller gives (no scaling, padding or aspect maths; FILL crops to an aspect ratio)"},
+    "PUNCH_IN": {"arity": "one", "tool": "ffmpeg-skill/crop", "capability": "video.punch_in",
+                 "summary": "zoom in by a scale on a subject box the caller gives (e.g. detection-skill's face box) for a time range: a hard cut in and out, "
+                            "the window centred on the box and kept inside the frame, the frame size unchanged"},
 }
 
 # Media compatibility per operation: what every input must be, what the output keeps, and which mismatches are
@@ -210,6 +216,12 @@ MEDIA: Dict[str, Dict[str, Any]] = {
                                 "duration": "params.duration"},
                      "refused_before_execution": ["input that is not an image source (DEPENDENCY_ERROR kind_mismatch)", "image that does not decode",
                                                   "an ffmpeg-skill checkout without insert.py (TOOL_ERROR)"]},
+    "PUNCH_IN": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+                 "output": {"frame_size": "as input", "audio": "kept (stereo AAC: the parts are joined by ffmpeg-skill/join)", "fps": "as input", "duration": "as input"},
+                 "refused_before_execution": ["source without a video stream or duration", "start / end beyond the input duration",
+                                              "a subject box outside the input frame (INVALID_REQUEST subject_outside_frame)",
+                                              "a subject box larger than the zoomed window (INVALID_REQUEST subject_larger_than_window)",
+                                              "input frame with an odd width or height (odd_frame)", "an ffmpeg-skill checkout without crop.py (TOOL_ERROR)"]},
     "CROP": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
              "output": {"frame_size": "params.width x params.height (each even)", "audio": "as input", "fps": "as input", "duration": "as input"},
              "refused_before_execution": ["source without a video stream or duration",
@@ -433,6 +445,21 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
         p["y"] = _int(params["y"], what + ".y", 0, MAX_DIMENSION)
         p["width"] = _even(params["width"], what + ".width")
         p["height"] = _even(params["height"], what + ".height")
+    elif op_type == "PUNCH_IN":
+        # the subject box is the caller's (detection-skill's face box, ADR-001: no detection here); the window is computed
+        # once the input frame is measured (punch_window) and refused there if it cannot hold the box
+        _keys(params, what, ("start", "end", "scale", "subject"), ("start", "end", "scale", "subject"))
+        p.update(_range({"start": params["start"], "end": params["end"]}, what))
+        sc = parse_fraction(params["scale"], what + ".scale")
+        if not (1 < sc <= MAX_PUNCH):
+            raise EditError("INVALID_REQUEST", f"{what}.scale: must be above 1 and at most {fraction_text(MAX_PUNCH)}")
+        p["scale"] = sc
+        b = params["subject"]
+        if not isinstance(b, dict):
+            raise EditError("INVALID_REQUEST", f"{what}.subject: must be an object {{x, y, width, height}}")
+        _keys(b, what + ".subject", ("x", "y", "width", "height"), ("x", "y", "width", "height"))
+        p["subject"] = {"x": _int(b["x"], what + ".subject.x", 0, MAX_DIMENSION), "y": _int(b["y"], what + ".subject.y", 0, MAX_DIMENSION),
+                        "width": _int(b["width"], what + ".subject.width", 1, MAX_DIMENSION), "height": _int(b["height"], what + ".subject.height", 1, MAX_DIMENSION)}
     elif op_type == "IMAGE_INSERT":
         _keys(params, what, ("duration", "width", "height", "fps"), ("duration",))
         dur = Time.parse(params["duration"], what + ".duration")
@@ -460,6 +487,30 @@ def validate_encoding(raw: Any, what: str) -> Dict[str, Any]:
     if not out:
         raise EditError("INVALID_REQUEST", f"{what}: an empty profile changes nothing; drop it")
     return out
+
+
+def punch_window(frame_w: int, frame_h: int, scale: Fraction, subject: Dict[str, int]) -> Dict[str, int]:
+    """PUNCH_IN's crop window in the input frame (as displayed): floor_even(W / scale) x floor_even(H / scale), centred on the
+    subject box, then moved only as far as needed to stay inside the frame; offsets even where the box allows. Raises when
+    the box is outside the frame or larger than the window (it could not stay in view)."""
+    x, y, bw, bh = subject["x"], subject["y"], subject["width"], subject["height"]
+    if x + bw > frame_w or y + bh > frame_h:
+        raise EditError("INVALID_REQUEST", f"PUNCH_IN: subject box ({x},{y},{bw}x{bh}) is not inside the input frame {frame_w}x{frame_h}",
+                        {"reason": "subject_outside_frame", "frame": [frame_w, frame_h], "subject": dict(subject)})
+    w = int(Fraction(frame_w) / scale) // 2 * 2
+    h = int(Fraction(frame_h) / scale) // 2 * 2
+    if bw > w or bh > h:
+        raise EditError("INVALID_REQUEST", f"PUNCH_IN: subject box {bw}x{bh} does not fit the {w}x{h} window a {fraction_text(scale)}x zoom leaves; "
+                        "use a smaller scale", {"reason": "subject_larger_than_window", "window": [w, h], "subject": dict(subject)})
+
+    def place(pos: int, size: int, win: int, limit: int) -> int:
+        lo, hi = max(0, pos + size - win), min(pos, limit - win)   # every offset that keeps the box in the window and the window in the frame
+        want = min(max(int(round(pos + Fraction(size, 2) - Fraction(win, 2))), lo), hi)
+        for cand in (want - want % 2, want + want % 2):
+            if lo <= cand <= hi:
+                return cand
+        return want
+    return {"x": place(x, bw, w, frame_w), "y": place(y, bh, h, frame_h), "width": w, "height": h}
 
 
 def even(n: Any) -> int:

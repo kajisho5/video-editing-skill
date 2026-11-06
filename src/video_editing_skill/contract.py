@@ -73,6 +73,10 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
                      "width": "even int px (optional; alone: height follows the image aspect)",
                      "height": "even int px (optional; alone: width follows the image aspect; both: exact frame, the image covers it, centre-cropped)",
                      "fps": "1..240 (optional, default 30)"},
+    "PUNCH_IN": {"start": "time", "end": "time (> start): the zoomed range; a hard cut in at start and out at end",
+                 "scale": "number or N/D in (1, 4]: the zoom (2 = the window is half the frame in each dimension)",
+                 "subject": "{x, y, width, height} int px in the input frame as displayed: the box to keep in view (e.g. detection-skill's face box); "
+                            "the window is centred on it and kept inside the frame"},
     "CROP": {"x": "int px >= 0: left edge in the input frame as displayed", "y": "int px >= 0: top edge",
              "width": "even int px: the rectangle's width (x + width <= input width)", "height": "even int px: the rectangle's height (y + height <= input height)"},
 }
