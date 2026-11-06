@@ -1754,6 +1754,89 @@
       "two outputs of one operation with different profiles (DEPENDENCY_ERROR)"
     ]
   },
+  "proposals": {
+    "invocation": [
+      "video-editing",
+      "propose",
+      "-",
+      "--json",
+      "--workspace",
+      "<dir>",
+      "--allowed-input",
+      "<root>"
+    ],
+    "request_schema": "video-editing/propose@1",
+    "response_schema": "video-editing/proposals@1",
+    "request_shape": {
+      "schema": "video-editing/propose@1",
+      "retakes": {
+        "transcript": "JSON file under an allowed root: {words: [{word | text, start, end}]} in time order",
+        "profile": "en | ja (default en; others are regional profiles)",
+        "min_confidence": "0..1 (default 0.5)"
+      }
+    },
+    "applies": "nothing: the response says applied: false; approved proposal ids become CONDENSE segments, and only those are cut",
+    "rules": {
+      "repeat": "the same 1-4 words twice in a row; the first saying is proposed, up to where the second starts",
+      "restart": "a phrase of 2+ words said again within 8 words and 4 s, with only hesitations between (or a 3+ word opening after at most 3 words)",
+      "fragment": "a broken-off word (ends with -, —, ~) or a short false start the next word begins with",
+      "filler": {
+        "en": [
+          "ah",
+          "er",
+          "erm",
+          "hmm",
+          "mm",
+          "uh",
+          "uhh",
+          "um",
+          "umm"
+        ],
+        "ja": [
+          "あの",
+          "あのー",
+          "うーん",
+          "ええと",
+          "えっと",
+          "えー",
+          "えーっと",
+          "えーと",
+          "そのー",
+          "まあ",
+          "んー"
+        ]
+      }
+    },
+    "confidence": {
+      "per_rule": {
+        "repeat_phrase": 0.9,
+        "repeat_word": 0.7,
+        "repeat_emphatic": 0.3,
+        "restart": 0.85,
+        "fragment_cutoff": 0.85,
+        "fragment_prefix": 0.75
+      },
+      "filler": "per word, in the profile",
+      "meaning": "a fixed weight of the rule that fired, not a probability; emphatic doubles of the profile (very very, はい はい) score below the default"
+    },
+    "proposal_shape": {
+      "id": "p1..",
+      "kind": "repeat | restart | fragment | filler",
+      "label": "retake",
+      "action": "cut",
+      "start": "time",
+      "end": "time",
+      "word_range": "[first, last] word index",
+      "text": "the words",
+      "reason": "why, in words",
+      "confidence": "0..1",
+      "also": "merged overlaps"
+    },
+    "not_provided": [
+      "any model, score or language detection",
+      "automatic application"
+    ]
+  },
   "stinger": {
     "request_field": "CONCAT params.transition: {type: stinger, stinger, cut_point, cover: {start, end}}",
     "file": "a video source with an alpha plane (ProRes 4444, QuickTime Animation, PNG in MOV, ...), the edit's aspect and frame rate; its length is the file's; its sound, if any, is mixed in. hyperframes-skill / remotion-ffmpeg-skill / blender-skill write one with its stinger.json: cut_point and cover come from it (the caller reads it and passes them)",

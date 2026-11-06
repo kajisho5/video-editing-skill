@@ -358,6 +358,10 @@ values are reported under `project`, never as observations.
   key, size and hash match re-validates them (probe, duration, frame, audio) and reuses them (`status: "reused"`,
   `execution.reused: true`, `outputs[].reused`); a candidate that no longer validates is run again.
   `options.reuse: false` disables it.
+- **Retake proposals** (ADR-024): `video-editing propose - --json --workspace W` with
+  `{"schema": "video-editing/propose@1", "retakes": {"transcript": "in/words.json", "profile": "en"}}` lists repeats,
+  restarts, broken-off words and hesitation words as cut proposals with reasons (`applied: false`, nothing written).
+  Approve them by id; only approved spans are cut (CONDENSE).
 - **Stinger transition** (ADR-023): `CONCAT` `params.transition: {"type": "stinger", "stinger": "<video source with
   alpha>", "cut_point": 0.5, "cover": {"start": 0.5, "end": 0.5333}}` (cut point and cover from the stinger's
   stinger.json). The clips are butt-joined, and the stinger is laid over each join so that its cut-point frame is the

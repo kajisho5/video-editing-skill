@@ -47,12 +47,12 @@ import textwrap
 SCRIPT = textwrap.dedent('''
     import json, os, sys, time
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    mode = open(os.path.join(ROOT, "MODE")).read().strip()
+    mode = open(os.path.join(ROOT, "MODE"), encoding="utf-8").read().strip()
     name = os.path.basename(__file__)[:-3]
     args = sys.argv[1:]
     dry = "--dry-run" in args
-    LAYOUT = open(os.path.join(ROOT, "LAYOUT")).read().strip() if os.path.exists(os.path.join(ROOT, "LAYOUT")) else None
-    FLAGS = json.load(open(os.path.join(ROOT, "FLAGS.json"))).get(name, []) if LAYOUT else None
+    LAYOUT = open(os.path.join(ROOT, "LAYOUT"), encoding="utf-8").read().strip() if os.path.exists(os.path.join(ROOT, "LAYOUT")) else None
+    FLAGS = json.load(open(os.path.join(ROOT, "FLAGS.json"), encoding="utf-8")).get(name, []) if LAYOUT else None
     NEW_PROBE = LAYOUT in ("2.x", "help-only", "3.x")
     if LAYOUT and "--help" in args:
         sys.stdout.write("usage: " + name + ".py [-h] input [-o OUTPUT] " + " ".join("[" + f + "]" for f in FLAGS) + "\\n"); sys.exit(0)
@@ -185,7 +185,7 @@ SCRIPT = textwrap.dedent('''
                 ratio = aw / ah
             else:
                 ratio = src_ratio
-            ver = tuple(int(x) for x in json.load(open(os.path.join(ROOT, "package.json")))["version"].split(".")[:3])
+            ver = tuple(int(x) for x in json.load(open(os.path.join(ROOT, "package.json"), encoding="utf-8"))["version"].split(".")[:3])
             if flag("--width"):
                 width = even(int(flag("--width"))); height = even(width / ratio)
             elif ver >= (0, 16, 10):   # fit.py 0.16.10+: never exceeds the source in either dimension
@@ -225,10 +225,10 @@ SCRIPT = textwrap.dedent('''
 DOCTOR = textwrap.dedent('''
     import json, os, sys
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    mode = open(os.path.join(ROOT, "MODE")).read().strip()
-    LAYOUT = open(os.path.join(ROOT, "LAYOUT")).read().strip() if os.path.exists(os.path.join(ROOT, "LAYOUT")) else None
+    mode = open(os.path.join(ROOT, "MODE"), encoding="utf-8").read().strip()
+    LAYOUT = open(os.path.join(ROOT, "LAYOUT"), encoding="utf-8").read().strip() if os.path.exists(os.path.join(ROOT, "LAYOUT")) else None
     if LAYOUT and "doctor" not in sys.argv[1:]:   # contract --json: ToolSpecs with input_schema.properties[].cli
-        flags = json.load(open(os.path.join(ROOT, "FLAGS.json"))) if LAYOUT != "help-only" else {}
+        flags = json.load(open(os.path.join(ROOT, "FLAGS.json"), encoding="utf-8")) if LAYOUT != "help-only" else {}
         tools = [{"id": "ffmpeg-skill/" + t, "input_schema": {"properties": {f[2:].replace("-", "_"): {"cli": [f]} for f in fl}}} for t, fl in flags.items()]
         print(json.dumps({"contract_version": "1.0", "tools": tools})); sys.exit(0)
     available = ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade", "filter:loudnorm"]

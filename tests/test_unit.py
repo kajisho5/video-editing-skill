@@ -1016,7 +1016,8 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         c = contract.skill_contract()
         self.assertEqual(c["encoding"], operations.ENCODING)
         self.assertIn("video codec choice", c["encoding"]["not_configurable"])
-        self.assertEqual(c["request_shape"], json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))["request_shape"])
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json"), encoding="utf-8") as fh:
+            self.assertEqual(c["request_shape"], json.load(fh)["request_shape"])
 
     def test_pinned_blocks_are_unchanged_since_0_4_0(self):
         """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the golden copy.
@@ -1030,7 +1031,8 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         (docs/decisions.md ADR-008), free to drift as the ffmpeg-skill version range this Skill enforces changes
         (ADR-010 bumped it to >=0.10.0) — covered by test_drift_is_detected, not by this byte-identity freeze."""
         c = contract.skill_contract()
-        golden = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json"), encoding="utf-8") as fh:
+            golden = json.load(fh)
         for k in ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "capability_names", "schemas",
                   "response_shape", "request_shape", "formats"):
             self.assertEqual(c[k], golden[k], k)
@@ -1133,3 +1135,83 @@ class PunchWindowTests(unittest.TestCase):
             operations.validate_params("PUNCH_IN", {"start": 0, "end": 1, "scale": 1, "subject": {"x": 0, "y": 0, "width": 2, "height": 2}}, "op")
         with self.assertRaises(EditError):
             operations.validate_params("PUNCH_IN", {"start": 0, "end": 1, "scale": 2, "subject": {"x": 0, "y": 0, "width": 2}}, "op")
+
+
+def _words(text, start=0.0, step=0.3):
+    """A transcript with even word timings: 'word word ...' -> [{word, start, end}]."""
+    out, t = [], start
+    for w in text.split():
+        out.append({"word": w, "start": round(t, 3), "end": round(t + step * 0.8, 3)})
+        t += step
+    return out
+
+
+class RetakeProposalTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 14 (ADR-024): every retake in the fixture is proposed with its reason; clean speech gives no
+    proposal at the default threshold; nothing is applied."""
+
+    RETAKES = ("so um today we will look at the the budget and I went to the I went to the bank "
+               "then th- this is where st store prices rise and we need uh we need more time thanks")
+
+    def test_every_retake_is_proposed(self):
+        from video_editing_skill.proposals import detect_retakes, load_words
+        res = detect_retakes(load_words({"words": _words(self.RETAKES)}))
+        got = [(p["kind"], p["text"]) for p in res["proposals"]]
+        self.assertEqual(got, [("filler", "um"), ("repeat", "the"), ("repeat", "I went to the"), ("fragment", "th-"), ("fragment", "st"),
+                               ("restart", "we need uh")], got)
+        for p in res["proposals"]:
+            self.assertEqual((p["label"], p["action"]), ("retake", "cut"))
+            self.assertTrue(p["reason"] and 0.5 <= p["confidence"] <= 1)
+            self.assertLess(Fraction(p["start"]["rational"]), Fraction(p["end"]["rational"]))
+        # the repeat is cut up to where the kept saying starts
+        rep = res["proposals"][2]
+        words = _words(self.RETAKES)
+        self.assertEqual(float(rep["end"]["seconds"]), words[[w["word"] for w in words].index("I", 13)]["start"])
+
+    def test_clean_speech_has_no_proposal_at_the_default_threshold(self):
+        from video_editing_skill.proposals import detect_retakes, load_words
+        clean = ("good morning everyone it is a very very good day in the morning and in the evening we had had enough rain "
+                 "so the team that that we hired will start on Monday thank you all")
+        res = detect_retakes(load_words({"words": _words(clean)}))
+        self.assertEqual(res["proposals"], [], res["proposals"])
+        self.assertGreaterEqual(res["below_threshold"], 3, "the emphatic doubles are seen, and held below the threshold")
+        low = detect_retakes(load_words({"words": _words(clean)}), min_confidence=0.2)
+        self.assertEqual({p["rule"] for p in low["proposals"]}, {"repeat_emphatic"})
+
+    def test_japanese_profile(self):
+        from video_editing_skill.proposals import detect_retakes, load_words
+        words = _words("えーと 今日 は 今日 は 予算 の 話 を し ます あのー 来月 から 来月 から 始め ます")
+        res = detect_retakes(load_words({"words": words}), profile="ja")
+        self.assertEqual([(p["kind"], p["text"]) for p in res["proposals"]],
+                         [("filler", "えーと"), ("repeat", "今日 は"), ("filler", "あのー"), ("repeat", "来月 から")])
+        self.assertEqual(detect_retakes(load_words({"words": words}))["proposals"][0]["kind"], "repeat", "the default profile is English: no ja fillers")
+
+    def test_refusals_and_approval(self):
+        from video_editing_skill.proposals import detect_retakes, load_words, to_segments
+        with self.assertRaises(EditError):
+            load_words({"words": [{"word": "a", "start": 1, "end": 0.5}]})
+        with self.assertRaises(EditError):
+            load_words({"words": [{"word": "a", "start": 1, "end": 1.2}, {"word": "b", "start": 0, "end": 0.2}]})
+        with self.assertRaises(EditError):
+            detect_retakes([], profile="xx")
+        props = detect_retakes(load_words({"words": _words(self.RETAKES)}))["proposals"]
+        segs = to_segments(props, ["p2", "p3"])
+        self.assertEqual([s["label"] for s in segs], ["retake", "retake"])
+        with self.assertRaises(EditError):
+            to_segments(props, ["p99"])
+
+    def test_cli_propose_writes_nothing(self):
+        ws = make_workspace()
+        path = os.path.join(ws, "in", "words.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"words": _words(self.RETAKES)}, fh)
+        before = sorted(os.listdir(ws))
+        from helpers import cli
+        rc, out, err = cli(["propose", "-", "--json", "--workspace", ws],
+                           stdin=json.dumps({"schema": "video-editing/propose@1", "retakes": {"transcript": "in/words.json"}}).encode())
+        self.assertEqual(rc, 0, err)
+        self.assertEqual((out["schema"], out["applied"], out["status"]), ("video-editing/proposals@1", False, "proposed"))
+        self.assertEqual(len(out["proposals"]), 6)
+        self.assertEqual(sorted(os.listdir(ws)), before)
+        rc, out, err = cli(["propose", "-", "--json", "--workspace", ws], stdin=json.dumps({"schema": "video-editing/propose@1"}).encode())
+        self.assertEqual(out["error"]["code"], "INVALID_REQUEST")
