@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.17 - 2026-11-06
+
+- Review file of the planned cuts: CONDENSE output removed (roadmap step 17) (#39) (5f62819)
+
 ## v0.4.16 - 2026-11-06
 
 - CONDENSE: a rule per labelled span (roadmap step 16) (#38) (a3702f9)
