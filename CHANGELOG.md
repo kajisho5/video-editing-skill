@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.15 - 2026-11-06
+
+- Spans with no motion or no sound, combined by and / or (roadmap step 15) (#37) (5abaeb3)
+
 ## v0.4.14 - 2026-11-06
 
 - Retake proposals from word timings; roadmap steps 14-18 (roadmap step 14) (#36) (ec51f7f)
