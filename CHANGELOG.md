@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.13 - 2026-11-06
+
+- Stinger transition for CONCAT (roadmap step 13) (#35) (182b833)
+
 ## v0.4.12 - 2026-11-06
 
 - AI-generated sources: declared, conformed by CONCAT, marked downstream (roadmap step 12) (#34) (cf926d5)
