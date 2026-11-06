@@ -52,8 +52,8 @@ SEGMENT_CACHE: Dict[str, Any] = {
 }
 
 PARAM_DOCS: Dict[str, Dict[str, str]] = {
-    "TRIM": {"start": "time", "end": "time (> start)", "precision": "frame (default, re-encode) | keyframe (lossless when possible)"},
-    "CUT": {"keep": "[{start, end}, ...] in output order", "precision": "frame | keyframe"},
+    "TRIM": {"start": "time", "end": "time (> start)", "precision": "frame (default, re-encode) | keyframe (lossless when possible) | auto (stream copy when the copy lands within 0.2 s of the range, e.g. an in point on a keyframe; else a frame-accurate re-encode; reported per cut)"},
+    "CUT": {"keep": "[{start, end}, ...] in output order", "precision": "frame | keyframe | auto"},
     "CONCAT": {"transition": "{type: " + "|".join(TRANSITIONS) + ", duration: time 0.01..10} (optional)",
                "width": "even int (optional)", "height": "even int (optional)", "fps": "number or N/D (optional)",
                "mode": "pad | crop (how inputs of another aspect reach the frame)", "pad_color": "named colour or 0xRRGGBB"},

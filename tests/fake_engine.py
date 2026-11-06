@@ -239,7 +239,7 @@ DOCTOR = textwrap.dedent('''
 ''')
 
 
-_BASE_FLAGS = {"probe": [], "cut": ["--start", "--end", "--segments", "--accurate"],
+_BASE_FLAGS = {"probe": [], "cut": ["--start", "--end", "--segments", "--accurate", "--tolerance"],
                "join": ["--transition", "--duration", "--width", "--height", "--fps", "--fit", "--pad-color"],
                "fit": ["--duration", "--method", "--max-speed", "--smooth", "--aspect", "--fit", "--width", "--pad-color", "--crop-x", "--crop-y", "--fps",
                        "--rotate", "--flip"],

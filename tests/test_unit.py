@@ -283,6 +283,18 @@ class ProjectTests(unittest.TestCase):
         t = steps["t1"].argv_for(["/x/1.mp4"], "/x/o.mp4")
         self.assertEqual(t, ["/x/1.mp4", "-o", "/x/o.mp4", "--start", "1.000000", "--end", "3.000000", "--accurate"])
 
+    def test_precision_auto_is_a_copy_with_a_tolerance(self):
+        """precision auto (ADR-019): cut.py's lossless mode with --tolerance 0.2, never --accurate."""
+        from video_editing_skill.timebase import Time
+        t = compile_operation(EditOperation("t", "TRIM", ["A"], {"start": Time.parse(2, "s"), "end": Time.parse(5, "e"), "precision": "auto"}))
+        argv = t.argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertNotIn("--accurate", argv)
+        self.assertEqual(argv[argv.index("--tolerance") + 1], "0.2")
+        c = compile_operation(EditOperation("c", "CUT", ["A"], {"keep": [{"start": Time.parse(0, "s"), "end": Time.parse(1, "e")}], "precision": "auto"}))
+        self.assertIn("--tolerance", c.argv_for(["/x/a.mp4"], "/x/o.mp4"))
+        k = compile_operation(EditOperation("k", "TRIM", ["A"], {"start": Time.parse(2, "s"), "end": Time.parse(5, "e"), "precision": "keyframe"}))
+        self.assertNotIn("--tolerance", k.argv_for(["/x/a.mp4"], "/x/o.mp4"))
+
     def test_rotate_compiles_to_ffmpeg_skill_fit_flags(self):
         # kajisho5/video-editing-skill#11 item 1: ROTATE -> fit.py --rotate / --flip
         params = operations.validate_params("ROTATE", {"degrees": 90, "flip": "h"}, "op")
@@ -990,6 +1002,10 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
                                                       {"id": "p", "operation": "t", "path": "out/p.mp4", "encoding": {"crf": 20}}]), self.policy)
         with self.assertRaises(EditError) as cm:
             parse_request(request(self.sources_(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "keyframe"}}],
+                                  [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"crf": 20}}]), self.policy)
+        self.assertEqual(cm.exception.details["reason"], "encoding_needs_reencode")
+        with self.assertRaises(EditError) as cm:   # precision auto may stream-copy too (ADR-019)
+            parse_request(request(self.sources_(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "auto"}}],
                                   [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"crf": 20}}]), self.policy)
         self.assertEqual(cm.exception.details["reason"], "encoding_needs_reencode")
         # the contract's encoding block is the source of truth for the vocabulary

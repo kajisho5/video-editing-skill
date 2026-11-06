@@ -46,6 +46,7 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Why: trimming the head and tail of an 8-hour recording needs no re-encode（なぜ要るか：長尺の頭と尻を落とすだけなら再エンコード不要）
   - Needs: Velisa ROADMAP, Proposals to ffmpeg-skill 1 (cut-point candidates); until then whole re-encode as today
   - Done when: a fixture cut on keyframes is byte-for-byte a stream copy; one cut between keyframes re-encodes at most two GOPs
+  - Partly done (ADR-019): `precision: auto` (cut.py lossless mode, `--tolerance 0.2`); `KeyframeAwareCutTests` shows a cut on keyframes is the source's packets byte for byte, and `execution.operations[].cuts` reports copy / re-encode per cut. **Not met:** a cut between keyframes is re-encoded whole, not at most two GOPs. That needs the engine to re-encode only the boundary GOPs and splice them into copied packets (proposal 1 plus a smart-render mode in ffmpeg-skill); doing it here would mean running ffmpeg outside ffmpeg-skill. Left unchecked until the engine offers it
 - [ ] **10. Punch-in on the speaker** — PUNCH_IN: a zoom to a stated scale centred on detection-skill's face box for a range (a hard cut in, or a short ease), kept inside the frame; used at a share of jump cuts
   - Why: the common punch-in on the speaker follows the face automatically（なぜ要るか：話者に寄る演出を顔の位置に合わせて入れられる）
   - Done when: a fixture with a face left of centre keeps the face inside the zoomed frame for the whole range
