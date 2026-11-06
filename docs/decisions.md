@@ -830,3 +830,50 @@ cut into three shots (5 s in all) and rendered as 320x180, 180x320 (90x160 windo
 - every CROP window lies inside its measured source frame;
 - a window past the right edge is refused before anything runs.
 
+## ADR-022 — AI-generated clips: declared by the caller, conformed by CONCAT, marked downstream
+
+**Context.** ECOSYSTEM_ROADMAP step 12: generated clips (24 fps, untagged, silent, any pixel shape) join edits. They need
+to arrive without a format mismatch and without a missing AI label.
+
+**Decision.**
+- **The declaration.** A source takes an optional `ai_generated: {generator, licence}`, each 1 to 200 printable
+  characters. It is the caller's statement and is never inferred from the media (ADR-001: no detection here). It is
+  reported with `provenance: DECLARED`.
+- **The mark.** Every operation record and delivered output whose result contains a declared source carries
+  `marks: ["AI_GENERATED"]` and `ai_generated: [{source, generator, licence, provenance: DECLARED}]`. The list comes from
+  the operation's reachable sources (`source_refs`). `execution.sources[]` repeats the declaration. Results without such
+  a source carry neither key.
+- **Not part of identity.** Identity is the bytes, and the declaration is metadata about them. The mark is recomputed on
+  every run, so a reused result is marked by the current request. Writing the mark into the container metadata of the
+  delivered file (ffmpeg-skill `metadata`) is not done: the contract's provenance is the record of truth, and a later
+  step can add a container tag.
+- **Normalisation is CONCAT's.** `join.py` already conforms every input:
+  - frame size: `params.width` / `height`, with `mode` pad or crop;
+  - frame rate: `params.fps`, else the first input's;
+  - square pixels: `setsar=1`;
+  - BT.709 tags on the H.264 output;
+  - a silent track for an input without sound when another input has sound.
+
+  No separate normalise step is added. The caller should set `width` / `height` / `fps` on the CONCAT, so that the edit's
+  format decides and not whichever clip comes first.
+
+**Engine finding (not masked).** `join.py` writes its frame rate with `fps={fps:g}`, so 30000/1001 (given, or taken from
+the first clip) comes out as `2997/100`. The frame count and duration are right: 0.003 % apart from 30000/1001, about 4
+ms an hour. The rate tag is not the NTSC rational a broadcast delivery expects. Proposal to ffmpeg-skill: carry the
+rate as a rational (`--fps 30000/1001`, and the probe's `r_frame_rate`) through to the filter. This Skill passes what
+the engine accepts (a float).
+
+**Versioning.** `request_shape.project.sources` gains `ai_generated` (agent-pinned), so this is breaking by ADR-007's
+convention. The bump is left to the release, and video-production-agent re-pins. There is a new additive contract block,
+`ai_generated`.
+
+**Verified.** `tests/test_integration.py::GeneratedClipTests`, against ffmpeg-skill 3.2.0 and 0.11.0:
+- **Input.** A 3 s 480x360 clip at 24 fps with 4:3 pixels, no colour tags and no sound, joined between two 29.97 fps
+  BT.709 clips with sound, with CONCAT `640x360 @ 30000/1001`.
+- **Format.** 640x360, square pixels, BT.709 tags, a sound track throughout.
+- **No drift.** Duration and frame count equal the sum of the measured inputs to within one frame, and the reported
+  timeline places the third clip exactly there.
+- **Marks.** The output and the CONCAT record carry the mark with the declared generator and licence.
+`tests/test_engine_contract.py::GeneratedSourceMarkTests` checks that the mark reaches only results that contain the
+source, and that the declaration does not change operation ids.
+

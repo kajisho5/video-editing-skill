@@ -918,6 +918,64 @@ class MultiAspectTests(unittest.TestCase):
 
 
 @unittest.skipUnless(READY, REASON)
+class GeneratedClipTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 12 (ADR-022): a generated clip (24 fps, no colour tags, no sound, non-square pixels) joins a
+    29.97 fps edit with sound: conformed by CONCAT without a duration drift, and marked AI_GENERATED with the generator and
+    licence the caller declared."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-gen-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.edit = os.path.join(cls.media, "edit.mp4")
+        cls.gen = os.path.join(cls.media, "generated.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30000/1001",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-c:a", "aac", cls.edit], check=True)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "mandelbrot=size=480x360:rate=24",
+                        "-t", "3", "-vf", "setsar=4/3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", cls.gen], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def test_generated_clip_joins_without_drift_and_carries_the_mark(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        doc = request([{"id": "E", "path": self.edit},
+                       {"id": "G", "path": self.gen, "ai_generated": {"generator": "example-video-model 2.1", "licence": "CC-BY-4.0"}}],
+                      [{"id": "c", "type": "CONCAT", "inputs": ["E", "G", "E"], "params": {"width": 640, "height": 360, "fps": "30000/1001"}}],
+                      [{"id": "o", "operation": "c", "path": "out/edit.mp4"}])
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertEqual(rc, 0, json.dumps(out.get("error") if isinstance(out, dict) else out) + err)
+        path = os.path.join(ws, "out", "edit.mp4")
+        info = probe(path)
+        v = next(st for st in info["streams"] if st["codec_type"] == "video")
+        self.assertEqual((v["width"], v["height"]), (640, 360))
+        # join.py writes its rate with fps={fps:g}, so 30000/1001 comes out as 2997/100 (an engine finding, ADR-022); both are 29.97
+        self.assertIn(v["r_frame_rate"], ("30000/1001", "2997/100"))
+        self.assertIn(v.get("sample_aspect_ratio", "1:1"), ("1:1", "0:1", None))   # the 4:3 pixels of the generated clip are conformed
+        self.assertEqual((v.get("color_primaries"), v.get("color_transfer"), v.get("color_space")), ("bt709", "bt709", "bt709"))
+        self.assertTrue(any(st["codec_type"] == "audio" for st in info["streams"]), "a silent track was added for the generated clip")
+        # no duration drift: the output lasts the sum of the measured inputs, to within one frame of 29.97 fps, and so does the
+        # timeline this Skill reports
+        expected = 2 * duration(self.edit) + duration(self.gen)
+        frame = 1001 / 30000
+        self.assertAlmostEqual(float(info["format"]["duration"]), expected, delta=frame + 0.03)
+        self.assertAlmostEqual(int(v["nb_frames"]) * frame, expected, delta=frame + 0.001)
+        segs = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
+        self.assertAlmostEqual(float(segs[2]["timeline_range"]["start"]["seconds"]), duration(self.edit) + duration(self.gen), delta=0.001)
+        o = out["execution"]["outputs"][0]
+        self.assertEqual(o["marks"], ["AI_GENERATED"])
+        self.assertEqual(o["ai_generated"], [{"source": "G", "generator": "example-video-model 2.1", "licence": "CC-BY-4.0", "provenance": "DECLARED"}])
+        self.assertEqual(out["execution"]["operations"][0]["marks"], ["AI_GENERATED"])
+        src = {s["id"]: s for s in out["execution"]["sources"]}
+        self.assertEqual(src["G"]["ai_generated"]["provenance"], "DECLARED")
+        self.assertNotIn("ai_generated", src["E"])
+
+
+@unittest.skipUnless(READY, REASON)
 class MediaMatrixE2ETests(unittest.TestCase):
     """Real-media matrix (contract.media_policy, frame_semantics, encoding): A video-only, B video+audio, C mixed audio,
     D different resolutions, E different frame rates, F short clip, G longer clip, H unicode path, I space-containing

@@ -1085,7 +1085,8 @@
         {
           "id": "label",
           "path": "file under an allowed root",
-          "kind": "video | image"
+          "kind": "video | image",
+          "ai_generated": "optional {generator, licence}: the caller declares the source AI-generated (contract.ai_generated)"
         }
       ],
       "operations": [
@@ -1746,6 +1747,16 @@
       "crf or preset outside the vocabulary (INVALID_REQUEST)",
       "a profile on an output produced by TRIM / CUT with precision keyframe or auto: stream copy ignores it (INVALID_REQUEST)",
       "two outputs of one operation with different profiles (DEPENDENCY_ERROR)"
+    ]
+  },
+  "ai_generated": {
+    "request_field": "project.sources[].ai_generated: {generator: text, licence: text} (each 1..200 printable characters)",
+    "meaning": "declared by the caller, never inferred from the media; reported with provenance DECLARED",
+    "mark": "AI_GENERATED: execution.operations[].marks / ai_generated and execution.outputs[].marks / ai_generated list every declared source the result contains ({source, generator, licence, provenance: DECLARED}); execution.sources[].ai_generated repeats the declaration",
+    "identity": "not part of operation_id or idempotency_key: the bytes decide identity; the mark is recomputed on every run, so a reused result is marked too",
+    "normalisation": [
+      "CONCAT conforms a generated clip with the rest (ffmpeg-skill/join): frame size by params.width / height (mode pad | crop), frame rate by params.fps or the first input's, square pixels (setsar=1), BT.709 tags on the H.264 output, and a silent track for an input without sound when another has sound",
+      "set params.width / height / fps on the CONCAT so the edit's format decides, not whichever clip comes first"
     ]
   },
   "segment_cache": {
