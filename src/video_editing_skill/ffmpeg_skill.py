@@ -31,6 +31,7 @@ ENV_DIR = "VIDEO_EDITING_FFMPEG_SKILL_DIR"
 MIN_VERSION = (0, 10, 0)
 FIT_BOUNDED_SINCE = (0, 16, 10)   # fit.py's aspect-only canvas rule changed here (FfmpegSkill.fit_bounds_by_source)
 KEEP_HEVC_DEFAULT_SINCE = (3, 0, 0)   # cut.py re-encodes SDR HEVC as HEVC by default from here (FfmpegSkill.cut_keeps_hevc_by_default)
+FREEZE_HOLDS_AT_SINCE = (3, 1, 6)   # freeze.py --at T holds the frame shown at T from here, before: the frame before T (FfmpegSkill.freeze_holds_frame_at_t)
 REQUIRED_TOOLS = ("probe", "cut", "join", "fit", "overlay")
 # Tools only their own operation type needs (ADR-014): FREEZE -> freeze.py (shipped from ffmpeg-skill 0.16.0; the
 # pinned 0.11.0 has none), REVERSE -> reverse.py (from 0.11.0), IMAGE_INSERT -> insert.py (from 0.11.0, ADR-015). A
@@ -91,6 +92,14 @@ class FfmpegSkill:
             return "--no-keep-hevc" in known
         v = parse_version(self.version)
         return v is not None and v >= KEEP_HEVC_DEFAULT_SINCE
+
+    def freeze_holds_frame_at_t(self) -> bool:
+        """freeze.py --at T --mode insert holds the frame shown at T from 3.1.6 (ffmpeg-skill #411, shipped in #416); through
+        3.1.5 it held the frame before T, which at a cut is the last frame of the previous shot. The timeline this skill
+        reports for FREEZE (a speed-0 segment at source instant T) describes the 3.1.6 picture. This is behaviour, not a
+        flag, so it is chosen by the release that changed it; a version that does not parse gets the current rule."""
+        v = parse_version(self.version)
+        return v is None or v >= FREEZE_HOLDS_AT_SINCE
 
     def missing_tools(self) -> List[str]:
         return [t for t in REQUIRED_TOOLS if t not in self.tools]

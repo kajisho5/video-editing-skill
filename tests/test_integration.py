@@ -485,7 +485,12 @@ class OperationE2ETests(unittest.TestCase):
         src = self.ramp()
         held = [self.luma(path, n) for n in (62, 75, 88)]          # 2.07 s .. 2.93 s: inside the hold
         self.assertLess(max(held) - min(held), 1.5, f"the picture does not change during the hold: {held}")
-        self.assertAlmostEqual(held[0], self.luma(src, 59), delta=1.5, msg="the held frame is the one shown just before 2 s")
+        # ffmpeg-skill 3.1.6 (#411) holds the frame shown at 2 s (frame 60 at 30 fps), the source instant this skill's
+        # timeline reports for the hold; through 3.1.5 it held the frame shown just before 2 s (frame 59)
+        held_at = 60 if FFMPEG_SKILL.freeze_holds_frame_at_t() else 59
+        self.assertAlmostEqual(held[0], self.luma(src, held_at), delta=1.5,
+                               msg=f"the held frame is source frame {held_at} (ffmpeg-skill {FFMPEG_SKILL.version})")
+        self.assertGreater(abs(self.luma(src, 60) - self.luma(src, 59)), 1.5, "the ramp tells frames 59 and 60 apart")
         self.assertAlmostEqual(self.luma(path, 120), self.luma(src, 90), delta=1.5, msg="after the hold the clip resumes where it stopped, 1 s later")
         self.assertGreater(self.luma(path, 40) - self.luma(path, 20), 15, "outside the hold the picture moves")
         # without `at`: the last frame is held past the end (6 s + 1.5 s)
