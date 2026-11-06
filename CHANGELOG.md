@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.8 - 2026-11-06
+
+- Segment cache and partial re-render for CUT (roadmap step 8) (#30) (16e159a)
+
 ## v0.4.7 - 2026-11-06
 
 - docs(roadmap): field review steps (2026-11-05) (#28) (cd06f2e)
