@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.18 - 2026-11-06
+
+- Deliver an output under a target file size (roadmap step 18) (#40) (32f10bb)
+
 ## v0.4.17 - 2026-11-06
 
 - Review file of the planned cuts: CONDENSE output removed (roadmap step 17) (#39) (5f62819)
