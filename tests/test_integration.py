@@ -30,7 +30,7 @@ HAS_FREEZE = READY and "freeze" in FFMPEG_SKILL.tools
 HAS_REVERSE = READY and "reverse" in FFMPEG_SKILL.tools
 HAS_INSERT = READY and "insert" in FFMPEG_SKILL.tools   # IMAGE_INSERT (ADR-015): insert.py, in 0.11.0 and later
 HAS_CROP = READY and "crop" in FFMPEG_SKILL.tools       # CROP (ADR-016): crop.py, in 0.11.0 and later
-ALL_OPERATIONS = ["CONCAT", "CROP", "CUT", "FILL", "FIT", "FREEZE", "IMAGE_INSERT", "OVERLAY", "PUNCH_IN", "RESIZE", "REVERSE", "ROTATE", "SPEED", "TRIM"]
+ALL_OPERATIONS = ["CONCAT", "CONDENSE", "CROP", "CUT", "FILL", "FIT", "FREEZE", "IMAGE_INSERT", "OVERLAY", "PUNCH_IN", "RESIZE", "REVERSE", "ROTATE", "SPEED", "TRIM"]
 AVAILABLE_OPERATIONS = [t for t in ALL_OPERATIONS if not ((t == "ROTATE" and not HAS_ROTATE) or (t == "FREEZE" and not HAS_FREEZE)
                                                           or (t == "REVERSE" and not HAS_REVERSE) or (t == "IMAGE_INSERT" and not HAS_INSERT)
                                                           or (t in ("CROP", "PUNCH_IN") and not HAS_CROP))]
@@ -1122,6 +1122,76 @@ class MotionSpanTests(unittest.TestCase):
         self.assertLessEqual(abs(float(p["start"]["seconds"]) - 2.0), frame + 1e-6, p)
         self.assertLessEqual(abs(float(p["end"]["seconds"]) - 5.0), frame + 1e-6, p)
         self.assertFalse(out["applied"])
+
+
+def pcm(path, start, dur, rate=48000):
+    """Mono signed 16-bit samples of a stretch of the sound."""
+    raw = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", str(start), "-t", str(dur), "-i", path, "-vn", "-ac", "1", "-ar", str(rate),
+                          "-f", "s16le", "-"], stdout=subprocess.PIPE, check=True).stdout
+    import array
+    a = array.array("h")
+    a.frombytes(raw[: len(raw) // 2 * 2])
+    return a
+
+
+def tone_hz(samples, rate=48000):
+    """Frequency of a pure tone by its zero crossings."""
+    crossings = sum(1 for x, y in zip(samples, samples[1:]) if (x < 0) != (y < 0))
+    return crossings / 2 / (len(samples) / rate)
+
+
+@unittest.skipUnless(READY, REASON)
+class CondenseTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 16 (ADR-026): a 6 s clip whose sound is a 440 Hz tone, then 2 s of near-silence (an 880 Hz tone
+    at -50 dBFS, under the -35 dB silence threshold), then the tone again. The silence is proposed, approved, and kept at
+    double speed: the result lasts 5 s and the quiet tone is still 880 Hz (atempo keeps the pitch)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-condense-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=6",
+                        "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=2", "-f", "lavfi", "-i", "sine=f=880:sample_rate=48000:d=2",
+                        "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=2",
+                        "-filter_complex", "[2]volume=-50dB[q];[1][q][3]concat=n=3:v=0:a=1[a]", "-map", "0:v", "-map", "[a]",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", cls.src], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def cli_doc(self, cmd, doc, ws):
+        rc, out, err = cli([cmd, "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        self.assertEqual(rc, 0, json.dumps(out.get("error")) + err)
+        return out
+
+    def test_silence_kept_at_double_speed(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        props = self.cli_doc("propose", {"schema": "video-editing/propose@1", "source": self.src, "silence": {"threshold_db": -35, "min_seconds": 0.5}}, ws)
+        (p,) = props["proposals"]
+        self.assertAlmostEqual(float(p["start"]["seconds"]), 2.0, delta=0.05)
+        self.assertAlmostEqual(float(p["end"]["seconds"]), 4.0, delta=0.05)
+        seg = {"start": {"seconds": p["start"]["seconds"]}, "end": {"seconds": p["end"]["seconds"]}, "label": p["label"]}
+        doc = request([{"id": "S", "path": self.src}],
+                      [{"id": "c", "type": "CONDENSE", "input": "S", "params": {"segments": [seg], "rules": {"silence": {"speed": 2}}}}],
+                      [{"id": "o", "operation": "c", "path": "out/tight.mp4"}])
+        out = self.cli_doc("run", doc, ws)
+        path = os.path.join(ws, "out", "tight.mp4")
+        silent = float(p["end"]["seconds"]) - float(p["start"]["seconds"])
+        self.assertAlmostEqual(duration(path), 6 - silent / 2, delta=0.1)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([pc["action"] for pc in rec["condense"]["pieces"]], ["keep", "speed", "keep"])
+        # pitch: the loud tone untouched, the quiet tone still 880 Hz while it plays twice as fast (no chipmunk 1760 Hz)
+        self.assertAlmostEqual(tone_hz(pcm(path, 0.5, 1.0)), 440, delta=15)
+        q = pcm(path, 2.2, 0.6)
+        self.assertAlmostEqual(tone_hz(q), 880, delta=40)
+        self.assertAlmostEqual(tone_hz(pcm(path, 3.4, 1.0)), 440, delta=15)
+        seg_tl = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
+        self.assertEqual([s["speed"] for s in seg_tl], ["1/1", "2/1", "1/1"])
 
 
 @unittest.skipUnless(READY, REASON)

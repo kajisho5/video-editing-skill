@@ -161,6 +161,9 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
                      "summary": "turn a still image (title card, end slate) into a silent video clip of a set duration that CONCAT and every other type can take"},
     "CROP": {"arity": "one", "tool": "ffmpeg-skill/crop", "capability": "video.crop",
              "summary": "keep exactly the pixel rectangle {x, y, width, height} the caller gives (no scaling, padding or aspect maths; FILL crops to an aspect ratio)"},
+    "CONDENSE": {"arity": "one", "tool": "ffmpeg-skill/cut", "capability": "video.condense",
+                 "summary": "apply a rule per labelled span (cut, keep, or speed by a factor) and keep everything else by params.default: approved "
+                            "proposals (retakes, silences, static spans) become segments here"},
     "PUNCH_IN": {"arity": "one", "tool": "ffmpeg-skill/crop", "capability": "video.punch_in",
                  "summary": "zoom in by a scale on a subject box the caller gives (e.g. detection-skill's face box) for a time range: a hard cut in and out, "
                             "the window centred on the box and kept inside the frame, the frame size unchanged"},
@@ -217,6 +220,12 @@ MEDIA: Dict[str, Dict[str, Any]] = {
                                 "duration": "params.duration"},
                      "refused_before_execution": ["input that is not an image source (DEPENDENCY_ERROR kind_mismatch)", "image that does not decode",
                                                   "an ffmpeg-skill checkout without insert.py (TOOL_ERROR)"]},
+    "CONDENSE": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+                 "output": {"frame_size": "as input", "audio": "kept (stereo AAC: the pieces are joined by ffmpeg-skill/join); sped-up pieces keep their pitch (atempo)",
+                            "fps": "as input", "duration": "the kept time plus each sped span's length / its factor"},
+                 "refused_before_execution": ["source without a video stream or duration", "segments that overlap or run past the input duration",
+                                              "a label without a rule (INVALID_REQUEST missing_rule)", "an edit that keeps nothing (INVALID_REQUEST nothing_kept)",
+                                              "input frame with an odd width or height (odd_frame)"]},
     "PUNCH_IN": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
                  "output": {"frame_size": "as input", "audio": "kept (stereo AAC: the parts are joined by ffmpeg-skill/join)", "fps": "as input", "duration": "as input"},
                  "refused_before_execution": ["source without a video stream or duration", "start / end beyond the input duration",
@@ -464,6 +473,39 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
         p["y"] = _int(params["y"], what + ".y", 0, MAX_DIMENSION)
         p["width"] = _even(params["width"], what + ".width")
         p["height"] = _even(params["height"], what + ".height")
+    elif op_type == "CONDENSE":
+        _keys(params, what, ("segments", "rules", "default"), ("segments", "rules"))
+        segs = params["segments"]
+        if not isinstance(segs, list) or not segs or len(segs) > 5000:
+            raise EditError("INVALID_REQUEST", f"{what}.segments: must be a non-empty list (max 5000) of {{start, end, label}}")
+        out_segs: List[Dict[str, Any]] = []
+        for i, sgm in enumerate(segs):
+            if not isinstance(sgm, dict):
+                raise EditError("INVALID_REQUEST", f"{what}.segments[{i}]: must be an object")
+            _keys(sgm, f"{what}.segments[{i}]", ("start", "end", "label"), ("start", "end", "label"))
+            r = _range({"start": sgm["start"], "end": sgm["end"]}, f"{what}.segments[{i}]")
+            lab = sgm["label"]
+            if not isinstance(lab, str) or not _LABEL.match(lab):
+                raise EditError("INVALID_REQUEST", f"{what}.segments[{i}].label: must match {_LABEL.pattern}")
+            out_segs.append({"start": r["start"], "end": r["end"], "label": lab})
+        out_segs.sort(key=lambda x: x["start"].value)
+        for a, b in zip(out_segs, out_segs[1:]):
+            if b["start"].value < a["end"].value:
+                raise EditError("INVALID_TIME_RANGE", f"{what}.segments: {a['label']} [{a['start'].text(3)}, {a['end'].text(3)}) overlaps "
+                                f"{b['label']} [{b['start'].text(3)}, {b['end'].text(3)})", {"reason": "overlap"})
+        p["segments"] = out_segs
+        rules = params["rules"]
+        if not isinstance(rules, dict) or not rules:
+            raise EditError("INVALID_REQUEST", f"{what}.rules: must map each label to cut | keep | {{speed: factor}}")
+        p["rules"] = {}
+        for lab, rule in sorted(rules.items(), key=lambda kv: str(kv[0])):
+            if not isinstance(lab, str) or not _LABEL.match(lab):
+                raise EditError("INVALID_REQUEST", f"{what}.rules: label {lab!r} must match {_LABEL.pattern}")
+            p["rules"][lab] = _span_rule(rule, f"{what}.rules.{lab}")
+        missing = sorted({x["label"] for x in out_segs} - set(p["rules"]))
+        if missing:
+            raise EditError("INVALID_REQUEST", f"{what}.rules: no rule for labels {missing}", {"reason": "missing_rule", "labels": missing})
+        p["default"] = _span_rule(params.get("default", "keep"), what + ".default")
     elif op_type == "PUNCH_IN":
         # the subject box is the caller's (detection-skill's face box, ADR-001: no detection here); the window is computed
         # once the input frame is measured (punch_window) and refused there if it cannot hold the box
@@ -491,6 +533,45 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
         _frame(params, what, p)
         p.setdefault("fps", STILL_FPS_DEFAULT)
     return p
+
+
+_LABEL = re.compile(r"^[a-z0-9][a-z0-9_+.-]{0,39}$")
+
+
+def _span_rule(rule: Any, what: str) -> Dict[str, Any]:
+    """CONDENSE rule: "cut" | "keep" | {"speed": factor in [1/4, 4], not 1} -> {"action", "factor"?}."""
+    if rule in ("cut", "keep"):
+        return {"action": rule}
+    if isinstance(rule, dict) and set(rule) == {"speed"}:
+        f = parse_fraction(rule["speed"], what + ".speed")
+        if not (MIN_SPEED <= f <= MAX_SPEED) or f == 1:
+            raise EditError("INVALID_REQUEST", f"{what}.speed: must be between {fraction_text(MIN_SPEED)} and {fraction_text(MAX_SPEED)}, not 1")
+        return {"action": "speed", "factor": f}
+    raise EditError("INVALID_REQUEST", f"{what}: must be cut | keep | {{speed: factor}}")
+
+
+def condense_pieces(params: Dict[str, Any], duration: Time) -> List[Dict[str, Any]]:
+    """CONDENSE's plan over [0, duration): every labelled span and every gap between them (rule: params.default), each with its
+    rule, in order; neighbours with the same rule (and factor) are merged. Spans past the end are refused by the executor."""
+    pieces: List[Dict[str, Any]] = []
+    t = Time(Fraction(0))
+    for s in params["segments"]:
+        if t.value < s["start"].value:
+            pieces.append({"start": t, "end": s["start"], "label": None, **params["default"]})
+        end = s["end"] if s["end"].value <= duration.value else duration
+        if s["start"].value < end.value:
+            pieces.append({"start": s["start"], "end": end, "label": s["label"], **params["rules"][s["label"]]})
+        t = end
+    if t.value < duration.value:
+        pieces.append({"start": t, "end": duration, "label": None, **params["default"]})
+    merged: List[Dict[str, Any]] = []
+    for pc in pieces:
+        if merged and merged[-1]["action"] == pc["action"] and merged[-1].get("factor") == pc.get("factor") and merged[-1]["end"].value == pc["start"].value:
+            merged[-1] = dict(merged[-1], end=pc["end"], label=merged[-1]["label"] if merged[-1]["label"] == pc["label"] else "+".join(
+                x for x in (merged[-1]["label"], pc["label"]) if x) or None)
+            continue
+        merged.append(dict(pc))
+    return merged
 
 
 def validate_encoding(raw: Any, what: str) -> Dict[str, Any]:

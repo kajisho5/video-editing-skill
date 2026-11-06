@@ -30,6 +30,13 @@
       "tool": "ffmpeg-skill/join"
     },
     {
+      "capability": "video.condense",
+      "operations": [
+        "CONDENSE"
+      ],
+      "tool": "ffmpeg-skill/cut"
+    },
+    {
       "capability": "video.crop",
       "operations": [
         "CROP"
@@ -138,6 +145,7 @@
   ],
   "capability_names": [
     "video.concat",
+    "video.condense",
     "video.crop",
     "video.cut",
     "video.fill",
@@ -216,6 +224,56 @@
         "provenance"
       ],
       "executed_by": "ffmpeg-skill/join",
+      "kind": "transform"
+    },
+    {
+      "tool_id": "video-editing/condense",
+      "skill_id": "video-editing",
+      "version": "0.4.15",
+      "operation_type": "CONDENSE",
+      "capability": "video.condense",
+      "description": "apply a rule per labelled span (cut, keep, or speed by a factor) and keep everything else by params.default: approved proposals (retakes, silences, static spans) become segments here",
+      "required_capabilities": [
+        "ffmpeg",
+        "ffprobe",
+        "encoder:libx264",
+        "encoder:aac"
+      ],
+      "inputs": [
+        "input"
+      ],
+      "input_arity": "one",
+      "parameters": {
+        "segments": "[{start, end, label}] non-overlapping spans of the input (e.g. approved proposals: retake, silence, static); label [a-z0-9][a-z0-9_+.-]{0,39}",
+        "rules": "{label: cut | keep | {speed: factor 1/4..4, not 1}}: one per label used",
+        "default": "cut | keep | {speed: factor} for the time no segment covers (default keep)"
+      },
+      "media": {
+        "inputs": "one video",
+        "requires": {
+          "video": true,
+          "audio": false,
+          "image": false
+        },
+        "output": {
+          "frame_size": "as input",
+          "audio": "kept (stereo AAC: the pieces are joined by ffmpeg-skill/join); sped-up pieces keep their pitch (atempo)",
+          "fps": "as input",
+          "duration": "the kept time plus each sped span's length / its factor"
+        }
+      },
+      "produces_output": true,
+      "writes_media": true,
+      "deterministic": true,
+      "idempotency_hint": "content_equivalent",
+      "result_keys": [
+        "operation_id",
+        "output",
+        "probe",
+        "commands",
+        "provenance"
+      ],
+      "executed_by": "ffmpeg-skill/cut",
       "kind": "transform"
     },
     {
@@ -876,6 +934,16 @@
         "pad_color": "named colour or 0xRRGGBB"
       }
     },
+    "CONDENSE": {
+      "capability": "video.condense",
+      "tool": "ffmpeg-skill/cut",
+      "arity": "one",
+      "parameters": {
+        "segments": "[{start, end, label}] non-overlapping spans of the input (e.g. approved proposals: retake, silence, static); label [a-z0-9][a-z0-9_+.-]{0,39}",
+        "rules": "{label: cut | keep | {speed: factor 1/4..4, not 1}}: one per label used",
+        "default": "cut | keep | {speed: factor} for the time no segment covers (default keep)"
+      }
+    },
     "CROP": {
       "capability": "video.crop",
       "tool": "ffmpeg-skill/crop",
@@ -1262,6 +1330,11 @@
       "tool_id": "video-editing/concat"
     },
     {
+      "id": "video.condense",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "video-editing/condense"
+    },
+    {
       "id": "video.crop",
       "lifecycle": "EXPERIMENTAL",
       "tool_id": "video-editing/crop"
@@ -1350,6 +1423,27 @@
         "source without a video stream or duration",
         "an input shorter than twice the transition",
         "transition stinger: see contract.stinger.refused"
+      ]
+    },
+    "CONDENSE": {
+      "inputs": "one video",
+      "requires": {
+        "video": true,
+        "audio": false,
+        "image": false
+      },
+      "output": {
+        "frame_size": "as input",
+        "audio": "kept (stereo AAC: the pieces are joined by ffmpeg-skill/join); sped-up pieces keep their pitch (atempo)",
+        "fps": "as input",
+        "duration": "the kept time plus each sped span's length / its factor"
+      },
+      "refused_before_execution": [
+        "source without a video stream or duration",
+        "segments that overlap or run past the input duration",
+        "a label without a rule (INVALID_REQUEST missing_rule)",
+        "an edit that keeps nothing (INVALID_REQUEST nothing_kept)",
+        "input frame with an odd width or height (odd_frame)"
       ]
     },
     "CROP": {

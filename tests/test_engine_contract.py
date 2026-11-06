@@ -674,3 +674,28 @@ class StingerTransitionTests(FakeEngineHarness):
         rc, out = self.run_(doc)
         self.assertEqual(out["error"]["details"].get("reason"), "kind_mismatch")
         self.assertEqual(self.calls(), [])
+
+
+class CondenseFakeTests(FakeEngineHarness):
+    """CONDENSE through the fake engine: one cut per kept piece, fit for a sped one, a join; nothing kept is refused."""
+
+    def test_calls_and_plan(self):
+        doc = request(self.sources(), [{"id": "c", "type": "CONDENSE", "input": "A",
+                                        "params": {"segments": [{"start": 0.5, "end": 1, "label": "silence"}, {"start": 1.5, "end": 2, "label": "retake"}],
+                                                   "rules": {"silence": {"speed": 2}, "retake": "cut"}}}],
+                      [{"id": "x", "operation": "c", "path": "out/c.mp4"}], options={"overwrite": True})
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([p["action"] for p in rec["condense"]["pieces"]], ["keep", "speed", "keep", "cut"])
+        self.assertEqual(rec["condense"]["removed"]["rational"], "1/2")
+        with open(os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".mp4"), "rb") as fh:
+            header = json.loads(fh.read()[4:].decode())
+        self.assertEqual(header["tool"], "join")
+        self.assertAlmostEqual(header["duration"], 0.5 + 0.25 + 0.5)
+
+    def test_nothing_kept_is_refused(self):
+        doc = request(self.sources(), [{"id": "c", "type": "CONDENSE", "input": "A",
+                                        "params": {"segments": [{"start": 0, "end": 2, "label": "x"}], "rules": {"x": "cut"}}}],
+                      [{"id": "x", "operation": "c", "path": "out/c.mp4"}])
+        rc, out = self.run_(doc)
+        self.assertEqual(out["error"]["details"].get("reason"), "nothing_kept")

@@ -1232,3 +1232,31 @@ class SpanCombineTests(unittest.TestCase):
                          [("2/1", "5/1", "silence+static"), ("10/1", "11/1", "silence+static")])
         self.assertEqual([x["label"] for x in combine_spans({"static": [(F(1), F(2))]}, "or", F(0))], ["static"])
         self.assertEqual(combine_spans(m, "and", F(1)), [x for x in a if x["start"]["rational"] == "5/2"])
+
+
+class CondenseParamTests(unittest.TestCase):
+    """CONDENSE (ADR-026): the pieces over the input, rules per label, refusals."""
+
+    def test_pieces_and_timeline(self):
+        p = operations.validate_params("CONDENSE", {"segments": [{"start": 4, "end": 5, "label": "retake"}, {"start": 1, "end": 2, "label": "silence"}],
+                                                    "rules": {"silence": {"speed": 2}, "retake": "cut"}}, "op")
+        pieces = operations.condense_pieces(p, Time.parse(6))
+        self.assertEqual([(str(x["start"].value), str(x["end"].value), x["action"]) for x in pieces],
+                         [("0", "1", "keep"), ("1", "2", "speed"), ("2", "4", "keep"), ("4", "5", "cut"), ("5", "6", "keep")])
+        from video_editing_skill.timeline import _condense, Clip, Segment
+        src = Clip(Time.parse(6), [Segment("A", Time.parse(0), Time.parse(6), Time.parse(0), Time.parse(6))])
+        c = _condense(src, p)
+        self.assertEqual(c.duration.value, Fraction(9, 2))
+        self.assertEqual([(s.timeline_start.value, s.timeline_end.value, s.speed) for s in c.segments],
+                         [(0, 1, 1), (1, Fraction(3, 2), 2), (Fraction(3, 2), Fraction(7, 2), 1), (Fraction(7, 2), Fraction(9, 2), 1)])
+
+    def test_refusals(self):
+        bad = [{"segments": [{"start": 0, "end": 2, "label": "a"}, {"start": 1, "end": 3, "label": "b"}], "rules": {"a": "cut", "b": "cut"}},
+               {"segments": [{"start": 0, "end": 1, "label": "a"}], "rules": {"b": "cut"}},
+               {"segments": [{"start": 0, "end": 1, "label": "a"}], "rules": {"a": {"speed": 1}}},
+               {"segments": [{"start": 0, "end": 1, "label": "A B"}], "rules": {"A B": "cut"}},
+               {"segments": [], "rules": {"a": "cut"}},
+               {"segments": [{"start": 0, "end": 1, "label": "a"}], "rules": {"a": "drop"}}]
+        for params in bad:
+            with self.assertRaises(EditError, msg=params):
+                operations.validate_params("CONDENSE", params, "op")

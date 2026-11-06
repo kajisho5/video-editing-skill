@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-025). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-026). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -238,6 +238,8 @@ exception to ADR-001.
   ja profile): proposals with reasons only, `applied: false`; approved ids become CONDENSE segments (step 16).
 - (ADR-025, step 15) — `propose` `static` (scenes --shots static shots) / `silence` (silence --list), `combine` and / or:
   labelled span proposals. Edges = the engine's shot boundaries.
+- (ADR-026, step 16) — `CONDENSE {segments, rules: {label: cut | keep | {speed}}, default}`: cut / fit --duration / join;
+  where approved proposals are applied.
 
 ## Picking the next task
 

@@ -72,9 +72,10 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Why: dead spans of a fixed-camera recording are found without watching it（なぜ要るか：定点カメラの不在区間を映像から見つける）
   - Done when: a fixture with a still span finds it to within one frame
   - Done (ADR-025): `propose` with `source`, `static: {}` and / or `silence: {threshold_db, min_seconds}`, `combine: {mode: and | or}` returns labelled spans (`static`, `silence`, `silence+static`) as proposals; the static spans are the shots ffmpeg-skill `scenes --shots` labels static, the silences `silence --list`. `MotionSpanTests`: a 3 s still span between moving ones is found at 2.0-5.0 s to within one frame; `and` with a 2.5-4.5 s silence gives 2.5-4.5, `or` gives 2.0-5.0 labelled silence+static. A still span with no visible change of picture at its edges is found only at the shot edges the engine detects
-- [ ] **16. A choice per labelled span** — per label (silence, static, retake, ...), cut / keep / speed (with a factor)
+- [x] **16. A choice per labelled span** — per label (silence, static, retake, ...), cut / keep / speed (with a factor)
   - Why: silences can be sped up instead of cut, retakes cut, the rest kept, in one edit（なぜ要るか：ラベルごとに切る・残す・早送りを選べる）
   - Done when: an edit that keeps the silences at double speed has the right duration and keeps the pitch (atempo)
+  - Done (ADR-026): `CONDENSE {segments: [{start, end, label}], rules: {label: cut | keep | {speed: f}}, default}`; each kept piece cut frame-accurately, a sped one retimed by fit.py `--duration --method speed` (atempo), joined in order. `CondenseTests`: a silence proposed by `propose`, approved and kept at 2x makes 6 s into 5 s (within 0.1 s), and the quiet 880 Hz tone in it is still 880 Hz (not 1760); the timeline shows speeds 1, 2, 1
 - [ ] **17. Review of the planned cuts** — write a review file that joins only the spans to be removed, plus their list
   - Why: what will be cut is checked before it is cut（なぜ要るか：削除予定の区間だけを繋いで確認できる）
   - Done when: the review file lasts the sum of the removed spans
