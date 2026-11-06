@@ -80,9 +80,10 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Why: what will be cut is checked before it is cut（なぜ要るか：削除予定の区間だけを繋いで確認できる）
   - Done when: the review file lasts the sum of the removed spans
   - Done (ADR-027): CONDENSE `output: removed` writes a review file of only the spans its rules cut, in order at speed 1, and its record lists each with its source range and its place in the file (`condense.review`, `removed`). `CondenseTests`: two retakes (0.5 s + 1.2 s) give a 1.7 s review file (within 0.1 s) beside the edit itself, from one request
-- [ ] **18. Export to a target file size** — given a limit such as 25 MB, work out the video bitrate from the duration and the audio bitrate and write it in two passes through ffmpeg-skill; past the limit, work it out again and retry; when it cannot fit (resolution, lowest bitrate), fail with the reason
+- [x] **18. Export to a target file size** — given a limit such as 25 MB, work out the video bitrate from the duration and the audio bitrate and write it in two passes through ffmpeg-skill; past the limit, work it out again and retry; when it cannot fit (resolution, lowest bitrate), fail with the reason
   - Why: deliveries with a size cap (mail, chat, upload limits) are met on the first try（なぜ要るか：サイズ上限のある納品を一度で満たす）
   - Done when: on two or three fixtures the output is at or under the limit and at least 90 % of it
+  - Done (ADR-028): `outputs[].max_size: {mb: 25}` (bytes / kb / mb / gb, kib / mib / gib) delivers through ffmpeg-skill `export --max-mb` (two-pass x264; the video bitrate from the duration after the audio), measured and retried (over: smaller target; under 90 %: larger) up to 5 times. `SizeLimitTests` (3.2.0): three fixtures (640x360 20 s with sound at 2 MB, 1280x720 8 s at 3 MB, 320x180 60 s with sound at 4 MB) each land in [90 %, 100 %]; 60 s in 300 kB fails with the engine's reason (under 100 kb/s is not watchable) and delivers nothing. A picture that needs fewer bits than the limit is delivered under it with `under_floor: true`, never padded. No automatic downscale. Needs ffmpeg-skill 2.x+ (`export --max-mb`), refused before execution on 0.11.0
 
 ## Boundaries
 

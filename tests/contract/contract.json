@@ -1094,7 +1094,8 @@
       "ffmpeg-skill/broll",
       "ffmpeg-skill/audio",
       "ffmpeg-skill/silence",
-      "ffmpeg-skill/scenes"
+      "ffmpeg-skill/scenes",
+      "ffmpeg-skill/export"
     ],
     "tools_optional": [
       "ffmpeg-skill/freeze",
@@ -1104,7 +1105,8 @@
       "ffmpeg-skill/broll",
       "ffmpeg-skill/audio",
       "ffmpeg-skill/silence",
-      "ffmpeg-skill/scenes"
+      "ffmpeg-skill/scenes",
+      "ffmpeg-skill/export"
     ],
     "location": "VIDEO_EDITING_FFMPEG_SKILL_DIR | --ffmpeg-skill-dir | ~/.claude/skills/ffmpeg-skill | ./vendor/ffmpeg-skill | ../ffmpeg-skill",
     "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout",
@@ -1181,7 +1183,8 @@
           "id": "label",
           "operation": "operation id",
           "path": "relative path under the workspace (.mp4 | .mov | .mkv)",
-          "encoding": "optional {crf, preset} (contract.encoding); refused where noted there"
+          "encoding": "optional {crf, preset} (contract.encoding); refused where noted there",
+          "max_size": "optional {bytes | kb | mb | gb | kib | mib | gib: number} (MB = 10^6 bytes): fit the file under it (contract.size_limit)"
         }
       ]
     },
@@ -1853,6 +1856,19 @@
       "a profile on an output produced by TRIM / CUT with precision keyframe or auto: stream copy ignores it (INVALID_REQUEST)",
       "two outputs of one operation with different profiles (DEPENDENCY_ERROR)"
     ]
+  },
+  "size_limit": {
+    "request_field": "project.outputs[].max_size: {mb: 25} (one of bytes, kb, mb, gb = 10^3 steps; kib, mib, gib = 2^10 steps); 100 kB .. 50 GB",
+    "engine": "ffmpeg-skill/export --preset youtube --no-scale --allow-long --max-mb <target MiB>: a two-pass x264 encode at the video bitrate the running time leaves after the audio (AAC 192k), at the produced frame size and rate",
+    "retry": "measured after each encode: over the limit -> target x limit / size x 0.97; under 90 % -> target x 0.95 x limit / size; up to 5 encodes; the delivered file lies in [90 %, 100 %] of the limit",
+    "refused": [
+      "with outputs[].encoding (a quality and a size: give one; INVALID_REQUEST size_and_encoding)",
+      "a path that is not .mp4 (INVALID_REQUEST size_needs_mp4)",
+      "an ffmpeg-skill without export --max-mb (2.x+; TOOL_ERROR before execution)",
+      "a limit the engine cannot meet (under its lowest watchable video bitrate, 100 kb/s, for the duration; or none of 5 encodes in range): OUTPUT_ERROR size_limit_unreachable with the attempts and the engine's reason; nothing is delivered"
+    ],
+    "not_done": "no automatic downscale or audio-bitrate reduction to make a small limit fit: the failure says so and the caller decides",
+    "report": "execution.outputs[].size_limit: {limit_bytes, bytes, ratio, attempts: [{target_mib, bytes, ratio}], two_pass}"
   },
   "proposals": {
     "invocation": [
