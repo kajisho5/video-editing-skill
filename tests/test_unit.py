@@ -1016,7 +1016,8 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         c = contract.skill_contract()
         self.assertEqual(c["encoding"], operations.ENCODING)
         self.assertIn("video codec choice", c["encoding"]["not_configurable"])
-        self.assertEqual(c["request_shape"], json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))["request_shape"])
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json"), encoding="utf-8") as fh:
+            self.assertEqual(c["request_shape"], json.load(fh)["request_shape"])
 
     def test_pinned_blocks_are_unchanged_since_0_4_0(self):
         """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the golden copy.
@@ -1030,7 +1031,8 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         (docs/decisions.md ADR-008), free to drift as the ffmpeg-skill version range this Skill enforces changes
         (ADR-010 bumped it to >=0.10.0) — covered by test_drift_is_detected, not by this byte-identity freeze."""
         c = contract.skill_contract()
-        golden = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json"), encoding="utf-8") as fh:
+            golden = json.load(fh)
         for k in ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "capability_names", "schemas",
                   "response_shape", "request_shape", "formats"):
             self.assertEqual(c[k], golden[k], k)
