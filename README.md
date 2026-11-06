@@ -358,6 +358,9 @@ values are reported under `project`, never as observations.
   key, size and hash match re-validates them (probe, duration, frame, audio) and reuses them (`status: "reused"`,
   `execution.reused: true`, `outputs[].reused`); a candidate that no longer validates is run again.
   `options.reuse: false` disables it.
+- **Several aspects from one edit** (ADR-021): one TRIM per shot, then per aspect one `CROP` per shot (the window you
+  computed, e.g. from detection-skill's subject path) and one `CONCAT` with that aspect's `width` / `height`; three
+  `outputs[]` in one request. The shots run once and are shared. Template: `examples/multi-aspect.json`.
 - **Segment cache** (`options.segment_cache: true`, ADR-018): a frame-precision `CUT` cuts every keep range on its own
   (ffmpeg-skill `cut --start --end --accurate`), keeps each part in `<work>/segments/` under a key made of the input's
   identity, the range, the encoding and the engine versions, and joins the parts by stream copy (`join --copy`). After

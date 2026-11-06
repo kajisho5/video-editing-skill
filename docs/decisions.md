@@ -801,3 +801,32 @@ bump is left to the release, and video-production-agent re-pins and needs a lowe
 frames at 1.05, 1.5, 2.0, 2.5 and 2.95 s, the box is about 80x80 at (80, 52), fully inside the frame and away from every
 edge. At 0.5 and 3.5 s the source picture is unchanged. The output stays 320x180 and 4 s.
 
+## ADR-021 — One edit, several aspects: a request graph, not a new type
+
+**Context.** ECOSYSTEM_ROADMAP step 11: ship the landscape programme and the vertical / square versions from one edit,
+in one request. Each shot of the vertical version is cropped with one window per shot taken from detection-skill's
+subject path.
+
+**Decision.** No new operation type. The graph already expresses it, and a dedicated type would duplicate CROP and
+CONCAT (ADR-016's "no duplicate ownership"). The cut list is one TRIM (or CUT) per shot. Each shot is shared by every
+version: the graph runs it once, and its intermediate is reused. Per aspect, one CROP per shot takes the window the
+caller computed from the subject path (ADR-001: choosing the window is the caller's), and a CONCAT with that aspect's
+`width` / `height` makes the delivery. The outputs are three `outputs[]` of one request. `examples/multi-aspect.json`
+is the template (16:9, 9:16 and 1:1 from a 1920x1080 talk).
+
+**What holds.** Every window is checked against its shot's measured frame before anything runs (`crop_outside_frame`).
+The three outputs come from the same shots, so they have the same duration to within a frame. The sound is the same
+source ranges in every version, but each CONCAT encodes it again. It is not bit-identical across outputs (decoded
+frames differ, measured). A single bit-identical track shared by all three would need a mux step (picture from one
+file, sound from another), and no typed operation does that yet. One window per shot is the rule: a window that moves
+within a shot needs a time-varying crop (Velisa proposal 2 to ffmpeg-skill).
+
+**Versioning.** Nothing in the contract changes. This ADR, an example, and a real-media test.
+
+**Verified.** `tests/test_integration.py::MultiAspectTests`, against ffmpeg-skill 3.2.0 and 0.11.0. A 6 s 320x180 clip is
+cut into three shots (5 s in all) and rendered as 320x180, 180x320 (90x160 windows) and 180x180 (180x180 windows):
+- the three outputs are equal in duration to within one frame;
+- the three TRIMs run once;
+- every CROP window lies inside its measured source frame;
+- a window past the right edge is refused before anything runs.
+
