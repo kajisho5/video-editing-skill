@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.6.0 - 2026-11-07
+
+- Smart cut: precision smart re-encodes only the partial GOPs at each cut (roadmap step 9) (#43) (831a8dc)
+
 ## v0.5.1 - 2026-11-07
 
 - fix(concat): join stinger clips at whole frames (#42) (1e57143)
