@@ -660,6 +660,29 @@ class StingerTransitionTests(FakeEngineHarness):
         rc, plan = self.run_(self.doc(inputs=("A", "B", "A")), "plan", expect=0)
         self.assertEqual([j["cut_at"]["rational"] for j in plan["plan"]["steps"][0]["stinger"]["joins"]], ["2/1", "4/1"])
 
+    def test_inputs_are_joined_at_whole_frames(self):
+        """A stream-copied segment's length (its edit list) is rarely whole frames: joined as measured, the next clip started
+        between frames and the joined picture had a hole (frame rate measured 29.955, not 30). Such an input is cut
+        frame-accurately to its length in whole frames first, and the join is planned there (ADR-030)."""
+        with open(os.path.join(self.ws, "in", "copied.mp4"), "wb") as fh:
+            fh.write(b"FAKE" + json.dumps({"duration": 2.116992}).encode())
+        doc = self.doc()
+        doc["project"]["sources"].append({"id": "CP", "path": "in/copied.mp4"})
+        doc["project"]["operations"][0]["inputs"] = ["CP", "B"]
+        rc, plan = self.run_(doc, "plan", expect=0)
+        self.assertEqual([j["cut_at"]["rational"] for j in plan["plan"]["steps"][0]["stinger"]["joins"]], ["21/10"], "63 frames at 30 fps")
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([j["cut_at"]["rational"] for j in rec["stinger"]["joins"]], ["21/10"])
+        self.assertEqual(rec["stinger"]["joins"][0]["stinger_start"]["rational"], "8/5")
+        # one call more than the plain stinger (join, overlay, broll, audio): the cut, before the join
+        outs = [c.rsplit(".partial.", 1)[0].rsplit(".", 1)[-1] for c in rec["commands"]]
+        self.assertEqual(outs, ["stg0", "stg-join", "stg2", "stg3", "stg4"], rec["commands"])
+        # an input already whole frames long is joined as it is (the standard 2 s fixtures: no cut)
+        rc, out = self.run_(self.doc(), expect=0)
+        outs = [c.rsplit(".partial.", 1)[0].rsplit(".", 1)[-1] for c in out["execution"]["operations"][0]["commands"]]
+        self.assertEqual(outs, ["stg-join", "stg1", "stg2", "stg3"])
+
     def test_refusals_before_execution(self):
         cases = [(self.doc(cut_point=0.7), "stinger_not_covering"), (self.doc(stinger="OP"), "stinger_no_alpha"),
                  (self.doc(cut_point=0.51, cover={"start": 0.5, "end": 0.6}), "cut_point_not_on_frame")]

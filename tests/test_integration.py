@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from fractions import Fraction
 
 from helpers import FFMPEG_SKILL, HAVE_FFMPEG, cli, request
 
@@ -1060,6 +1061,39 @@ class StingerTests(unittest.TestCase):
                                  capture_output=True, text=True).stderr
             return float(re.search(r"mean_volume: (-?[\d.]+) dB", err).group(1))
         self.assertGreater(mean_db(1.7), mean_db(0.3) + 1.0)
+
+    @unittest.skipUnless(HAS_STINGER, "needs overlay.py --place, broll.py and audio.py --replace (ffmpeg-skill 2.x+)")
+    def test_stream_copied_inputs_switch_on_a_whole_frame(self):
+        """Regression (ADR-030): clips cut by stream copy from mid-GOP carry their pre-roll behind an MP4 edit list, and their
+        length (2.116992 s here) is not whole frames. Joined as measured, the next clip started between frames, the joined
+        picture had a hole, and the output was measured at 29.764 fps against the requested 30 (VALIDATION_ERROR). Each
+        such clip is now cut to whole frames first: the cut lands on a frame (63, 2.1 s, with FFmpeg 6.1) and the output stays at 30 fps."""
+        ff = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+        paths = {}
+        for name, col, freq in (("A", "red", 440), ("B", "blue", 660)):
+            long_, short = os.path.join(self.media, f"{name}_long.mp4"), os.path.join(self.media, f"{name}_copied.mp4")
+            subprocess.run(ff + ["-f", "lavfi", "-i", f"color=c={col}:s=320x180:r=30", "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=48000",
+                                 "-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", long_], check=True)
+            subprocess.run(ff + ["-ss", "0.85", "-i", long_, "-t", "2.018", "-c", "copy", short], check=True)
+            paths[name] = short
+        frames_a = duration(paths["A"]) * 30
+        self.assertNotAlmostEqual(frames_a, round(frames_a), places=2, msg="the fixture is not whole frames")
+        cut = int(frames_a + 0.001)   # A's length rounded down to whole frames: the cut frame
+        doc = self.doc()
+        doc["project"]["sources"][0]["path"], doc["project"]["sources"][1]["path"] = paths["A"], paths["B"]
+        doc["project"]["operations"][0]["params"]["fps"] = 30
+        rc, out, path = self.run_cli(doc)
+        self.assertEqual(rc, 0, json.dumps(out.get("error")))
+        rate = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate,r_frame_rate", "-of", "csv=p=0", path],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(rate, "30/1,30/1")
+        rec = out["execution"]["operations"][0]
+        self.assertEqual(Fraction(rec["stinger"]["joins"][0]["cut_at"]["rational"]), Fraction(cut, 30))
+        left, right = (40, 90), (280, 90)
+        seen = {n: [colour(p) for p in frame_px(path, n, [left, right])] for n in (cut - 1, cut, cut + 1)}
+        self.assertEqual(seen[cut - 1], ["green", "red"], "the last frame of A, under the stinger's bar")
+        self.assertEqual(seen[cut], ["green", "green"], "the cut frame: fully covered")
+        self.assertEqual(seen[cut + 1], ["green", "blue"], "the first frame after the cut shows B")
 
     def test_cut_point_outside_the_covered_window_is_refused(self):
         rc, out, path = self.run_cli(self.doc(cut_point=0.4))
