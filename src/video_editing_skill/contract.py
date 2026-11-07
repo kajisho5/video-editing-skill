@@ -51,6 +51,28 @@ SEGMENT_CACHE: Dict[str, Any] = {
     "reuse_false": "options.reuse false also bypasses the segment cache (every part is encoded again and the cache is refreshed)",
 }
 
+SMART_CUT: Dict[str, Any] = {
+    "request_field": "TRIM / CUT params.precision: smart (opt-in; the default stays frame)",
+    "engine_call": "ffmpeg-skill/cut --smart (TRIM: --start --end; CUT: --segments), plus --no-keep-hevc where offered",
+    "what_it_does": "a cut point between keyframes is re-encoded from that point to the next keyframe, and from the last keyframe to the end point; "
+                    "the whole GOPs between are the source's packets; the sound is cut on the picture's frame grid and encoded once (AAC). The engine "
+                    "checks the result against the source (frame count and grid, copied packets, decoded frames of each re-encoded part, stream "
+                    "parameters) before it is written; the result is frame-accurate like precision frame",
+    "engine_fallback": "a source the engine cannot match (not H.264 8-bit 4:2:0 Baseline / Main / High, interlaced, variable-rate, HDR, an open GOP at a "
+                       "copy boundary, ...) or a check that fails: the engine re-encodes the whole cut (mode accurate) and says why (smart.reason, "
+                       "smart.reason_code, diagnostics.fallbacks); the operation still succeeds",
+    "engine_without_smart": "an ffmpeg-skill whose cut.py has no --smart (detected; before 3.2.3): the cut runs as precision frame (--accurate), a warning is "
+                            "added, and the record says smart.applied false, reason_code engine_without_smart",
+    "refused": ["an outputs[].encoding profile on its output (INVALID_REQUEST encoding_needs_reencode): the copied GOPs keep the source's quality"],
+    "not_applied": ["options.segment_cache (frame precision only)", "the cuts CONDENSE / PUNCH_IN / a stinger CONCAT make inside themselves (their "
+                    "result is re-encoded by the next step anyway)"],
+    "validation": "as precision frame: duration within 0.35 s, the input frame, audio kept, and the re-encode codec rule (H.264 for SDR)",
+    "report": "execution.operations[].cuts: cut.py's mode (smart | accurate), reencoded, reencode_reason, duration_delta_seconds, ..., fallbacks (the "
+              "engine's diagnostics.fallbacks) and smart: {applied, parts: [{segment, kind: reencode | copy, start, end, frames}], reencoded_frames, "
+              "copied_frames, checks, source} or {applied: false, reason, reason_code, source}; plan.steps[].smart: {engine_flag: --smart | --accurate, "
+              "available, reason_code, reason}",
+}
+
 STINGER: Dict[str, Any] = {
     "request_field": "CONCAT params.transition: {type: stinger, stinger, cut_point, cover: {start, end}}",
     "file": "a video source with an alpha plane (ProRes 4444, QuickTime Animation, PNG in MOV, ...), the edit's aspect and frame rate; its length is "
@@ -88,8 +110,8 @@ AI_GENERATED: Dict[str, Any] = {
 }
 
 PARAM_DOCS: Dict[str, Dict[str, str]] = {
-    "TRIM": {"start": "time", "end": "time (> start)", "precision": "frame (default, re-encode) | keyframe (lossless when possible) | auto (stream copy when the copy lands within 0.2 s of the range, e.g. an in point on a keyframe; else a frame-accurate re-encode; reported per cut)"},
-    "CUT": {"keep": "[{start, end}, ...] in output order", "precision": "frame | keyframe | auto"},
+    "TRIM": {"start": "time", "end": "time (> start)", "precision": "frame (default, re-encode) | keyframe (lossless when possible) | auto (stream copy when the copy lands within 0.2 s of the range, e.g. an in point on a keyframe; else a frame-accurate re-encode; reported per cut) | smart (frame-accurate; only the partial GOPs at each cut point re-encoded, the whole GOPs between copied, verified against the source; else the whole cut re-encoded, with the reason; contract.smart_cut)"},
+    "CUT": {"keep": "[{start, end}, ...] in output order", "precision": "frame | keyframe | auto | smart"},
     "CONCAT": {"transition": "{type: " + "|".join(TRANSITIONS) + ", duration: time 0.01..10} (optional), or {type: stinger, stinger: video source id "
                              "(a file with alpha), cut_point: time (the frame the clips switch at), cover: {start, end} (the window the graphic covers the "
                              "whole frame; must contain cut_point)} (contract.stinger)",
@@ -234,7 +256,8 @@ def skill_contract() -> Dict[str, Any]:
                                                   "the ffmpeg-skill tool of each unsupported type (doctor: unsupported[].engine_tool_status)",
                                                   "encoding quality flag: --quality where offered, else --crf (same CRF scale)",
                                                   "probe colour key: video.bt2020_or_hdr where present, else video.hdr (same meaning)",
-                                                  "cut.py's SDR HEVC re-encode codec: --no-keep-hevc passed where offered (3.0+), so a frame-precision TRIM / CUT writes H.264 for SDR like every other operation"],
+                                                  "cut.py's SDR HEVC re-encode codec: --no-keep-hevc passed where offered (3.0+), so a frame-precision TRIM / CUT writes H.264 for SDR like every other operation",
+                                                  "cut.py --smart (3.2.3+): a precision smart TRIM / CUT uses it where offered, else --accurate (contract.smart_cut)"],
                                      "floor_reason": "overlay.py bounds a looped-image composite with -t only from 0.10.0 (behaviour, not a flag)"}},
         "execution": {
             "mode": "local_subprocess",
@@ -291,7 +314,7 @@ def skill_contract() -> Dict[str, Any]:
         "validation": {"before_execution": ["schema and typed parameters", "path policy", "graph", "every source probed by ffmpeg-skill (video: stream + duration; image: decodes)",
                                             "ranges against probed durations", "media compatibility (operations.MEDIA)", "engine tools and capabilities (ffmpeg-skill doctor)"],
                        "after_each_operation": ["file exists, non-empty, readable", "probe: video stream, duration, frame size",
-                                                "duration within tolerance of the timeline (frame 0.35 s, keyframe 1.5 s)",
+                                                "duration within tolerance of the timeline (frame / auto / smart 0.35 s, keyframe 1.5 s)",
                                                 "frame size / aspect / width as requested, or equal to the input for TRIM / CUT / SPEED / OVERLAY / FREEZE / REVERSE",
                                                 "frame rate as requested", "audio stream kept when the input(s) had one"],
                        "on_reuse": "the candidate is re-validated with the same checks (hash, size, probe); a stale record is discarded and the operation runs again",
@@ -309,7 +332,7 @@ def skill_contract() -> Dict[str, Any]:
                                "allowed within the same contract_version; the golden copy tests/contract/contract.json is regenerated deliberately in "
                                "the same change, and `contract --check` classifies every difference as breaking or additive",
                        "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
-                       "next": {"0.6.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
+                       "next": {"0.7.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
                                          "(docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
                                          "OVERLAY video-layer + chroma-key params (ffmpeg-skill overlay.py --video/--chromakey), per ADR-002's own \"extend OVERLAY rather than add a "
                                          "type\" prescription -- flagged, not decided or scheduled here (see kajisho5/video-editing-skill#11 item 2)",
@@ -338,6 +361,8 @@ def skill_contract() -> Dict[str, Any]:
         "ai_generated": AI_GENERATED,
         # ---- segment cache and partial re-render (docs/decisions.md ADR-018)
         "segment_cache": SEGMENT_CACHE,
+        # ---- keyframe-aware smart cut (docs/decisions.md ADR-031)
+        "smart_cut": SMART_CUT,
         "frame_semantics": FRAME_SEMANTICS,
         "media_policy": MEDIA_POLICY,
     }

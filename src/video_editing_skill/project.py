@@ -348,7 +348,7 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
         encoding = validate_encoding(o["encoding"], what + ".encoding") if o.get("encoding") is not None else None
         if encoding is not None:
             producer = ops[op_ref]
-            if producer.type in ("TRIM", "CUT") and producer.params.get("precision") in ("keyframe", "auto"):
+            if producer.type in ("TRIM", "CUT") and producer.params.get("precision") in ("keyframe", "auto", "smart"):
                 raise EditError("INVALID_REQUEST", f"{what}.encoding: {producer.type} with precision {producer.params['precision']} may stream-copy and ignore a profile; "
                                 "use precision frame",
                                 {"reason": "encoding_needs_reencode"})

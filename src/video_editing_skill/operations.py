@@ -15,7 +15,7 @@ from .timebase import Time, fraction_text, parse_fraction
 TRANSITIONS = ("fade", "dissolve", "wipeleft", "wiperight", "wipeup", "wipedown", "slideleft", "slideright",
                "circleopen", "circleclose", "fadeblack", "fadewhite", "smoothleft", "smoothright", "radial")
 POSITIONS = ("top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right")
-PRECISIONS = ("frame", "keyframe", "auto")
+PRECISIONS = ("frame", "keyframe", "auto", "smart")
 AUTO_TOLERANCE = "0.2"   # precision auto: the most a stream copy may deviate from the asked range before that cut is re-encoded (ADR-019)
 ROTATIONS = (90, 180, 270)
 FLIPS = ("h", "v")
@@ -48,7 +48,7 @@ ENCODING = {
     "not_configurable": ["video codec choice", "bitrate / CBR / ABR modes", "pixel format / bit depth", "colour space tags", "audio codec, bitrate, sample rate, channel layout",
                          "keyframe interval / GOP", "two-pass encoding", "hardware encoders"],
     "refused": ["unknown keys (INVALID_REQUEST)", "crf or preset outside the vocabulary (INVALID_REQUEST)",
-                "a profile on an output produced by TRIM / CUT with precision keyframe or auto: stream copy ignores it (INVALID_REQUEST)",
+                "a profile on an output produced by TRIM / CUT with precision keyframe, auto or smart: stream copy ignores it (INVALID_REQUEST)",
                 "two outputs of one operation with different profiles (DEPENDENCY_ERROR)"],
 }
 
@@ -107,6 +107,7 @@ MEDIA_POLICY = {
         "scaling, padding, cropping filters and their exact pixel maths", "constant-frame-rate conform of variable-frame-rate sources (a warning is reported)",
         "resampling, silence insertion and stereo layout in CONCAT (an IMAGE_INSERT clip has no audio)", "scaling / centre-cropping a still to its IMAGE_INSERT frame", "silence under a FREEZE hold; reversing the audio with the picture in REVERSE", "HDR sources encoded HEVC 10-bit (the output codec is hevc; a warning is reported)",
         "audio codec / bitrate / sample rate (AAC 192 kb/s)", "keyframe snapping for precision keyframe TRIM / CUT", "copy-or-re-encode per cut for precision auto TRIM / CUT (cut.py --tolerance 0.2; the engine's choice is reported per cut)",
+        "which GOPs a precision smart TRIM / CUT re-encodes and whether the result verifies against the source (cut.py --smart; a fallback to a whole re-encode is reported with its reason)",
     ],
     "by_stream": {
         "video_only": "all operations allowed, OVERLAY included (ffmpeg-skill >=0.10.0 bounds the looped-image overlay with an explicit -t instead of -shortest); the output has no audio stream (validated)",

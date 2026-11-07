@@ -42,6 +42,12 @@ your decision). `FREEZE` / `REVERSE` / `IMAGE_INSERT` / `CROP` need ffmpeg-skill
 else (`POSITION` included) is refused with
 `UNSUPPORTED_OPERATION`; the contract's `unsupported` list says why.
 
+`TRIM` / `CUT` take `precision`: `frame` (default: re-encoded, frame-accurate), `keyframe` (lossless, may land on a
+keyframe), `auto` (a stream copy where it lands within 0.2 s, else re-encoded) or `smart` (frame-accurate, only the
+partial GOPs at each cut point re-encoded; for long recordings cut between keyframes). `smart` needs ffmpeg-skill
+`cut.py --smart` (3.2.3+); without it, or for a source the engine cannot match, the whole cut is re-encoded and
+`execution.operations[].cuts.smart` says why (`applied: false`, `reason_code`).
+
 Times are exact: `"1:30"`, `"00:01:30.250"`, `{"frames": 300, "fps": "30000/1001"}` or a number of seconds.
 
 Frames are exact too: `RESIZE` keeps the aspect (`width` → `height = even(width × sh / sw)`), `FIT` pads to an aspect,

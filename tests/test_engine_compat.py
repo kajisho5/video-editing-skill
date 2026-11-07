@@ -366,6 +366,101 @@ class Engine2xSdrHevcTests(LayoutCase):
         self.assertEqual(self.delivered_header()["codec"], "h264")
 
 
+class SmartCutTests(LayoutCase):
+    """ECOSYSTEM_ROADMAP step 9 (ADR-031): precision smart -> cut.py --smart where the checkout offers it (3.2.3+); the
+    engine's mode and smart document (parts, or the fallback's reason) are in the record."""
+    layout = "3.x"
+    version = "3.2.3"
+
+    def setUp(self):
+        super().setUp()
+        write_fake_media(os.path.join(self.ws, "in", "sdrhevc.mp4"))
+
+    def test_detected_from_the_flag(self):
+        self.assertTrue(locate(self.root).cut_has_smart())
+        rc, res, err = cli(["doctor", "--json"], env=self.env)
+        self.assertTrue(res["engine"]["compatibility"]["smart_cut"], res["engine"]["compatibility"])
+
+    def test_trim_passes_smart_and_reports_the_parts(self):
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0.5, "end": 1.5, "precision": "smart"}}])
+        self.assertTrue(res["ok"], res)
+        args = self.delivered_header()["args"]
+        self.assertIn("--smart", args)
+        self.assertNotIn("--accurate", args)
+        self.assertNotIn("--tolerance", args)
+        self.assertIn("--no-keep-hevc", args)   # an engine fallback on an SDR HEVC source writes H.264, as precision frame does
+        cuts = res["execution"]["operations"][0]["cuts"]
+        self.assertEqual((cuts["requested_precision"], cuts["mode"], cuts["provenance"]), ("smart", "smart", "OBSERVED"))
+        self.assertTrue(cuts["smart"]["applied"])
+        self.assertEqual([p["kind"] for p in cuts["smart"]["parts"]], ["reencode", "reencode"])
+        self.assertEqual(cuts["smart"]["source"], "ffmpeg-skill/cut@3.2.3")
+        self.assertEqual(cuts["fallbacks"], [])
+        self.assertEqual(res["warnings"], [])
+
+    def test_cut_with_whole_gops_copies_them(self):
+        rc, res = self.run_([{"id": "c", "type": "CUT", "input": "A", "params": {"keep": [{"start": 0.5, "end": 2}], "precision": "smart"}}])
+        self.assertTrue(res["ok"], res)
+        self.assertIn("--smart", self.delivered_header()["args"])
+        smart = res["execution"]["operations"][0]["cuts"]["smart"]
+        self.assertEqual([p["kind"] for p in smart["parts"]], ["reencode", "copy"])
+        self.assertGreater(smart["copied_frames"], 0)
+
+    def test_engine_fallback_is_reported(self):
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0.5, "end": 1.5, "precision": "smart"}}], src="in/sdrhevc.mp4")
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.delivered_header()["codec"], "h264")
+        cuts = res["execution"]["operations"][0]["cuts"]
+        self.assertEqual(cuts["mode"], "accurate")
+        self.assertEqual((cuts["smart"]["applied"], cuts["smart"]["reason_code"]), (False, "codec"))
+        self.assertIn("H.264", cuts["smart"]["reason"])
+        self.assertEqual([f["code"] for f in cuts["fallbacks"]], ["smart_fallback"])
+
+    def test_encoding_profile_refused(self):
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0.5, "end": 1.5, "precision": "smart"}}], encoding={"crf": 20})
+        self.assertFalse(res["ok"])
+        self.assertEqual((res["error"]["code"], res["error"]["details"]["reason"]), ("INVALID_REQUEST", "encoding_needs_reencode"))
+
+    def test_plan_says_smart(self):
+        doc = request([{"id": "A", "path": "in/a.mp4"}], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0.5, "end": 1.5, "precision": "smart"}}],
+                      [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        rc, res, err = cli(["plan", "-", "--json", "--workspace", self.ws], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertTrue(res["ok"], res)
+        step = res["plan"]["steps"][0]
+        self.assertEqual(step["arguments"].get("smart"), True)
+        self.assertEqual(step["smart"], {"engine_flag": "--smart", "available": True, "reason_code": None, "reason": None})
+        self.assertEqual(step["normalized"]["encoding"], {"crf": 18, "preset": "medium"})
+
+
+class SmartCutWithoutEngineFlagTests(LayoutCase):
+    """A checkout whose cut.py has no --smart (2.x here; any release before 3.2.3): precision smart runs as precision frame
+    (--accurate), never passes --smart (the tool would refuse it), and says so in the record, the plan and a warning."""
+
+    def test_degrades_to_accurate(self):
+        self.assertFalse(locate(self.root).cut_has_smart())
+        rc, res = self.run_([{"id": "c", "type": "CUT", "input": "A", "params": {"keep": [{"start": 0.5, "end": 1.5}], "precision": "smart"}}])
+        self.assertTrue(res["ok"], res)
+        args = self.delivered_header()["args"]
+        self.assertIn("--accurate", args)
+        self.assertNotIn("--smart", args)
+        cuts = res["execution"]["operations"][0]["cuts"]
+        self.assertEqual(cuts["requested_precision"], "smart")
+        self.assertEqual((cuts["smart"]["applied"], cuts["smart"]["reason_code"]), (False, "engine_without_smart"))
+        self.assertTrue(cuts["smart"]["source"].startswith("video-editing@"))
+        self.assertTrue(any("precision smart" in w and "--smart" in w for w in res["warnings"]), res["warnings"])
+        rc, doc, err = cli(["doctor", "--json"], env=self.env)
+        self.assertFalse(doc["engine"]["compatibility"]["smart_cut"])
+
+    def test_plan_says_accurate(self):
+        doc = request([{"id": "A", "path": "in/a.mp4"}], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0.5, "end": 1.5, "precision": "smart"}}],
+                      [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        rc, res, err = cli(["plan", "-", "--json", "--workspace", self.ws], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertTrue(res["ok"], res)
+        step = res["plan"]["steps"][0]
+        self.assertEqual((step["arguments"].get("accurate"), "smart" in step["arguments"]), (True, False))
+        self.assertEqual((step["smart"]["engine_flag"], step["smart"]["available"], step["smart"]["reason_code"]), ("--accurate", False, "engine_without_smart"))
+        self.assertTrue(step["preview"]["ok"], step["preview"])
+
+
 class EngineHelpOnlyTests(LayoutCase):
     """A checkout whose contract describes no tools: flags are read from each tool's --help."""
     layout = "help-only"

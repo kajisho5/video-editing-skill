@@ -1149,3 +1149,65 @@ join; the standard 2 s fixtures run with no cut. Real media: two clips stream-co
 the output is 30/1 fps, and the cut frame (A's length rounded down to frames) is the fully covered one with A before it and
 B after it.
 
+
+## ADR-031 — Smart cut: `precision: smart`, only the partial GOPs at each cut point re-encoded
+
+**Context.** ECOSYSTEM_ROADMAP step 9's second condition, left open by ADR-019: a cut between keyframes should re-encode
+at most two GOPs, not the whole cut. ADR-019 ruled out building it here (reading packets and splicing an H.264
+re-encode into copied packets is the engine's job, ADR-001 / ADR-013). ffmpeg-skill 3.2.3 now offers it:
+`cut.py --smart` (H.264 only) re-encodes from each cut point to the next keyframe and from the last keyframe to the
+end point with libx264 matched to the source (profile, level, pixel format, reorder depth, size, SAR, colour tags),
+stream-copies the whole GOPs between, cuts the sound on the picture's frame grid and encodes it once (AAC), and checks
+the output against the source (frame count and grid, copied packet MD5s, framemd5 of the re-encoded parts, stream
+parameters and time base) before moving it into place. When it cannot match the source or a check fails, it
+re-encodes the whole cut as `--accurate` would and says why (`mode: accurate`, `smart: {applied: false, reason,
+reason_code}`, `diagnostics.fallbacks`). `--smart` with `--accurate` is refused. `probe.py --keyframes-near` lists the
+keyframes around a time.
+
+**Decision.** A fourth precision, `smart`, chosen by the caller; the default stays `frame`.
+- `smart` compiles to `cut.py --smart` (TRIM `--start` / `--end`, CUT `--segments`), never with `--accurate` or
+  `--tolerance`. `--no-keep-hevc` is passed where offered, as for `frame` (ADR-017), so the engine's whole re-encode of
+  an SDR HEVC source writes H.264. Validation is `frame`'s: duration within 0.35 s, the input frame, audio kept and the
+  re-encode codec rule (the copied GOPs are H.264, which is that rule's SDR codec, and the engine only copies H.264).
+- Capability gate (ADR-013): `--smart` is used only where the checkout's detected `cut.py` flags list it. Elsewhere
+  (any release before 3.2.3, or a checkout whose flags were not detected) the step is compiled as `frame` (`--accurate`):
+  the same frames, re-encoded whole. The request is not refused, because the cut asked for is still made exactly. The
+  record says so (`cuts.smart: {applied: false, reason_code: engine_without_smart, reason}`), the plan step says
+  `smart.engine_flag: --accurate`, a warning is added, and doctor reports `engine.compatibility.smart_cut: false`.
+- Report: `execution.operations[].cuts` (ADR-019's record) gains `smart` (the engine's document passed through,
+  OBSERVED, with `source`) and `fallbacks` (the engine's `diagnostics.fallbacks`, `[]` when none). `mode` is the
+  engine's (`smart` or `accurate`), so a fallback is visible without reading `smart`.
+- An `outputs[].encoding` profile on its output is refused (`encoding_needs_reencode`), as for `keyframe` / `auto`:
+  the copied GOPs keep the source's quality, so a profile would apply to a few frames at the edges only.
+
+**Why not the default, and why not inside `auto`.** `frame`'s promise is a full re-encode at the output's encoding
+profile, in the re-encode codec; `smart` keeps most of the source's bitstream, so it changes what a caller who asked
+for a profile or a uniform encode gets. `auto`'s promise (ADR-019) is lossless first: a cut on a keyframe is the
+source's packets byte for byte, and on 3.x a cut whose edit-list copy lands within 0.2 s is a copy too. `--smart`
+re-encodes the sound and carries the parameter sets in band, so routing `auto` through it would turn results that are
+lossless today into partial re-encodes, and choosing per cut would need a second engine pass. Both stay as they were;
+the caller who wants frame accuracy without a whole re-encode asks for `smart`. A later change can revisit the default
+once the agent has used `smart` on real long-form material.
+
+**Not applied.** `options.segment_cache` stays a `frame`-precision CUT feature (ADR-018): its parts are joined by
+`join.py --copy`, and copy-joining parts that each carry their own in-band parameter sets is not verified by the engine.
+The cuts CONDENSE, PUNCH_IN and a stinger CONCAT make inside themselves keep `--accurate`: their result is re-encoded by
+the next step (fit / crop / join / overlay) anyway, so a smart cut there saves nothing.
+
+**Versioning.** `operations.TRIM` / `CUT.parameters.precision` gain a value (pinned): `contract_version` "5.0" → "6.0"
+and `version` 0.5.1 → 0.6.0, by hand in this change (ADR-029: the release workflow does not bump `contract_version`).
+`versioning.next["0.6.0"]` moves to `next["0.7.0"]` unchanged. Additive: the `smart_cut` block,
+`engine.compatibility.detected`, doctor's `engine.compatibility.smart_cut`, `plan.steps[].smart`.
+`compiler.ALLOWED_FLAGS["cut"]` gains `smart`. video-production-agent widens its version gate and re-pins.
+
+**Verified.** `tests/test_integration.py::SmartCutTests` against the real engine (CI: ffmpeg-skill 0.11.0, 2.24.1, 3.0.0
+and main), on an 8 s, 30 fps H.264 clip with a closed GOP of 30:
+- TRIM 2.5 to 6.5 s: 120 frames. With `--smart`: `mode: smart`, parts re-encode 2.5-3.0 and 6.0-6.5 and copy 3.0-6.0
+  (the keyframes `probe.py --keyframes-near` reports), 30 frames re-encoded (at most two GOPs), and the 90 packets of
+  the GOPs from 3 to 6 s are the source's in order (MD5 with the parameter-set and delimiter NAL units removed on both
+  sides). Without it: `reason_code: engine_without_smart` and the warning.
+- CUT of two ranges: each range re-encodes at most two GOPs; at least three GOPs copied.
+- An MPEG-4 Part 2 source: the engine falls back (`mode: accurate`, `reason_code: codec`, `smart_fallback` in
+  `fallbacks`) and the output is H.264.
+Fake-engine tests (`tests/test_engine_compat.py`): argv, record, plan, the engine fallback, the degraded path on a
+checkout without `--smart`, and the refused encoding profile.

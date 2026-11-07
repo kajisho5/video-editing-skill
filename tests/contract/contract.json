@@ -3,8 +3,8 @@
   "skill_id": "video-editing",
   "name": "Video Editing Skill",
   "package": "video-editing-skill",
-  "version": "0.5.1",
-  "contract_version": "5.0",
+  "version": "0.6.0",
+  "contract_version": "6.0",
   "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, rotate/flip, image overlay, freeze frame, reverse, still image to clip) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing decisions, no LLM, no commands.",
   "role": "execution",
   "repository": "https://github.com/kajisho5/video-editing-skill",
@@ -175,7 +175,7 @@
     {
       "tool_id": "video-editing/concat",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "CONCAT",
       "capability": "video.concat",
       "description": "join two or more inputs in order, optionally with a transition, conforming size / fps",
@@ -229,7 +229,7 @@
     {
       "tool_id": "video-editing/condense",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "CONDENSE",
       "capability": "video.condense",
       "description": "apply a rule per labelled span (cut, keep, or speed by a factor) and keep everything else by params.default: approved proposals (retakes, silences, static spans) become segments here",
@@ -280,7 +280,7 @@
     {
       "tool_id": "video-editing/crop",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "CROP",
       "capability": "video.crop",
       "description": "keep exactly the pixel rectangle {x, y, width, height} the caller gives (no scaling, padding or aspect maths; FILL crops to an aspect ratio)",
@@ -331,7 +331,7 @@
     {
       "tool_id": "video-editing/cut",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "CUT",
       "capability": "video.cut",
       "description": "keep several ranges of one input, joined in the order given (removes everything else)",
@@ -347,7 +347,7 @@
       "input_arity": "one",
       "parameters": {
         "keep": "[{start, end}, ...] in output order",
-        "precision": "frame | keyframe | auto"
+        "precision": "frame | keyframe | auto | smart"
       },
       "media": {
         "inputs": "one video",
@@ -379,7 +379,7 @@
     {
       "tool_id": "video-editing/fill",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "FILL",
       "capability": "video.fill",
       "description": "centre-crop into an aspect ratio (edges are lost)",
@@ -429,7 +429,7 @@
     {
       "tool_id": "video-editing/fit",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "FIT",
       "capability": "video.fit",
       "description": "letterbox / pillarbox into an aspect ratio (nothing is cropped)",
@@ -479,7 +479,7 @@
     {
       "tool_id": "video-editing/freeze",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "FREEZE",
       "capability": "video.freeze",
       "description": "hold one frame for a number of seconds: at a time (the rest of the clip plays on after the hold) or, without one, the last frame at the end",
@@ -528,7 +528,7 @@
     {
       "tool_id": "video-editing/image_insert",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "IMAGE_INSERT",
       "capability": "video.image_insert",
       "description": "turn a still image (title card, end slate) into a silent video clip of a set duration that CONCAT and every other type can take",
@@ -578,7 +578,7 @@
     {
       "tool_id": "video-editing/overlay",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "OVERLAY",
       "capability": "video.overlay",
       "description": "composite a still image (logo, lower-third PNG) at a named position for a time range",
@@ -632,7 +632,7 @@
     {
       "tool_id": "video-editing/punch_in",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "PUNCH_IN",
       "capability": "video.punch_in",
       "description": "zoom in by a scale on a subject box the caller gives (e.g. detection-skill's face box) for a time range: a hard cut in and out, the window centred on the box and kept inside the frame, the frame size unchanged",
@@ -683,7 +683,7 @@
     {
       "tool_id": "video-editing/resize",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "RESIZE",
       "capability": "video.resize",
       "description": "scale to a width keeping the aspect ratio",
@@ -731,7 +731,7 @@
     {
       "tool_id": "video-editing/reverse",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "REVERSE",
       "capability": "video.reverse",
       "description": "play the input backwards, picture and audio",
@@ -777,7 +777,7 @@
     {
       "tool_id": "video-editing/rotate",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "ROTATE",
       "capability": "video.rotate",
       "description": "turn the picture clockwise by 90/180/270 and/or mirror it horizontally or vertically (no scaling, padding or cropping)",
@@ -825,7 +825,7 @@
     {
       "tool_id": "video-editing/speed",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "SPEED",
       "capability": "video.speed",
       "description": "retime by a constant factor (video and pitch-preserved audio)",
@@ -874,7 +874,7 @@
     {
       "tool_id": "video-editing/trim",
       "skill_id": "video-editing",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "operation_type": "TRIM",
       "capability": "video.trim",
       "description": "keep one source time range [start, end)",
@@ -891,7 +891,7 @@
       "parameters": {
         "start": "time",
         "end": "time (> start)",
-        "precision": "frame (default, re-encode) | keyframe (lossless when possible) | auto (stream copy when the copy lands within 0.2 s of the range, e.g. an in point on a keyframe; else a frame-accurate re-encode; reported per cut)"
+        "precision": "frame (default, re-encode) | keyframe (lossless when possible) | auto (stream copy when the copy lands within 0.2 s of the range, e.g. an in point on a keyframe; else a frame-accurate re-encode; reported per cut) | smart (frame-accurate; only the partial GOPs at each cut point re-encoded, the whole GOPs between copied, verified against the source; else the whole cut re-encoded, with the reason; contract.smart_cut)"
       },
       "media": {
         "inputs": "one video",
@@ -963,7 +963,7 @@
       "arity": "one",
       "parameters": {
         "keep": "[{start, end}, ...] in output order",
-        "precision": "frame | keyframe | auto"
+        "precision": "frame | keyframe | auto | smart"
       }
     },
     "FILL": {
@@ -1074,7 +1074,7 @@
       "parameters": {
         "start": "time",
         "end": "time (> start)",
-        "precision": "frame (default, re-encode) | keyframe (lossless when possible) | auto (stream copy when the copy lands within 0.2 s of the range, e.g. an in point on a keyframe; else a frame-accurate re-encode; reported per cut)"
+        "precision": "frame (default, re-encode) | keyframe (lossless when possible) | auto (stream copy when the copy lands within 0.2 s of the range, e.g. an in point on a keyframe; else a frame-accurate re-encode; reported per cut) | smart (frame-accurate; only the partial GOPs at each cut point re-encoded, the whole GOPs between copied, verified against the source; else the whole cut re-encoded, with the reason; contract.smart_cut)"
       }
     }
   },
@@ -1119,7 +1119,8 @@
         "the ffmpeg-skill tool of each unsupported type (doctor: unsupported[].engine_tool_status)",
         "encoding quality flag: --quality where offered, else --crf (same CRF scale)",
         "probe colour key: video.bt2020_or_hdr where present, else video.hdr (same meaning)",
-        "cut.py's SDR HEVC re-encode codec: --no-keep-hevc passed where offered (3.0+), so a frame-precision TRIM / CUT writes H.264 for SDR like every other operation"
+        "cut.py's SDR HEVC re-encode codec: --no-keep-hevc passed where offered (3.0+), so a frame-precision TRIM / CUT writes H.264 for SDR like every other operation",
+        "cut.py --smart (3.2.3+): a precision smart TRIM / CUT uses it where offered, else --accurate (contract.smart_cut)"
       ],
       "floor_reason": "overlay.py bounds a looped-image composite with -t only from 0.10.0 (behaviour, not a flag)"
     }
@@ -1315,7 +1316,7 @@
     "schema": "video-editing/response@1",
     "skill": {
       "id": "video-editing",
-      "version": "0.5.1"
+      "version": "0.6.0"
     },
     "status": "completed | reused",
     "project": "...",
@@ -1761,7 +1762,7 @@
     "after_each_operation": [
       "file exists, non-empty, readable",
       "probe: video stream, duration, frame size",
-      "duration within tolerance of the timeline (frame 0.35 s, keyframe 1.5 s)",
+      "duration within tolerance of the timeline (frame / auto / smart 0.35 s, keyframe 1.5 s)",
       "frame size / aspect / width as requested, or equal to the input for TRIM / CUT / SPEED / OVERLAY / FREEZE / REVERSE",
       "frame rate as requested",
       "audio stream kept when the input(s) had one"
@@ -1774,7 +1775,7 @@
     "ok": "bool",
     "skill": {
       "id": "video-editing",
-      "version": "0.5.1"
+      "version": "0.6.0"
     },
     "contract": "schema ids",
     "engine": "ffmpeg-skill location, version, ffmpeg / ffprobe, missing capabilities",
@@ -1794,8 +1795,8 @@
     "problems": "…"
   },
   "versioning": {
-    "version": "0.5.1",
-    "contract_version": "5.0",
+    "version": "0.6.0",
+    "contract_version": "6.0",
     "pinned_blocks": [
       "schema",
       "skill_id",
@@ -1817,7 +1818,7 @@
       "tools[].parameters"
     ],
     "next": {
-      "0.6.0": [
+      "0.7.0": [
         "RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag (docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
         "OVERLAY video-layer + chroma-key params (ffmpeg-skill overlay.py --video/--chromakey), per ADR-002's own \"extend OVERLAY rather than add a type\" prescription -- flagged, not decided or scheduled here (see kajisho5/video-editing-skill#11 item 2)",
         "stabilize / sequence / background: capability ownership (here, elsewhere, or nowhere) not yet decided (see kajisho5/video-editing-skill#11 item 3)",
@@ -1853,7 +1854,7 @@
     "refused": [
       "unknown keys (INVALID_REQUEST)",
       "crf or preset outside the vocabulary (INVALID_REQUEST)",
-      "a profile on an output produced by TRIM / CUT with precision keyframe or auto: stream copy ignores it (INVALID_REQUEST)",
+      "a profile on an output produced by TRIM / CUT with precision keyframe, auto or smart: stream copy ignores it (INVALID_REQUEST)",
       "two outputs of one operation with different profiles (DEPENDENCY_ERROR)"
     ]
   },
@@ -2016,6 +2017,22 @@
     "needs": "ffmpeg-skill/join --copy (from ffmpeg-skill 2.24.0, detected); without it a request asking for the cache is refused before execution (TOOL_ERROR)",
     "reuse_false": "options.reuse false also bypasses the segment cache (every part is encoded again and the cache is refreshed)"
   },
+  "smart_cut": {
+    "request_field": "TRIM / CUT params.precision: smart (opt-in; the default stays frame)",
+    "engine_call": "ffmpeg-skill/cut --smart (TRIM: --start --end; CUT: --segments), plus --no-keep-hevc where offered",
+    "what_it_does": "a cut point between keyframes is re-encoded from that point to the next keyframe, and from the last keyframe to the end point; the whole GOPs between are the source's packets; the sound is cut on the picture's frame grid and encoded once (AAC). The engine checks the result against the source (frame count and grid, copied packets, decoded frames of each re-encoded part, stream parameters) before it is written; the result is frame-accurate like precision frame",
+    "engine_fallback": "a source the engine cannot match (not H.264 8-bit 4:2:0 Baseline / Main / High, interlaced, variable-rate, HDR, an open GOP at a copy boundary, ...) or a check that fails: the engine re-encodes the whole cut (mode accurate) and says why (smart.reason, smart.reason_code, diagnostics.fallbacks); the operation still succeeds",
+    "engine_without_smart": "an ffmpeg-skill whose cut.py has no --smart (detected; before 3.2.3): the cut runs as precision frame (--accurate), a warning is added, and the record says smart.applied false, reason_code engine_without_smart",
+    "refused": [
+      "an outputs[].encoding profile on its output (INVALID_REQUEST encoding_needs_reencode): the copied GOPs keep the source's quality"
+    ],
+    "not_applied": [
+      "options.segment_cache (frame precision only)",
+      "the cuts CONDENSE / PUNCH_IN / a stinger CONCAT make inside themselves (their result is re-encoded by the next step anyway)"
+    ],
+    "validation": "as precision frame: duration within 0.35 s, the input frame, audio kept, and the re-encode codec rule (H.264 for SDR)",
+    "report": "execution.operations[].cuts: cut.py's mode (smart | accurate), reencoded, reencode_reason, duration_delta_seconds, ..., fallbacks (the engine's diagnostics.fallbacks) and smart: {applied, parts: [{segment, kind: reencode | copy, start, end, frames}], reencoded_frames, copied_frames, checks, source} or {applied: false, reason, reason_code, source}; plan.steps[].smart: {engine_flag: --smart | --accurate, available, reason_code, reason}"
+  },
   "frame_semantics": {
     "RESIZE": {
       "changes": "frame size",
@@ -2086,7 +2103,8 @@
       "HDR sources encoded HEVC 10-bit (the output codec is hevc; a warning is reported)",
       "audio codec / bitrate / sample rate (AAC 192 kb/s)",
       "keyframe snapping for precision keyframe TRIM / CUT",
-      "copy-or-re-encode per cut for precision auto TRIM / CUT (cut.py --tolerance 0.2; the engine's choice is reported per cut)"
+      "copy-or-re-encode per cut for precision auto TRIM / CUT (cut.py --tolerance 0.2; the engine's choice is reported per cut)",
+      "which GOPs a precision smart TRIM / CUT re-encodes and whether the result verifies against the source (cut.py --smart; a fallback to a whole re-encode is reported with its reason)"
     ],
     "by_stream": {
       "video_only": "all operations allowed, OVERLAY included (ffmpeg-skill >=0.10.0 bounds the looped-image overlay with an explicit -t instead of -shortest); the output has no audio stream (validated)",

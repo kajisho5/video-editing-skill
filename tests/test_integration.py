@@ -785,6 +785,120 @@ class KeyframeAwareCutTests(unittest.TestCase):
             self.assertAlmostEqual(duration(path), 2.5, delta=0.1)
 
 
+def stripped_packet_md5s(path):
+    """md5 of every video packet with the parameter-set and delimiter NAL units removed (Annex B): a packet copied into a
+    stream that carries its SPS / PPS in band hashes the same as the source's."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0:v", "-c", "copy", "-bsf:v",
+                          "h264_mp4toannexb,filter_units=remove_types=7|8|9", "-f", "framemd5", "-"],
+                         stdout=subprocess.PIPE, check=True, text=True).stdout
+    return [ln.rsplit(",", 1)[1].strip() for ln in out.splitlines() if ln and not ln.startswith("#")]
+
+
+def video_frames(path) -> int:
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets",
+                          "-of", "csv=p=0", path], stdout=subprocess.PIPE, check=True, text=True).stdout
+    return int(out.strip())
+
+
+@unittest.skipUnless(READY, REASON)
+class SmartCutTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 9 (ADR-031): precision smart, a cut between keyframes. Where ffmpeg-skill's cut.py has --smart
+    (3.2.3+), only the partial GOP after the in point and the one before the out point are re-encoded (at most two GOPs),
+    the whole GOPs between are the source's packets, and the record lists the parts. Where it has not, the cut is the
+    whole re-encode precision frame makes, and the record and a warning say why."""
+
+    GOP = 30   # 30 fps, a closed GOP of 30: a keyframe every second exactly
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-smart-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "gop30.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "8", "-c:v", "libx264", "-preset", "veryfast",
+                        "-g", "30", "-keyint_min", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.src], check=True)
+        cls.mpeg4 = os.path.join(cls.media, "mpeg4.mp4")   # not H.264: the engine cannot match it and re-encodes the whole cut
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4", "-c:v", "mpeg4", "-g", "30",
+                        "-c:a", "aac", cls.mpeg4], check=True)
+        cls.smart = FFMPEG_SKILL.cut_has_smart()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def run_(self, src, op):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        doc = request([{"id": "S", "path": src}], [{"id": "t", "input": "S", **op}], [{"id": "o", "operation": "t", "path": "out/t.mp4"}])
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertEqual(rc, 0, json.dumps(out.get("error") if isinstance(out, dict) else out) + err)
+        return os.path.join(ws, "out", "t.mp4"), out
+
+    def keyframes_near(self, times):
+        """The engine's own keyframe list (probe.py --keyframes-near, 3.2.3+); the fixture's known GOP where it has none."""
+        if FFMPEG_SKILL.missing_flags("probe", ["--keyframes-near"]):
+            return [{"at": t, "before": float(int(t)), "after": float(int(t) + 1)} for t in times]
+        proc = subprocess.run([sys.executable, FFMPEG_SKILL.script("probe"), self.src, "--keyframes-near", ",".join(f"{t:g}" for t in times), "--json"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True)
+        return json.loads(proc.stdout.decode("utf-8"))["keyframes"]
+
+    def test_trim_between_keyframes_reencodes_at_most_two_gops(self):
+        path, out = self.run_(self.src, {"type": "TRIM", "params": {"start": 2.5, "end": 6.5, "precision": "smart"}})
+        cuts = out["execution"]["operations"][0]["cuts"]
+        self.assertEqual(cuts["requested_precision"], "smart")
+        self.assertEqual(video_frames(path), 120)   # frame-accurate either way: 4 s at 30 fps
+        self.assertAlmostEqual(duration(path), 4.0, delta=0.05)
+        if not self.smart:
+            self.assertEqual((cuts["smart"]["applied"], cuts["smart"]["reason_code"]), (False, "engine_without_smart"), cuts)
+            self.assertTrue(any("precision smart" in w for w in out["warnings"]), out["warnings"])
+            return
+        self.assertEqual(cuts["mode"], "smart", cuts)
+        smart = cuts["smart"]
+        self.assertTrue(smart["applied"], smart)
+        kf_in, kf_out = self.keyframes_near([2.5, 6.5])
+        self.assertEqual((kf_in["after"], kf_out["before"]), (3.0, 6.0))
+        parts = [(p["kind"], round(p["start"], 3), round(p["end"], 3)) for p in smart["parts"]]
+        self.assertEqual(parts, [("reencode", 2.5, kf_in["after"]), ("copy", kf_in["after"], kf_out["before"]), ("reencode", kf_out["before"], 6.5)])
+        self.assertLessEqual(smart["reencoded_frames"], 2 * self.GOP)
+        self.assertEqual((smart["reencoded_frames"], smart["copied_frames"]), (30, 90))
+        # independently of the engine's own check: the 90 packets of the GOPs from 3 s to 6 s are the source's, in order,
+        # once the in-band parameter sets are set aside
+        got, src = stripped_packet_md5s(path), stripped_packet_md5s(self.src)
+        copied = src[3 * self.GOP:6 * self.GOP]
+        at = got.index(copied[0])
+        self.assertEqual(got[at:at + len(copied)], copied)
+        self.assertEqual(out["warnings"], [])
+
+    def test_cut_ranges_each_reencode_only_their_edges(self):
+        path, out = self.run_(self.src, {"type": "CUT", "params": {"keep": [{"start": 0.5, "end": 2.0}, {"start": 4.25, "end": 7.5}], "precision": "smart"}})
+        cuts = out["execution"]["operations"][0]["cuts"]
+        self.assertAlmostEqual(video_frames(path), 45 + 97.5, delta=1)   # 1.5 s + 3.25 s at 30 fps, each range on whole frames
+        if not self.smart:
+            self.assertEqual(cuts["smart"]["reason_code"], "engine_without_smart")
+            return
+        self.assertEqual(cuts["mode"], "smart", cuts)
+        for seg in (1, 2):
+            reencoded = sum(p["frames"] for p in cuts["smart"]["parts"] if p["segment"] == seg and p["kind"] == "reencode")
+            self.assertLessEqual(reencoded, 2 * self.GOP, cuts["smart"]["parts"])
+        self.assertGreaterEqual(cuts["smart"]["copied_frames"], 3 * self.GOP)
+
+    def test_a_source_the_engine_cannot_match_falls_back_and_says_why(self):
+        path, out = self.run_(self.mpeg4, {"type": "TRIM", "params": {"start": 0.5, "end": 2.5, "precision": "smart"}})
+        cuts = out["execution"]["operations"][0]["cuts"]
+        self.assertEqual(video_frames(path), 60)
+        self.assertEqual(next(st for st in probe(path)["streams"] if st["codec_type"] == "video")["codec_name"], "h264")
+        self.assertFalse(cuts["smart"]["applied"])
+        if not self.smart:
+            self.assertEqual(cuts["smart"]["reason_code"], "engine_without_smart")
+            return
+        self.assertEqual(cuts["mode"], "accurate")
+        self.assertEqual(cuts["smart"]["reason_code"], "codec")
+        self.assertTrue(cuts["smart"]["reason"])
+        self.assertIn("smart_fallback", [f["code"] for f in cuts["fallbacks"]])
+
+
 def rgb_frame(path, t, w, h):
     """One decoded frame at time t as rows of (r, g, b)."""
     raw = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{t:.3f}", "-i", path, "-frames:v", "1", "-f", "rawvideo",

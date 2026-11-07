@@ -510,8 +510,16 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
   An `auto` precision `TRIM` / `CUT` (ADR-019) is a stream copy where the copy lands within 0.2 s of the asked range (an
   in point on a keyframe gives the source's packets byte for byte) and a frame-accurate re-encode of that cut otherwise;
   `execution.operations[].cuts` reports the engine's choice (`mode` copy / accurate / hybrid, `reencode_reason`,
-  `segment_precision` per range, `duration_delta_seconds`). It re-encodes a whole cut, not only the GOPs at its edges
-  (that needs ffmpeg-skill's cut-point candidates, Velisa proposal 1).
+  `segment_precision` per range, `duration_delta_seconds`). It re-encodes a whole cut, not only the GOPs at its edges.
+  A `smart` precision `TRIM` / `CUT` (0.6.0, ADR-031; opt-in, the default stays `frame`) is frame-accurate and
+  re-encodes only the partial GOPs at each cut point: ffmpeg-skill `cut.py --smart` (3.2.3+) copies the whole GOPs
+  between, encodes the sound once, and checks the result against the source before writing it.
+  `execution.operations[].cuts` carries `mode` (`smart`, or `accurate` when the engine fell back), `fallbacks` and
+  `smart` (`applied`, `parts` `[{segment, kind: reencode | copy, start, end, frames}]`, or `reason` / `reason_code`).
+  The engine falls back to a whole re-encode, with the reason, for a source it cannot match (not 8-bit 4:2:0 H.264,
+  interlaced, variable-rate, HDR, an open GOP at a copy boundary, ...). With an ffmpeg-skill whose `cut.py` has no
+  `--smart` the cut runs as `frame` (`--accurate`), with `reason_code: engine_without_smart` and a warning.
+  An `outputs[].encoding` profile is refused on it, as on `keyframe` / `auto`.
 - Source durations come from the container; ranges are checked against them with 0.1 s slack.
 - `SPEED` computes its target duration from the timeline; the tool retimes to that duration (audio via `atempo`).
   Optional `smooth: blend | interpolate` (0.4.0, ADR-012) maps to `fit.py`'s own `--smooth` flag and only affects a
