@@ -35,7 +35,9 @@ Layouts (make_fake_skill(layout=...), written to <root>/LAYOUT; ADR-013's capabi
               unless --overwrite; probe's hdr is PQ/HLG only and bt2020_or_hdr carries the old meaning
   help-only   2.x flags, but contract --json describes no tools: flags are only readable from each tool's --help
   3.x         3.0+: 2.x plus cut.py --keep-hevc / --no-keep-hevc / --edit-list / --no-edit-list / --vfr-guard; cut.py
-              re-encodes an SDR HEVC source as HEVC unless --no-keep-hevc (every other tool, and 2.x cut.py: H.264)
+              re-encodes an SDR HEVC source as HEVC unless --no-keep-hevc (every other tool, and 2.x cut.py: H.264);
+              cut.py --smart (3.2.3+): an H.264 source reports mode smart and smart.parts (a keyframe every second), any
+              other is reported as a fallback (mode accurate, smart.applied false, reason_code codec, diagnostics.fallbacks)
 With a layout, a tool exits 2 (argparse "unrecognized arguments") on any flag its layout does not list. A source whose
 name contains "bt2020" is BT.2020 SDR: the engine routes it like HDR (hevc), and only 2.x/help-only probe say hdr: false.
 A source whose name contains "sdrhevc" is an SDR HEVC file (codec hevc, hdr false: a phone clip).
@@ -218,7 +220,34 @@ SCRIPT = textwrap.dedent('''
                                            "codec": codec, "encoding": encoding}).encode())
     if mode == "noisy":
         sys.stdout.write("some junk line\\n")
-    emit({"status": "completed", "output": out, "dry_run": False, "commands": ["ffmpeg -i x " + out]})
+    extra = {}
+    if name == "cut" and "--smart" in args:   # cut.py --smart (3.2.3+): H.264 only; anything else is re-encoded whole, with the reason
+        src = probe_doc([a for a in args[:args.index("-o")] if not a.startswith("--")][0])["video"]
+        if src.get("codec") != "h264":
+            reason = "--smart matches the source with libx264, so it takes H.264; this source is " + str(src.get("codec"))
+            extra = {"mode": "accurate", "reencoded": True, "reencode_reason": ["smart_fallback"],
+                     "smart": {"applied": False, "reason": reason, "reason_code": "codec"},
+                     "diagnostics": {"fallbacks": [{"code": "smart_fallback", "message": "--smart: " + reason, "reason_code": "codec"}]}}
+        else:
+            segs = [(float(a), float(b)) for a, b in (x.split("-") for x in flag("--segments").split(","))] if flag("--segments") else [(float(flag("--start", "0")), float(flag("--end")))]
+            parts = []
+            for i, (a, b) in enumerate(segs, 1):
+                k0, k1 = float(int(a) + (0 if a == int(a) else 1)), float(int(b))   # a keyframe every second
+                if k1 < k0:   # no keyframe inside: one partial GOP
+                    parts.append({"segment": i, "kind": "reencode", "start": a, "end": b, "frames": round((b - a) * 30)})
+                    continue
+                if a < k0:
+                    parts.append({"segment": i, "kind": "reencode", "start": a, "end": k0, "frames": round((k0 - a) * 30)})
+                if k1 > k0:
+                    parts.append({"segment": i, "kind": "copy", "start": k0, "end": k1, "frames": round((k1 - k0) * 30)})
+                if k1 < b:
+                    parts.append({"segment": i, "kind": "reencode", "start": k1, "end": b, "frames": round((b - k1) * 30)})
+            re = sum(p["frames"] for p in parts if p["kind"] == "reencode")
+            cp = sum(p["frames"] for p in parts if p["kind"] == "copy")
+            extra = {"mode": "smart", "reencoded": True, "reencode_reason": ["smart"],
+                     "smart": {"applied": True, "parts": parts, "reencoded_frames": re, "copied_frames": cp,
+                               "checks": {"frames": re + cp, "grid_worst_seconds": 0.0, "copied_packets_equal": cp, "frames_decoded_equal": re + cp}}}
+    emit({"status": "completed", "output": out, "dry_run": False, "commands": ["ffmpeg -i x " + out], **extra})
 ''')
 
 
@@ -261,7 +290,7 @@ _LAYOUT_FLAGS = {"0.10": ["--crf", "--preset"], "0.x": ["--crf", "--preset"], "1
 # overlay.py --place from 2.x (stinger, ADR-023)
 _LAYOUT_EXTRA = {"2.x": {"join": ["--copy"], "overlay": ["--place"], "scenes": ["--shots"], "export": ["--max-mb"]},
                  "help-only": {"join": ["--copy"], "overlay": ["--place"], "scenes": ["--shots"], "export": ["--max-mb"]},
-                 "3.x": {"cut": ["--keep-hevc", "--no-keep-hevc", "--edit-list", "--no-edit-list", "--vfr-guard"], "join": ["--copy"], "overlay": ["--place"],
+                 "3.x": {"cut": ["--keep-hevc", "--no-keep-hevc", "--edit-list", "--no-edit-list", "--vfr-guard", "--smart"], "join": ["--copy"], "overlay": ["--place"],
                          "scenes": ["--shots"], "export": ["--max-mb"]}}
 
 

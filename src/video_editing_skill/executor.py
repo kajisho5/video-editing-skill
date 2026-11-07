@@ -26,7 +26,9 @@ from .project import EditProject
 from .timebase import Time
 from .timeline import Clip, build_timelines
 
-DURATION_TOLERANCE = {"frame": 0.35, "keyframe": 1.5, "auto": 0.35, "default": 0.35}
+DURATION_TOLERANCE = {"frame": 0.35, "keyframe": 1.5, "auto": 0.35, "smart": 0.35, "default": 0.35}
+SMART_UNAVAILABLE = ("this ffmpeg-skill checkout's cut.py has no --smart (ffmpeg-skill 3.2.3+): the whole cut is re-encoded "
+                     "frame-accurately, as precision frame (cut.py --accurate)")
 FPS_TOLERANCE = 0.02
 ASPECT_TOLERANCE_PX = 2      # |height - width * ah / aw| for FIT / FILL without an explicit width
 
@@ -91,6 +93,7 @@ class Executor:
         self.produced: Dict[str, str] = {}          # op ref -> validated intermediate path
         self.keys: Dict[str, str] = {}              # op ref -> idempotency key
         self.request_sha256: Optional[str] = None   # sha256 of the canonical request document (set by the CLI)
+        self.smart_unavailable: Dict[str, str] = {}  # op ref -> why a precision smart TRIM / CUT runs as --accurate (ADR-031)
 
     # ------------------------------------------------------------ preparation
     def probe_sources(self) -> None:
@@ -124,6 +127,7 @@ class Executor:
         """Every operation's engine tool and its encoders / filters must be present (ffmpeg-skill doctor) before anything runs;
         a gap is TOOL_ERROR (not retryable), never a late ffmpeg failure."""
         from .contract import TOOL_REQUIREMENTS
+        self._gate_smart()
         for ref in self.project.order:
             op = self.project.operations[ref]
             script = op.tool.split("/", 1)[1]
@@ -165,6 +169,31 @@ class Executor:
             if gaps:
                 raise EditError("TOOL_ERROR", f"operation {ref!r} ({op.type}) needs {', '.join(gaps)}, which ffmpeg-skill's doctor did not find",
                                 {"operation": ref, "tool": op.tool, "missing": gaps}, retryable=False)
+
+    def _gate_smart(self) -> None:
+        """precision smart compiles to cut.py --smart. A checkout whose cut.py does not offer it (detected, ADR-013) runs the
+        same cut as precision frame does (--accurate): the result is the same frames, re-encoded whole. The record and
+        the plan say so (smart.applied false, reason_code engine_without_smart), and a warning is added (ADR-031)."""
+        for ref in self.project.order:
+            op = self.project.operations[ref]
+            st = self.steps[ref]
+            if op.type not in ("TRIM", "CUT") or op.params.get("precision") != "smart" or not st.args.get("smart"):
+                continue
+            if self.skill.cut_has_smart():
+                continue
+            st.args.pop("smart")
+            st.args["accurate"] = True
+            self.smart_unavailable[ref] = SMART_UNAVAILABLE
+            self.project.warnings.append(f"operation {ref!r}: precision smart: {SMART_UNAVAILABLE}")
+
+    def smart_plan(self, ref: str) -> Optional[Dict[str, Any]]:
+        """What a precision smart TRIM / CUT will ask the engine for: None for any other operation."""
+        op = self.project.operations[ref]
+        if op.type not in ("TRIM", "CUT") or op.params.get("precision") != "smart":
+            return None
+        if ref in self.smart_unavailable:
+            return {"engine_flag": "--accurate", "available": False, "reason_code": "engine_without_smart", "reason": self.smart_unavailable[ref]}
+        return {"engine_flag": "--smart", "available": True, "reason_code": None, "reason": None}
 
     # ------------------------------------------------------------ media compatibility
     def profile(self, ref: str) -> Dict[str, Any]:
@@ -280,6 +309,9 @@ class Executor:
 
     @staticmethod
     def _reencodes(op) -> bool:
+        """False only for the lossless-first cuts (keyframe / auto), whose result may be the source's codec as stored. A
+        precision smart cut counts as a re-encode: what it encodes (the partial GOPs and the sound, or the whole cut when
+        the engine falls back) follows the re-encode codec rule, and what it copies is H.264 like that rule's SDR output."""
         return not (op.type in ("TRIM", "CUT") and op.params.get("precision") in ("keyframe", "auto"))
 
     @staticmethod
@@ -506,6 +538,9 @@ class Executor:
                 d["condense"] = self.condense_plan(ref)
             if self.project.operations[ref].stinger is not None and self.source_probes:
                 d["stinger"] = self.stinger_plan(ref)
+            smart = self.smart_plan(ref)
+            if smart is not None:
+                d["smart"] = smart
             if preview:
                 d["preview"] = self._preview(ref)
             steps.append(d)
@@ -701,19 +736,38 @@ class Executor:
             self.results[-1]["condense"] = self.condense_plan(ref)
         if op.stinger is not None:
             self.results[-1]["stinger"] = self.stinger_plan(ref)
-        if engine_doc is not None and op.type in ("TRIM", "CUT") and op.params.get("precision") in ("keyframe", "auto"):
+        if engine_doc is not None and op.type in ("TRIM", "CUT") and op.params.get("precision") in ("keyframe", "auto", "smart"):
             self.results[-1]["cuts"] = self._cut_report(op, engine_doc)
 
     def _cut_report(self, op, doc: Dict[str, Any]) -> Dict[str, Any]:
         """What cut.py measured and chose for a lossless-first TRIM / CUT (ADR-019): copy, accurate (re-encoded) or hybrid
-        (a copy that missed the tolerance and was re-encoded), why, and how far the result is from the asked range. The
-        engine's own keys, passed through as OBSERVED; a key an older release does not report is null, never guessed."""
+        (a copy that missed the tolerance and was re-encoded), why, and how far the result is from the asked range; for a
+        precision smart one (ADR-031) also mode smart / accurate and the `smart` document. The engine's own keys, passed
+        through as OBSERVED; a key an older release does not report is null, never guessed. `fallbacks` is the engine's
+        diagnostics.fallbacks ([] when it reports none)."""
         keys = ("mode", "reencoded", "reencode_reason", "precision", "segment_precision", "segment_end_snap_seconds", "duration_delta_seconds",
                 "nearest_keyframes", "edit_list", "keyframe_snapped")
         rep: Dict[str, Any] = {"requested_precision": op.params.get("precision"), "provenance": "OBSERVED", "source": f"ffmpeg-skill/cut@{self.skill.version}"}
         rep.update({k: doc.get(k) for k in keys})
         rep["ranges"] = len(op.params["keep"]) if op.type == "CUT" else 1
+        fallbacks = (doc.get("diagnostics") or {}).get("fallbacks") if isinstance(doc.get("diagnostics"), dict) else None
+        rep["fallbacks"] = fallbacks if isinstance(fallbacks, list) else []
+        rep["smart"] = self._smart_report(op, doc)
         return rep
+
+    def _smart_report(self, op, doc: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """precision smart (ADR-031): cut.py's own `smart` document (applied, parts [{segment, kind: reencode | copy, start,
+        end, frames}], reencoded_frames, copied_frames, checks; or applied false with reason / reason_code when it fell back
+        to the whole re-encode), passed through as OBSERVED. A checkout without --smart: applied false, reason_code
+        engine_without_smart, from this skill (nothing was asked of the engine). None for keyframe / auto."""
+        if op.params.get("precision") != "smart":
+            return None
+        if op.ref in self.smart_unavailable:
+            return {"applied": False, "reason_code": "engine_without_smart", "reason": self.smart_unavailable[op.ref], "source": f"{SKILL_ID}@{VERSION}"}
+        smart = doc.get("smart")
+        if not isinstance(smart, dict):
+            return {"applied": False, "reason_code": "not_reported", "reason": "cut.py --smart returned no smart document", "source": f"ffmpeg-skill/cut@{self.skill.version}"}
+        return {**smart, "source": f"ffmpeg-skill/cut@{self.skill.version}"}
 
     def _run_segments(self, ref: str, partial: str, t0: str) -> tuple:
         """The segment render of a CUT (ADR-018): every keep range is taken from the cache when its key is there, else cut on

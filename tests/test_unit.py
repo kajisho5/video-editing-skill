@@ -9,7 +9,7 @@ from helpers import make_workspace, request, write_fake_media
 from video_editing_skill import contract, contract_check, operations
 from video_editing_skill.canonical import canonical_json, stable_hash
 from video_editing_skill.errors import ERROR_CODES, EXIT_CODES, EditError
-from video_editing_skill.compiler import compile_operation, compile_project
+from video_editing_skill.compiler import ALLOWED_FLAGS, compile_operation, compile_project
 from video_editing_skill.paths import PathPolicy
 from video_editing_skill.project import EditOperation, parse_request
 from video_editing_skill.timebase import Time, parse_fraction
@@ -298,6 +298,25 @@ class ProjectTests(unittest.TestCase):
         k = compile_operation(EditOperation("k", "TRIM", ["A"], {"start": Time.parse(2, "s"), "end": Time.parse(5, "e"), "precision": "keyframe"}))
         self.assertNotIn("--tolerance", k.argv_for(["/x/a.mp4"], "/x/o.mp4"))
 
+    def test_precision_smart_is_cut_smart(self):
+        """precision smart (ADR-031): cut.py --smart, never with --accurate (cut.py refuses the pair) or --tolerance."""
+        from video_editing_skill.timebase import Time
+        t = compile_operation(EditOperation("t", "TRIM", ["A"], {"start": Time.parse(2.5, "s"), "end": Time.parse(5, "e"), "precision": "smart"}))
+        self.assertEqual(t.argv_for(["/x/a.mp4"], "/x/o.mp4"), ["/x/a.mp4", "-o", "/x/o.mp4", "--start", "2.500000", "--end", "5.000000", "--smart"])
+        c = compile_operation(EditOperation("c", "CUT", ["A"], {"keep": [{"start": Time.parse(0.5, "s"), "end": Time.parse(1, "e")},
+                                                                        {"start": Time.parse(3, "s"), "end": Time.parse(4.5, "e")}], "precision": "smart"}))
+        argv = c.argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertIn("--smart", argv)
+        self.assertNotIn("--accurate", argv)
+        self.assertNotIn("--tolerance", argv)
+        self.assertEqual(argv[argv.index("--segments") + 1], "0.500000-1.000000,3.000000-4.500000")
+        self.assertIn("smart", ALLOWED_FLAGS["cut"])
+        self.assertIn("smart", operations.PRECISIONS)
+        c = contract.skill_contract()
+        self.assertIn("smart", c["operations"]["TRIM"]["parameters"]["precision"])
+        self.assertIn("smart", c["operations"]["CUT"]["parameters"]["precision"])
+        self.assertEqual(c["smart_cut"]["request_field"], "TRIM / CUT params.precision: smart (opt-in; the default stays frame)")
+
     def test_rotate_compiles_to_ffmpeg_skill_fit_flags(self):
         # kajisho5/video-editing-skill#11 item 1: ROTATE -> fit.py --rotate / --flip
         params = operations.validate_params("ROTATE", {"degrees": 90, "flip": "h"}, "op")
@@ -396,8 +415,8 @@ class FreezeReverseParamTests(unittest.TestCase):
                                                          "ffmpeg-skill/broll", "ffmpeg-skill/audio", "ffmpeg-skill/silence", "ffmpeg-skill/scenes",
                                                          "ffmpeg-skill/export"])
         self.assertEqual((provided["video.crop"], c["operations"]["CROP"]["tool"]), ("video-editing/crop", "ffmpeg-skill/crop"))
-        self.assertFalse(any("CROP" in n for n in c["versioning"]["next"]["0.6.0"]))
-        self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.6.0"]))
+        self.assertFalse(any("CROP" in n for n in c["versioning"]["next"]["0.7.0"]))
+        self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.7.0"]))
 
 
 class ImageInsertTests(unittest.TestCase):
@@ -464,7 +483,7 @@ class ImageInsertTests(unittest.TestCase):
         self.assertEqual(c["media_compatibility"]["IMAGE_INSERT"]["requires"], {"video": False, "audio": False, "image": True})
         self.assertIn("ffmpeg-skill/insert", c["engine"]["tools_optional"])
         self.assertEqual(c["engine"]["version_range"], ">=0.10.0")   # gated on the tool, not by raising the floor
-        self.assertFalse(any("IMAGE_INSERT" in n for n in c["versioning"]["next"]["0.6.0"]))
+        self.assertFalse(any("IMAGE_INSERT" in n for n in c["versioning"]["next"]["0.7.0"]))
 
 
 class TimelineTests(unittest.TestCase):
@@ -1013,6 +1032,10 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
             parse_request(request(self.sources_(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "auto"}}],
                                   [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"crf": 20}}]), self.policy)
         self.assertEqual(cm.exception.details["reason"], "encoding_needs_reencode")
+        with self.assertRaises(EditError) as cm:   # precision smart copies the whole GOPs between its re-encoded edges (ADR-031)
+            parse_request(request(self.sources_(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "smart"}}],
+                                  [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"crf": 20}}]), self.policy)
+        self.assertEqual(cm.exception.details["reason"], "encoding_needs_reencode")
         # the contract's encoding block is the source of truth for the vocabulary
         c = contract.skill_contract()
         self.assertEqual(c["encoding"], operations.ENCODING)
@@ -1020,15 +1043,16 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json"), encoding="utf-8") as fh:
             self.assertEqual(c["request_shape"], json.load(fh)["request_shape"])
 
-    def test_pinned_blocks_are_unchanged_since_0_5_0(self):
+    def test_pinned_blocks_are_unchanged_since_0_6_0(self):
         """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the golden copy.
 
-        Bumped from 4.0 to 5.0 deliberately (docs/decisions.md ADR-029: PUNCH_IN, CONDENSE, TRIM / CUT
+        Bumped from 5.0 to 6.0 deliberately (docs/decisions.md ADR-031: TRIM / CUT `precision: smart`).
+        Before that, from 4.0 to 5.0 (docs/decisions.md ADR-029: PUNCH_IN, CONDENSE, TRIM / CUT
         `precision: auto`, CONCAT `stinger` and the request / response shapes that came with them, shipped in
         0.4.8-0.4.18 under "4.0"). Before that, 0.3.0 to 0.4.0 (ADR-012: SPEED gained an optional `smooth`
         parameter). Each is a breaking contract_version change video-production-agent's SUPPORTED_SKILL_VERSIONS
         must widen before it accepts the release, same as 0.2.0 / 0.3.0 (ADR-009 / ADR-011); this test only
-        guards against further *undocumented* drift from here, not against 0.5.0 itself.
+        guards against further *undocumented* drift from here, not against 0.6.0 itself.
 
         `engine` is deliberately excluded from the fields compared below: it is an additive block
         (docs/decisions.md ADR-008), free to drift as the ffmpeg-skill version range this Skill enforces changes
@@ -1042,7 +1066,7 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
         # `version` moves with every release (the release workflow bumps it and regenerates the golden copy); the shape this
         # test guards is versioned by contract_version
         self.assertEqual(c["version"], golden["version"])
-        self.assertEqual(c["contract_version"], "5.0")
+        self.assertEqual(c["contract_version"], "6.0")
         for t in c["tools"]:
             g = next(x for x in golden["tools"] if x["tool_id"] == t["tool_id"])
             for f in ("parameters", "required_capabilities", "inputs", "result_keys", "executed_by", "deterministic", "produces_output", "writes_media", "kind"):

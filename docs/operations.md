@@ -8,7 +8,7 @@ name an execution escape hatch (`command`, `argv`, `shell`, `filter`, `env`, `ap
 
 | Type | Inputs | Parameters (required in bold) | Engine tool |
 |---|---|---|---|
-| `TRIM` | `input` (video) | **start**, **end**, precision `frame` \| `keyframe` \| `auto` | `ffmpeg-skill/cut` |
+| `TRIM` | `input` (video) | **start**, **end**, precision `frame` \| `keyframe` \| `auto` \| `smart` | `ffmpeg-skill/cut` |
 | `CUT` | `input` (video) | **keep** `[{start, end}, …]` (output order), precision | `ffmpeg-skill/cut` |
 | `CONCAT` | `inputs` (2..100 videos) | transition `{type, duration}`, width, height, fps, mode `pad` \| `crop`, pad_color | `ffmpeg-skill/join` |
 | `SPEED` | `input` (video) | **factor** in [1/4, 4], not 1; smooth `blend \| interpolate` (optional) | `ffmpeg-skill/fit` |
@@ -96,7 +96,7 @@ two dimensions for a 90/270 turn) and the engine's encoders (libx264 / libx265, 
 
 `outputs[].encoding` (optional): `{"crf": 14..28, "preset": ultrafast | superfast | veryfast | faster | fast | medium |
 slow | slower | veryslow}`. It applies to the operation that produces the output, is part of its identity, is
-refused on keyframe- or auto-precision TRIM / CUT (`encoding_needs_reencode`) and when two outputs of one operation disagree
+refused on keyframe-, auto- or smart-precision TRIM / CUT (`encoding_needs_reencode`) and when two outputs of one operation disagree
 (`conflicting_encodings`). Everything else is fixed by ffmpeg-skill and reported in `normalized.encoding` /
 `normalized.video_codec`: h264 (libx264, yuv420p, bt709 tags) for SDR sources, hevc (libx265 10-bit) for HDR
 sources, AAC 192 kb/s, container by extension. Not configurable: codec choice, bitrate modes, pixel format, colour

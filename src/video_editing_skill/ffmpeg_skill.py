@@ -95,6 +95,13 @@ class FfmpegSkill:
         v = parse_version(self.version)
         return v is not None and v >= KEEP_HEVC_DEFAULT_SINCE
 
+    def cut_has_smart(self) -> bool:
+        """cut.py --smart (ffmpeg-skill 3.2.3+): the keyframe-aware cut that re-encodes only the partial GOPs at each cut
+        point and copies the whole GOPs between (ADR-031). Only a checkout whose flags were detected and list it counts:
+        an undetected one is not assumed to have it, so a precision smart TRIM / CUT there re-encodes the whole cut."""
+        known = self.cli_flags("cut")
+        return known is not None and "--smart" in known
+
     def freeze_holds_frame_at_t(self) -> bool:
         """freeze.py --at T --mode insert holds the frame shown at T from 3.1.6 (ffmpeg-skill #411, shipped in #416); through
         3.1.5 it held the frame before T, which at a cut is the last frame of the previous shot. The timeline this skill
