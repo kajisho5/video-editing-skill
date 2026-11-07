@@ -1123,3 +1123,29 @@ copy `tests/contract/contract.json` is regenerated. `versioning.next["0.5.0"]` d
 ship; it moves to `next["0.6.0"]` unchanged, and `contract_check` asks for "0.6.0".
 
 **Consequence.** `video-production-agent` widens its version gate to 0.5.x and re-pins from the v0.5.0 tag.
+
+## ADR-030 — Stinger CONCAT: every clip joined at whole frames
+
+**Context.** A CONCAT with a stinger failed its own validation when its clips had been cut by stream copy: "frame rate
+29.955 is not the requested 30" (reproduced with two clips cut `-ss 0.85 -t 2.018 -c copy` from mid-GOP: 29.764). Such a
+clip keeps its pre-roll behind an MP4 edit list, and the length probe reports (2.116992 s, 63.5 frames at 30 fps) is the
+edit list's: not whole frames, and its last frames can end before it. join.py trims each clip's picture and sound to that
+length, so the next clip started between frames and the joined picture had a hole of one frame at the join. Its average
+frame rate (frames / duration) fell below 30, overlay.py took the joined file for variable-frame-rate and conformed the
+composite to that average (`-r 29.955`), and the output really ran at 29.955 fps. A plain CONCAT of the same clips is
+refused the same way when it names `fps` (its joined output is measured, not conformed). The stinger was also placed from
+the clips' planned lengths, which a stream-copied clip's measured length differs from.
+
+**Decision.** In a stinger CONCAT, each clip at the edit's frame rate takes its planned length rounded down to whole
+frames of that rate; the plan's joins (`cut_at`, `stinger_start`) are computed from those lengths, so every cut is on a
+frame. Before the join, a clip whose measured length differs from that (by more than 1 ms) is cut to it with
+`ffmpeg-skill/cut --start 0 --end <length> --accurate` (the operation's crf / preset); a clip already whole frames long is
+joined as it is, with no extra encode. A clip at another frame rate is joined as before (cutting it at its own rate
+cannot put its end on the edit's frames). The rest of the stinger path is unchanged. The plain CONCAT path is not
+changed here.
+
+**Tests.** Fake engine: a source of 2.116992 s plans and reports its join at 21/10 (63 frames) and is cut once before the
+join; the standard 2 s fixtures run with no cut. Real media: two clips stream-copied from mid-GOP join with the stinger,
+the output is 30/1 fps, and the cut frame (A's length rounded down to frames) is the fully covered one with A before it and
+B after it.
+

@@ -57,8 +57,10 @@ STINGER: Dict[str, Any] = {
             "the file's; its sound, if any, is mixed in. hyperframes-skill / remotion-ffmpeg-skill / blender-skill write one with its stinger.json: "
             "cut_point and cover come from it (the caller reads it and passes them)",
     "placement": "the clips are butt-joined; at each join the cut is the first frame of the next clip, and the stinger starts cut_point before it, so its "
-                 "frame at cut_point lies on the cut frame",
-    "engine_calls": ["ffmpeg-skill/join (no transition, the CONCAT's size / rate / mode)", "ffmpeg-skill/overlay --video <stinger> --place 0-<length>@<start> per join "
+                 "frame at cut_point lies on the cut frame; a clip at the edit's frame rate takes its length rounded down to whole frames, so every cut is "
+                 "on a frame",
+    "engine_calls": ["ffmpeg-skill/cut --start 0 --end <whole frames> --accurate, only for a clip whose measured length is not that (a stream-copied "
+                     "segment, as a rule)", "ffmpeg-skill/join (no transition, the CONCAT's size / rate / mode)", "ffmpeg-skill/overlay --video <stinger> --place 0-<length>@<start> per join "
                      "(alpha respected)", "with sound: ffmpeg-skill/broll --insert <stinger> --at <start> --duration <length> --audio mix per join, then "
                      "ffmpeg-skill/audio --replace (that mix onto the composite)"],
     "refused": ["no cut_point or no cover, or cut_point outside cover (INVALID_REQUEST stinger_not_covering)",

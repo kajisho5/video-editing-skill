@@ -7,6 +7,7 @@ Layout under <workspace>/.video-editing/work/   (flat: operation_id is content-d
   <operation_id>.json            record {idempotency_key, sha256, size, probe} used for reuse
 Final outputs are copied from the validated intermediate to their path via a .partial file + rename.
 """
+import math
 import os
 import shutil
 import time
@@ -814,8 +815,7 @@ class Executor:
         t = Time(Fraction(0))
         known = True
         for r in op.video_inputs[:-1]:
-            c = self.clips.get(r)
-            d = c.duration if c is not None and c.duration is not None else self.durations.get(r)
+            d = self._stinger_length(ref, r)
             if d is None:
                 known = False
                 break
@@ -826,6 +826,29 @@ class Executor:
         return {"source": op.stinger, "cut_point": tr["cut_point"].to_dict(), "cover": {k: tr["cover"][k].to_dict() for k in ("start", "end")},
                 "duration": sd.to_dict() if sd is not None else None, "audio": prof.get("audio"), "joins": joins if known else None,
                 "cover_check": "declared: the caller's covered window (stinger.json); not measured on the pixels here"}
+
+    def _stinger_rate(self, ref: str, r: str) -> Optional[Fraction]:
+        """The edit's frame rate, when input `r` runs at it (then its length can be held to whole frames of it); else None."""
+        op = self.project.operations[ref]
+        fps = self.target_fps(ref) or self.profile(op.video_inputs[0]).get("fps")
+        rfps = self.profile(r).get("fps")
+        if not fps or not rfps or abs(fps - rfps) > FPS_TOLERANCE:
+            return None
+        return Fraction(fps).limit_denominator(1001)
+
+    def _stinger_length(self, ref: str, r: str) -> Optional[Time]:
+        """The length input `r` takes in a stinger CONCAT: its planned length, rounded down to whole frames of the edit's rate when
+        it runs at that rate, so every join (the cut) is on a frame. A stream-copied segment's length (its MP4 edit list) is
+        rarely whole frames, and its last frames can end before it; joined as measured, the next clip starts between frames
+        and the joined picture has a hole there (ADR-030)."""
+        c = self.clips.get(r)
+        d = c.duration if c is not None and c.duration is not None else self.durations.get(r)
+        if d is None:
+            return None
+        rate = self._stinger_rate(ref, r)
+        if rate is None:
+            return d
+        return Time(Fraction(math.floor(d.value * rate + Fraction(1, 1000))) / rate)
 
     def _check_stinger(self, ref: str) -> None:
         op = self.project.operations[ref]
@@ -932,9 +955,23 @@ class Executor:
             if op.encoding and k in op.encoding:
                 enc += ["--" + k, str(op.encoding[k])]
         try:
+            # every clip is joined at whole frames of the edit's rate (ADR-030): an input whose measured length is not the planned
+            # length in whole frames (a stream-copied segment, as a rule) is first cut to it frame-accurately
+            clips: List[str] = []
+            for r in op.video_inputs:
+                path = self._path_of(r, False)
+                want = self._stinger_length(ref, r)
+                if want is not None and self._stinger_rate(ref, r) is not None:
+                    doc = probe(self.skill, path)
+                    have = (doc.get("video") or {}).get("duration") or doc.get("duration")
+                    if have is None or abs(float(have) - want.seconds) > 0.001:
+                        end = Time(Fraction(math.floor(want.value * 1_000_000), 1_000_000))   # not rounded up past the last whole frame
+                        self.log(f"run {ref}: input {r!r} is {have}s, joined as {want.text(6)}s (whole frames)")
+                        path = call("cut", ["--start", "0", "--end", end.tool_arg(), "--accurate"] + enc, [path])
+                clips.append(path)
             joined = os.path.join(self.work, f"{op.operation_id}.stg-join.partial.{os.getpid()}{ext}")
             temps.append(joined)
-            join_argv = st.argv_for([self._path_of(r, False) for r in op.video_inputs], joined, resolve=lambda f: self.skill.resolve_flag("join", f))
+            join_argv = st.argv_for(clips, joined, resolve=lambda f: self.skill.resolve_flag("join", f))
             self.log(f"run {ref}: ffmpeg-skill/join")
             run = run_tool(self.skill, "join", join_argv, timeout=self.project.options.timeout_seconds)
             commands.extend(run.commands)
