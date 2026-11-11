@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.6.2 - 2026-11-11
+
+- fix(release): Dependabot labels cannot raise the release level (#44) (9496468)
+
 ## v0.6.1 - 2026-11-11
 
 - Bump release-drafter/release-drafter from 6.4.0 to 7.10.0 (#22) (c3ee890)
