@@ -65,6 +65,9 @@ autolabeler:
 # (e.g. describing a bug), must not silently trigger a major version bump. A human applies the
 # `major`/`breaking` label by hand when a change is actually breaking; only that label -- never text
 # pattern-matching -- feeds `version-resolver`'s major bump.
+# Dependabot applies `major` on its own to a pull request whose dependency moved a major version;
+# release.yml removes a release-level label a bot put on a Dependabot pull request before it resolves
+# the version (.github/scripts/dependabot_release_labels.py).
 
 template: |
   ## What's Changed

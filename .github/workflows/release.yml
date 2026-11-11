@@ -16,6 +16,8 @@ concurrency:
 
 permissions:
   contents: write
+  # write: the step before release-drafter removes release-level labels a bot put on Dependabot pull requests
+  pull-requests: write
 
 jobs:
   release:
@@ -34,6 +36,14 @@ jobs:
         run: |
           CURRENT_VERSION=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+
+      # Dependabot labels a pull request `major` when the dependency it bumps moved a major version, which says
+      # nothing about this product's version. A release-level label on a Dependabot pull request counts only when a
+      # person applied it; a failure here fails the release instead of resolving from unchecked labels.
+      - name: Drop release-level labels a bot put on Dependabot pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/dependabot_release_labels.py
 
       - name: Resolve the next version (release-drafter, dry run)
         id: drafter
