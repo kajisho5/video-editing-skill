@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.6.1 - 2026-11-11
+
+- Bump release-drafter/release-drafter from 6.4.0 to 7.10.0 (#22) (c3ee890)
+
 ## v0.6.0 - 2026-11-07
 
 - Smart cut: precision smart re-encodes only the partial GOPs at each cut (roadmap step 9) (#43) (831a8dc)
