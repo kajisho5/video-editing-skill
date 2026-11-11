@@ -27,14 +27,26 @@ Media rules (`contract.media_compatibility`): every source is probed first; `OVE
 audio stream; `CONCAT` conforms sizes / rates and adds audio when any input has it. Engine gaps (a missing
 ffmpeg-skill tool, encoder or filter) are refused before execution as `TOOL_ERROR`.
 
-Operation types (the allowlist): `TRIM`, `CUT`, `CONCAT` (with `params.transition`), `SPEED` (`factor`, optional
+Operation types (the allowlist): `TRIM`, `CUT`, `CONCAT` (with `params.transition`: an xfade type, or `{type: stinger, stinger, cut_point, cover}` for a stinger with alpha, the switch under full cover at its cut point; read cut_point / cover from its stinger.json), `SPEED` (`factor`, optional
 `smooth: blend | interpolate` for slow-motion), `FIT`, `FILL`, `RESIZE`, `OVERLAY`, `ROTATE` (turn 90/180/270
 clockwise and/or mirror `h`/`v`), `FREEZE` (`hold` seconds of one frame: at `at`, or the last frame when `at` is
 omitted), `REVERSE` (backwards, picture and audio), `IMAGE_INSERT` (one `kind: "image"` source → a silent clip of
-`duration` seconds, optional `width` / `height` / `fps`, that `CONCAT` can join: a title card or end slate).
-`FREEZE` / `REVERSE` / `IMAGE_INSERT` need ffmpeg-skill's `freeze.py` / `reverse.py` / `insert.py`; `doctor --json`
-says whether the installed checkout has them. Anything else (`CROP`, `POSITION` included) is refused with
+`duration` seconds, optional `width` / `height` / `fps`, that `CONCAT` can join: a title card or end slate), `CROP`
+(exactly the pixel rectangle `{x, y, width, height}` you give: even sizes, inside the frame as displayed; decide the
+rectangle yourself, e.g. from ffmpeg-skill `cropdetect`), `CONDENSE` (`segments` `[{start, end, label}]` and `rules` `{label: cut | keep | {speed: f}}`, `default` keep: apply the
+proposals from `video-editing propose` that a person approved; e.g. cut retakes and keep silences at double speed),
+`PUNCH_IN` (`start`, `end`, `scale` in (1, 4], `subject`
+`{x, y, width, height}`: a hard-cut zoom on the box you give, e.g. detection-skill's face box; which jump cuts get one is
+your decision). `FREEZE` / `REVERSE` / `IMAGE_INSERT` / `CROP` need ffmpeg-skill's
+`freeze.py` / `reverse.py` / `insert.py` / `crop.py`; `doctor --json` says whether the installed checkout has them. Anything
+else (`POSITION` included) is refused with
 `UNSUPPORTED_OPERATION`; the contract's `unsupported` list says why.
+
+`TRIM` / `CUT` take `precision`: `frame` (default: re-encoded, frame-accurate), `keyframe` (lossless, may land on a
+keyframe), `auto` (a stream copy where it lands within 0.2 s, else re-encoded) or `smart` (frame-accurate, only the
+partial GOPs at each cut point re-encoded; for long recordings cut between keyframes). `smart` needs ffmpeg-skill
+`cut.py --smart` (3.2.3+); without it, or for a source the engine cannot match, the whole cut is re-encoded and
+`execution.operations[].cuts.smart` says why (`applied: false`, `reason_code`).
 
 Times are exact: `"1:30"`, `"00:01:30.250"`, `{"frames": 300, "fps": "30000/1001"}` or a number of seconds.
 

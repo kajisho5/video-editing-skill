@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from fractions import Fraction
 
 from helpers import FFMPEG_SKILL, HAVE_FFMPEG, cli, request
 
@@ -29,9 +30,16 @@ HAS_ROTATE = READY and FFMPEG_SKILL.missing_flags("fit", ["--rotate", "--flip"])
 HAS_FREEZE = READY and "freeze" in FFMPEG_SKILL.tools
 HAS_REVERSE = READY and "reverse" in FFMPEG_SKILL.tools
 HAS_INSERT = READY and "insert" in FFMPEG_SKILL.tools   # IMAGE_INSERT (ADR-015): insert.py, in 0.11.0 and later
-ALL_OPERATIONS = ["CONCAT", "CUT", "FILL", "FIT", "FREEZE", "IMAGE_INSERT", "OVERLAY", "RESIZE", "REVERSE", "ROTATE", "SPEED", "TRIM"]
+HAS_CROP = READY and "crop" in FFMPEG_SKILL.tools       # CROP (ADR-016): crop.py, in 0.11.0 and later
+ALL_OPERATIONS = ["CONCAT", "CONDENSE", "CROP", "CUT", "FILL", "FIT", "FREEZE", "IMAGE_INSERT", "OVERLAY", "PUNCH_IN", "RESIZE", "REVERSE", "ROTATE", "SPEED", "TRIM"]
 AVAILABLE_OPERATIONS = [t for t in ALL_OPERATIONS if not ((t == "ROTATE" and not HAS_ROTATE) or (t == "FREEZE" and not HAS_FREEZE)
-                                                          or (t == "REVERSE" and not HAS_REVERSE) or (t == "IMAGE_INSERT" and not HAS_INSERT))]
+                                                          or (t == "REVERSE" and not HAS_REVERSE) or (t == "IMAGE_INSERT" and not HAS_INSERT)
+                                                          or (t in ("CROP", "PUNCH_IN") and not HAS_CROP))]
+# stinger transition (ADR-023): overlay.py --video --place, and broll.py / audio.py --replace for its sound (2.x and later)
+HAS_STINGER = READY and all(t in FFMPEG_SKILL.tools for t in ("broll", "audio")) and FFMPEG_SKILL.missing_flags("overlay", ["--video", "--place"]) == []
+HAS_SHOTS = READY and "scenes" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("scenes", ["--shots"]) == []   # static spans (ADR-025)
+HAS_EXPORT_SIZE = READY and "export" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("export", ["--max-mb", "--no-scale", "--allow-long"]) == []
+HAS_JOIN_COPY = READY and FFMPEG_SKILL.missing_flags("join", ["--copy"]) == []   # join.py --copy, from 2.24.0 (segment cache, ADR-018)
 # fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
 # exceed the source": the exact frame each rule must deliver, written out (old, bounded).
 BOUNDED = READY and FFMPEG_SKILL.fit_bounds_by_source()
@@ -225,12 +233,10 @@ class RealMediaTests(unittest.TestCase):
         self.assertEqual(out["ok"], HAS_ROTATE)
         if not HAS_ROTATE:
             self.assertEqual(out["problems"], ["operation ROTATE unavailable: flag:ffmpeg-skill/fit --rotate, flag:ffmpeg-skill/fit --flip"])
-        missing_optional = [t for t, has in (("FREEZE", HAS_FREEZE), ("IMAGE_INSERT", HAS_INSERT), ("REVERSE", HAS_REVERSE)) if not has]
-        self.assertEqual([n.split()[1] for n in out["notes"]], missing_optional)
-        # roadmap step 1: whether the engine ships an unsupported type's tool is read from the checkout, never declared
-        tools = set(FFMPEG_SKILL.tools)
-        self.assertEqual({u["type"]: u["engine_tool_status"] for u in out["unsupported"]},
-                         {"CROP": "AVAILABLE" if "crop" in tools else "MISSING", "POSITION": None})
+        missing_optional = [t for t, has in (("CROP", HAS_CROP), ("FREEZE", HAS_FREEZE), ("IMAGE_INSERT", HAS_INSERT), ("REVERSE", HAS_REVERSE)) if not has]
+        self.assertEqual(sorted(n.split()[1] for n in out["notes"]), missing_optional)
+        # roadmap step 1: whether the engine ships a tool is read from the checkout, never declared; CROP is an operation (ADR-016)
+        self.assertEqual({u["type"]: u["engine_tool_status"] for u in out["unsupported"]}, {"POSITION": None})
         self.assertFalse(out["secrets_shown"])
         self.assertIsNone(out["engine"]["compatibility"]["upper_bound"])
         self.assertEqual({t["flags_from"] for t in out["engine"]["compatibility"]["tools"].values()} - {"contract", "help"}, set())
@@ -485,7 +491,12 @@ class OperationE2ETests(unittest.TestCase):
         src = self.ramp()
         held = [self.luma(path, n) for n in (62, 75, 88)]          # 2.07 s .. 2.93 s: inside the hold
         self.assertLess(max(held) - min(held), 1.5, f"the picture does not change during the hold: {held}")
-        self.assertAlmostEqual(held[0], self.luma(src, 59), delta=1.5, msg="the held frame is the one shown just before 2 s")
+        # ffmpeg-skill 3.1.6 (#411) holds the frame shown at 2 s (frame 60 at 30 fps), the source instant this skill's
+        # timeline reports for the hold; through 3.1.5 it held the frame shown just before 2 s (frame 59)
+        held_at = 60 if FFMPEG_SKILL.freeze_holds_frame_at_t() else 59
+        self.assertAlmostEqual(held[0], self.luma(src, held_at), delta=1.5,
+                               msg=f"the held frame is source frame {held_at} (ffmpeg-skill {FFMPEG_SKILL.version})")
+        self.assertGreater(abs(self.luma(src, 60) - self.luma(src, 59)), 1.5, "the ramp tells frames 59 and 60 apart")
         self.assertAlmostEqual(self.luma(path, 120), self.luma(src, 90), delta=1.5, msg="after the hold the clip resumes where it stopped, 1 s later")
         self.assertGreater(self.luma(path, 40) - self.luma(path, 20), 15, "outside the hold the picture moves")
         # without `at`: the last frame is held past the end (6 s + 1.5 s)
@@ -520,6 +531,39 @@ class OperationE2ETests(unittest.TestCase):
         for n in (0, 30, 90, 150, 179):
             self.assertAlmostEqual(self.luma(path, n), self.luma(src, 179 - n), delta=1.5, msg=f"output frame {n} vs source frame {179 - n}")
         self.assertGreater(self.luma(path, 0) - self.luma(path, 179), 150, "brightness falls: the ramp runs backwards")
+
+    def test_crop(self):
+        # ECOSYSTEM_ROADMAP step 5, docs/decisions.md ADR-016: CROP -> ffmpeg-skill crop.py, exactly the given rectangle
+        if not HAS_CROP:
+            out = self.one({"type": "CROP", "input": "A", "params": {"x": 0, "y": 0, "width": 320, "height": 180}}, expect=10)
+            self.assertEqual((out["error"]["code"], out["error"]["details"]["missing"]), ("TOOL_ERROR", ["tool:ffmpeg-skill/crop"]))
+            self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
+            return
+        # a 320x240 clip with audio: the left half white, the right half black
+        halves = os.path.join(self.root, "media", "halves.mp4")
+        if not os.path.exists(halves):
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=white:s=160x240:r=30:d=3",
+                            "-f", "lavfi", "-i", "color=c=black:s=160x240:r=30:d=3", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                            "-filter_complex", "[0:v][1:v]hstack=inputs=2[v]", "-map", "[v]", "-map", "2:a", "-t", "3",
+                            "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", halves], check=True)
+        src = [{"id": "H", "path": halves}]
+        out = self.one({"type": "CROP", "input": "H", "params": {"x": 176, "y": 40, "width": 120, "height": 160}}, sources=src)
+        path, streams = self.facts(out, 3.0)
+        self.assertEqual(size(path), (120, 160), "exactly the rectangle's size")
+        self.assertTrue(self.has_audio(streams), "the audio is kept")
+        self.assertEqual(out["execution"]["operations"][0]["parameters"], {"x": 176, "y": 40, "width": 120, "height": 160})
+        self.assertEqual(out["execution"]["operations"][0]["normalized"]["target_frame"], [120, 160])
+        self.assertLess(self.luma(path, 30), 30, "a rectangle inside the black half is black")
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out = self.one({"type": "CROP", "input": "H", "params": {"x": 0, "y": 0, "width": 160, "height": 240}}, sources=src)
+        path, _ = self.facts(out, 3.0)
+        self.assertEqual(size(path), (160, 240))
+        self.assertGreater(self.luma(path, 30), 220, "the left half is white")
+        # a rectangle outside the frame is refused before anything runs
+        self.ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        out = self.one({"type": "CROP", "input": "H", "params": {"x": 200, "y": 0, "width": 160, "height": 240}}, expect=2, sources=src)
+        self.assertEqual((out["error"]["code"], out["error"]["details"]["reason"]), ("INVALID_REQUEST", "crop_outside_frame"))
+        self.assertFalse(os.path.exists(os.path.join(self.ws, "out", "o.mp4")))
 
     def test_image_insert(self):
         # ECOSYSTEM_ROADMAP step 4, docs/decisions.md ADR-015: IMAGE_INSERT -> ffmpeg-skill insert.py; a still joins CONCAT
@@ -610,6 +654,788 @@ class OperationE2ETests(unittest.TestCase):
         self.assertEqual(rep["engine"]["version"], FFMPEG_SKILL.version)
 
 
+def framemd5(path):
+    """Decoded-frame hashes of every stream (picture and sound), timestamps included."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0", "-f", "framemd5", "-"],
+                         stdout=subprocess.PIPE, check=True, text=True).stdout
+    return [ln for ln in out.splitlines() if ln and not ln.startswith("#")]
+
+
+@unittest.skipUnless(READY, REASON)
+class SegmentCacheLongFormTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 8 (ADR-018): a 1-hour source, three cuts; after one cut changes, only that segment is encoded
+    again, and the result equals a render of the changed request from an empty cache (framemd5)."""
+    KEEP = [{"start": 600, "end": 603}, {"start": 1800, "end": 1802}, {"start": 3500, "end": 3504}]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-long-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.long = os.path.join(cls.media, "long.mp4")
+        if HAS_JOIN_COPY:   # small picture, low rate: an hour of media in a few seconds of encoding and ~16 MB
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10",
+                            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "3600", "-c:v", "libx264", "-preset", "veryfast",
+                            "-crf", "35", "-g", "50", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "24k", "-ac", "1", cls.long], check=True)
+        else:   # the refusal needs no media beyond a short clip
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10",
+                            "-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p", cls.long], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def run_cli(self, ws, keep, expect=0):
+        doc = request([{"id": "L", "path": self.long}], [{"id": "c", "type": "CUT", "input": "L", "params": {"keep": keep}}],
+                      [{"id": "o", "operation": "c", "path": "out/cut.mp4"}], options={"segment_cache": True, "overwrite": True})
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        self.assertEqual(rc, expect, json.dumps(out.get("error"), indent=1) + err)
+        return out
+
+    @unittest.skipIf(HAS_JOIN_COPY, "this ffmpeg-skill has join.py --copy")
+    def test_refused_without_join_copy(self):
+        from video_editing_skill.errors import EXIT_CODES
+        out = self.run_cli(tempfile.mkdtemp(prefix="ws-", dir=self.root), [{"start": 0, "end": 1}, {"start": 2, "end": 3}], expect=EXIT_CODES["TOOL_ERROR"])
+        self.assertEqual(out["error"]["code"], "TOOL_ERROR")
+        self.assertIn("flag:ffmpeg-skill/join --copy", out["error"]["details"]["missing"])
+
+    @unittest.skipUnless(HAS_JOIN_COPY, "needs ffmpeg-skill join.py --copy (2.24.0+); the refusal is tested instead")
+    def test_one_changed_cut_re_encodes_only_that_segment(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        first = self.run_cli(ws, self.KEEP)["execution"]["operations"][0]["segments"]
+        self.assertEqual((first["encoded"], first["reused"], first["join"]), (3, 0, "stream_copy"))
+        changed = [dict(r) for r in self.KEEP]
+        changed[1] = {"start": 1800, "end": 1803}
+        out = self.run_cli(ws, changed)
+        seg = out["execution"]["operations"][0]["segments"]
+        self.assertEqual([p["status"] for p in seg["parts"]], ["reused", "encoded", "reused"])
+        self.assertEqual((seg["encoded"], seg["reused"], seg["join"]), (1, 2, "stream_copy"))
+        partial = os.path.join(ws, "out", "cut.mp4")
+        self.assertAlmostEqual(duration(partial), 10.0, delta=0.15)
+        # the same changed request from an empty cache: every segment encoded, and the same frames
+        fresh = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        full = self.run_cli(fresh, changed)["execution"]["operations"][0]["segments"]
+        self.assertEqual(full["encoded"], 3)
+        self.assertEqual(framemd5(partial), framemd5(os.path.join(fresh, "out", "cut.mp4")))
+        # and the same request a third time writes nothing new
+        again = self.run_cli(ws, changed)
+        self.assertEqual(again["status"], "reused")
+
+
+def packet_md5s(path):
+    """md5 of every video packet as stored (stream copy, no decode): equal lists mean byte-for-byte the same packets."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0:v", "-c", "copy", "-f", "framemd5", "-"],
+                         stdout=subprocess.PIPE, check=True, text=True).stdout
+    return [ln.rsplit(",", 1)[1].strip() for ln in out.splitlines() if ln and not ln.startswith("#")]
+
+
+@unittest.skipUnless(READY, REASON)
+class KeyframeAwareCutTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 9 (ADR-019): precision auto copies a cut whose in point is on a keyframe (the packets are the
+    source's, byte for byte) and re-encodes one that is not, and the record says which per cut."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-kf-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "gop30.mp4")   # a keyframe every second exactly (30 fps, closed GOP of 30)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "12", "-c:v", "libx264", "-preset", "veryfast",
+                        "-g", "30", "-keyint_min", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.src], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def trim(self, start, end):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        doc = request([{"id": "S", "path": self.src}], [{"id": "t", "type": "TRIM", "input": "S", "params": {"start": start, "end": end, "precision": "auto"}}],
+                      [{"id": "o", "operation": "t", "path": "out/t.mp4"}])
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertEqual(rc, 0, json.dumps(out.get("error") if isinstance(out, dict) else out) + err)
+        return os.path.join(ws, "out", "t.mp4"), out["execution"]["operations"][0]["cuts"]
+
+    def test_cut_on_keyframes_is_a_stream_copy(self):
+        path, cuts = self.trim(2, 5)
+        self.assertEqual(cuts["requested_precision"], "auto")
+        if cuts["mode"] is not None:   # reported from ffmpeg-skill 2.x; 0.11.0 does not name it
+            self.assertEqual(cuts["mode"], "copy")
+        got, src = packet_md5s(path), packet_md5s(self.src)
+        self.assertGreaterEqual(len(got), 89)
+        start = src.index(got[0])
+        self.assertEqual(got, src[start:start + len(got)], "every video packet is the source's, byte for byte, in order")
+        self.assertAlmostEqual(duration(path), 3.0, delta=0.15)
+
+    def test_cut_between_keyframes_is_reported_as_what_it_is(self):
+        """An in point half a GOP past a keyframe. The engine judges a copy by how far its length lands from the asked one, not
+        by where the keyframes are (that measurement is Velisa's proposal 1 to ffmpeg-skill): 0.11.0 / 2.x snap the start to
+        the keyframe 0.5 s early and re-encode; 3.x keeps the MP4 edit list (the picture starts at 2.5) and may copy. Either
+        way the record must say what happened, and the packets must agree with it."""
+        path, cuts = self.trim(2.5, 5)
+        got, src = packet_md5s(path), packet_md5s(self.src)
+        copied = got[0] in src and got == src[src.index(got[0]):src.index(got[0]) + len(got)]
+        if cuts["mode"] is not None:
+            self.assertEqual(cuts["mode"] == "copy", copied, cuts)
+            self.assertEqual(bool(cuts["reencoded"]), not copied, cuts)
+        if not copied:
+            self.assertAlmostEqual(duration(path), 2.5, delta=0.1)
+
+
+def stripped_packet_md5s(path):
+    """md5 of every video packet with the parameter-set and delimiter NAL units removed (Annex B): a packet copied into a
+    stream that carries its SPS / PPS in band hashes the same as the source's."""
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0:v", "-c", "copy", "-bsf:v",
+                          "h264_mp4toannexb,filter_units=remove_types=7|8|9", "-f", "framemd5", "-"],
+                         stdout=subprocess.PIPE, check=True, text=True).stdout
+    return [ln.rsplit(",", 1)[1].strip() for ln in out.splitlines() if ln and not ln.startswith("#")]
+
+
+def video_frames(path) -> int:
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries", "stream=nb_read_packets",
+                          "-of", "csv=p=0", path], stdout=subprocess.PIPE, check=True, text=True).stdout
+    return int(out.strip())
+
+
+@unittest.skipUnless(READY, REASON)
+class SmartCutTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 9 (ADR-031): precision smart, a cut between keyframes. Where ffmpeg-skill's cut.py has --smart
+    (3.2.3+), only the partial GOP after the in point and the one before the out point are re-encoded (at most two GOPs),
+    the whole GOPs between are the source's packets, and the record lists the parts. Where it has not, the cut is the
+    whole re-encode precision frame makes, and the record and a warning say why."""
+
+    GOP = 30   # 30 fps, a closed GOP of 30: a keyframe every second exactly
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-smart-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "gop30.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "8", "-c:v", "libx264", "-preset", "veryfast",
+                        "-g", "30", "-keyint_min", "30", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.src], check=True)
+        cls.mpeg4 = os.path.join(cls.media, "mpeg4.mp4")   # not H.264: the engine cannot match it and re-encodes the whole cut
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4", "-c:v", "mpeg4", "-g", "30",
+                        "-c:a", "aac", cls.mpeg4], check=True)
+        cls.smart = FFMPEG_SKILL.cut_has_smart()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def run_(self, src, op):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        doc = request([{"id": "S", "path": src}], [{"id": "t", "input": "S", **op}], [{"id": "o", "operation": "t", "path": "out/t.mp4"}])
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertEqual(rc, 0, json.dumps(out.get("error") if isinstance(out, dict) else out) + err)
+        return os.path.join(ws, "out", "t.mp4"), out
+
+    def keyframes_near(self, times):
+        """The engine's own keyframe list (probe.py --keyframes-near, 3.2.3+); the fixture's known GOP where it has none."""
+        if FFMPEG_SKILL.missing_flags("probe", ["--keyframes-near"]):
+            return [{"at": t, "before": float(int(t)), "after": float(int(t) + 1)} for t in times]
+        proc = subprocess.run([sys.executable, FFMPEG_SKILL.script("probe"), self.src, "--keyframes-near", ",".join(f"{t:g}" for t in times), "--json"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True)
+        return json.loads(proc.stdout.decode("utf-8"))["keyframes"]
+
+    def test_trim_between_keyframes_reencodes_at_most_two_gops(self):
+        path, out = self.run_(self.src, {"type": "TRIM", "params": {"start": 2.5, "end": 6.5, "precision": "smart"}})
+        cuts = out["execution"]["operations"][0]["cuts"]
+        self.assertEqual(cuts["requested_precision"], "smart")
+        self.assertEqual(video_frames(path), 120)   # frame-accurate either way: 4 s at 30 fps
+        self.assertAlmostEqual(duration(path), 4.0, delta=0.05)
+        if not self.smart:
+            self.assertEqual((cuts["smart"]["applied"], cuts["smart"]["reason_code"]), (False, "engine_without_smart"), cuts)
+            self.assertTrue(any("precision smart" in w for w in out["warnings"]), out["warnings"])
+            return
+        self.assertEqual(cuts["mode"], "smart", cuts)
+        smart = cuts["smart"]
+        self.assertTrue(smart["applied"], smart)
+        kf_in, kf_out = self.keyframes_near([2.5, 6.5])
+        self.assertEqual((kf_in["after"], kf_out["before"]), (3.0, 6.0))
+        parts = [(p["kind"], round(p["start"], 3), round(p["end"], 3)) for p in smart["parts"]]
+        self.assertEqual(parts, [("reencode", 2.5, kf_in["after"]), ("copy", kf_in["after"], kf_out["before"]), ("reencode", kf_out["before"], 6.5)])
+        self.assertLessEqual(smart["reencoded_frames"], 2 * self.GOP)
+        self.assertEqual((smart["reencoded_frames"], smart["copied_frames"]), (30, 90))
+        # independently of the engine's own check: the 90 packets of the GOPs from 3 s to 6 s are the source's, in order,
+        # once the in-band parameter sets are set aside
+        got, src = stripped_packet_md5s(path), stripped_packet_md5s(self.src)
+        copied = src[3 * self.GOP:6 * self.GOP]
+        at = got.index(copied[0])
+        self.assertEqual(got[at:at + len(copied)], copied)
+        self.assertEqual(out["warnings"], [])
+
+    def test_cut_ranges_each_reencode_only_their_edges(self):
+        path, out = self.run_(self.src, {"type": "CUT", "params": {"keep": [{"start": 0.5, "end": 2.0}, {"start": 4.25, "end": 7.5}], "precision": "smart"}})
+        cuts = out["execution"]["operations"][0]["cuts"]
+        self.assertAlmostEqual(video_frames(path), 45 + 97.5, delta=1)   # 1.5 s + 3.25 s at 30 fps, each range on whole frames
+        if not self.smart:
+            self.assertEqual(cuts["smart"]["reason_code"], "engine_without_smart")
+            return
+        self.assertEqual(cuts["mode"], "smart", cuts)
+        for seg in (1, 2):
+            reencoded = sum(p["frames"] for p in cuts["smart"]["parts"] if p["segment"] == seg and p["kind"] == "reencode")
+            self.assertLessEqual(reencoded, 2 * self.GOP, cuts["smart"]["parts"])
+        self.assertGreaterEqual(cuts["smart"]["copied_frames"], 3 * self.GOP)
+
+    def test_a_source_the_engine_cannot_match_falls_back_and_says_why(self):
+        path, out = self.run_(self.mpeg4, {"type": "TRIM", "params": {"start": 0.5, "end": 2.5, "precision": "smart"}})
+        cuts = out["execution"]["operations"][0]["cuts"]
+        self.assertEqual(video_frames(path), 60)
+        self.assertEqual(next(st for st in probe(path)["streams"] if st["codec_type"] == "video")["codec_name"], "h264")
+        self.assertFalse(cuts["smart"]["applied"])
+        if not self.smart:
+            self.assertEqual(cuts["smart"]["reason_code"], "engine_without_smart")
+            return
+        self.assertEqual(cuts["mode"], "accurate")
+        self.assertEqual(cuts["smart"]["reason_code"], "codec")
+        self.assertTrue(cuts["smart"]["reason"])
+        self.assertIn("smart_fallback", [f["code"] for f in cuts["fallbacks"]])
+
+
+def rgb_frame(path, t, w, h):
+    """One decoded frame at time t as rows of (r, g, b)."""
+    raw = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{t:.3f}", "-i", path, "-frames:v", "1", "-f", "rawvideo",
+                          "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE, check=True).stdout
+    return [[tuple(raw[(y * w + x) * 3:(y * w + x) * 3 + 3]) for x in range(w)] for y in range(h)]
+
+
+def red_box(frame):
+    """Bounding box (x0, y0, x1, y1) of clearly red pixels, or None."""
+    pts = [(x, y) for y, row in enumerate(frame) for x, (r, g, b) in enumerate(row) if r > 150 and g < 90 and b < 90]
+    if not pts:
+        return None
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+@unittest.skipUnless(READY and HAS_CROP, REASON + " with crop.py")
+class PunchInTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 10 (ADR-020): a 'face' (a red 40x40 box) left of centre; a 2x punch-in on it from 1 s to 3 s
+    keeps the whole box inside the zoomed frame for the whole range, and the frame outside the range is untouched."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-pin-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "face.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gray:s=320x180:r=30",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4",
+                        "-vf", "drawbox=x=40:y=60:w=40:h=40:color=red:t=fill", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.src], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def test_face_left_of_centre_stays_in_the_zoomed_frame(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        doc = request([{"id": "S", "path": self.src}],
+                      [{"id": "p", "type": "PUNCH_IN", "input": "S", "params": {"start": 1, "end": 3, "scale": 2, "subject": {"x": 40, "y": 60, "width": 40, "height": 40}}}],
+                      [{"id": "o", "operation": "p", "path": "out/p.mp4"}])
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertEqual(rc, 0, json.dumps(out.get("error") if isinstance(out, dict) else out) + err)
+        self.assertEqual(out["execution"]["operations"][0]["punch_in"]["window"], {"x": 0, "y": 34, "width": 160, "height": 90})
+        path = os.path.join(ws, "out", "p.mp4")
+        self.assertEqual(size(path), (320, 180))
+        self.assertAlmostEqual(duration(path), 4.0, delta=0.1)
+        for t in (1.05, 1.5, 2.0, 2.5, 2.95):   # the whole range: the box doubled to 80x80, fully inside, away from every edge
+            box = red_box(rgb_frame(path, t, 320, 180))
+            self.assertIsNotNone(box, t)
+            x0, y0, x1, y1 = box
+            self.assertTrue(0 < x0 and x1 < 319 and 0 < y0 and y1 < 179, (t, box))
+            self.assertAlmostEqual(x1 - x0 + 1, 80, delta=4)
+            self.assertAlmostEqual(y1 - y0 + 1, 80, delta=4)
+            self.assertAlmostEqual(x0, 80, delta=4)   # (40 - 0) * 2
+            self.assertAlmostEqual(y0, 52, delta=4)   # (60 - 34) * 2
+        for t in (0.5, 3.5):   # outside the range: the source picture
+            x0, y0, x1, y1 = red_box(rgb_frame(path, t, 320, 180))
+            self.assertAlmostEqual(x0, 40, delta=2)
+            self.assertAlmostEqual(x1 - x0 + 1, 40, delta=3)
+
+
+def audio_md5s(path):
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-map", "0:a", "-f", "framemd5", "-"],
+                         stdout=subprocess.PIPE, check=True, text=True).stdout
+    return [ln for ln in out.splitlines() if ln and not ln.startswith("#")]
+
+
+@unittest.skipUnless(READY and HAS_CROP, REASON + " with crop.py")
+class MultiAspectTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 11 (ADR-021): one cut list, three deliveries (16:9, 9:16, 1:1) in one request; each shot of the
+    vertical and square versions cropped with its own window (CROP), the shots shared, the outputs of equal duration."""
+    SHOTS = [(0, 2), (2.5, 4), (4.5, 6)]
+    VERTICAL = [10, 115, 220]   # x of each shot's 90x160 window (from a subject path, in a real edit)
+    SQUARE = [0, 70, 140]       # x of each shot's 180x180 window
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-aspect-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "6", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-ac", "2", cls.src], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def doc(self, vertical_x):
+        ops = [{"id": f"s{i}", "type": "TRIM", "input": "S", "params": {"start": a, "end": b}} for i, (a, b) in enumerate(self.SHOTS)]
+        ops.append({"id": "wide", "type": "CONCAT", "inputs": ["s0", "s1", "s2"], "params": {"width": 320, "height": 180}})
+        for i, x in enumerate(vertical_x):
+            ops.append({"id": f"v{i}", "type": "CROP", "input": f"s{i}", "params": {"x": x, "y": 10, "width": 90, "height": 160}})
+        ops.append({"id": "vertical", "type": "CONCAT", "inputs": ["v0", "v1", "v2"], "params": {"width": 180, "height": 320}})
+        for i, x in enumerate(self.SQUARE):
+            ops.append({"id": f"q{i}", "type": "CROP", "input": f"s{i}", "params": {"x": x, "y": 0, "width": 180, "height": 180}})
+        ops.append({"id": "square", "type": "CONCAT", "inputs": ["q0", "q1", "q2"], "params": {"width": 180, "height": 180}})
+        return request([{"id": "S", "path": self.src}], ops,
+                       [{"id": "w", "operation": "wide", "path": "out/p_16x9.mp4"}, {"id": "v", "operation": "vertical", "path": "out/p_9x16.mp4"},
+                        {"id": "q", "operation": "square", "path": "out/p_1x1.mp4"}])
+
+    def run_cli(self, doc, ws):
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        return rc, out
+
+    def test_three_aspects_from_one_edit(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        rc, out = self.run_cli(self.doc(self.VERTICAL), ws)
+        self.assertEqual(rc, 0, json.dumps(out.get("error")))
+        paths = {k: os.path.join(ws, "out", f"p_{k}.mp4") for k in ("16x9", "9x16", "1x1")}
+        self.assertEqual((size(paths["16x9"]), size(paths["9x16"]), size(paths["1x1"])), ((320, 180), (180, 320), (180, 180)))
+        durs = [duration(p) for p in paths.values()]
+        self.assertAlmostEqual(durs[0], 5.0, delta=0.35)   # the contract's frame tolerance (0.11.0's join.py lands 5.106)
+        self.assertLess(max(durs) - min(durs), 1 / 30 + 0.025, durs)   # equal to within a frame (container rounding)
+        trims = [r for r in out["execution"]["operations"] if r["type"] == "TRIM"]
+        self.assertEqual(len(trims), 3, "each shot is cut once and shared by the three versions")
+        for r in out["execution"]["operations"]:
+            if r["type"] == "CROP":   # every window inside its shot's frame, as measured
+                fw, fh = r["normalized"]["source_frame"]
+                p = r["params"]
+                self.assertTrue(p["x"] + p["width"] <= fw and p["y"] + p["height"] <= fh, r["params"])
+        # the sound comes from the same shots: every version has it, and none is longer or shorter than the others
+        lens = [len(audio_md5s(p)) for p in paths.values()]
+        self.assertLessEqual(max(lens) - min(lens), 1, lens)
+
+    def test_a_window_outside_the_source_is_refused_before_anything_runs(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        rc, out = self.run_cli(self.doc([10, 115, 240]), ws)   # 240 + 90 > 320
+        self.assertEqual(out["error"]["code"], "INVALID_REQUEST")
+        self.assertEqual(out["error"]["details"]["reason"], "crop_outside_frame")
+        self.assertFalse(os.path.exists(os.path.join(ws, "out")))
+
+
+@unittest.skipUnless(READY, REASON)
+class GeneratedClipTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 12 (ADR-022): a generated clip (24 fps, no colour tags, no sound, non-square pixels) joins a
+    29.97 fps edit with sound: conformed by CONCAT without a duration drift, and marked AI_GENERATED with the generator and
+    licence the caller declared."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-gen-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.edit = os.path.join(cls.media, "edit.mp4")
+        cls.gen = os.path.join(cls.media, "generated.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30000/1001",
+                        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-c:a", "aac", cls.edit], check=True)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "mandelbrot=size=480x360:rate=24",
+                        "-t", "3", "-vf", "setsar=4/3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an", cls.gen], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def test_generated_clip_joins_without_drift_and_carries_the_mark(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        doc = request([{"id": "E", "path": self.edit},
+                       {"id": "G", "path": self.gen, "ai_generated": {"generator": "example-video-model 2.1", "licence": "CC-BY-4.0"}}],
+                      [{"id": "c", "type": "CONCAT", "inputs": ["E", "G", "E"], "params": {"width": 640, "height": 360, "fps": "30000/1001"}}],
+                      [{"id": "o", "operation": "c", "path": "out/edit.mp4"}])
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertEqual(rc, 0, json.dumps(out.get("error") if isinstance(out, dict) else out) + err)
+        path = os.path.join(ws, "out", "edit.mp4")
+        info = probe(path)
+        v = next(st for st in info["streams"] if st["codec_type"] == "video")
+        self.assertEqual((v["width"], v["height"]), (640, 360))
+        # join.py writes its rate with fps={fps:g}, so 30000/1001 comes out as 2997/100 (an engine finding, ADR-022); both are 29.97
+        self.assertIn(v["r_frame_rate"], ("30000/1001", "2997/100"))
+        self.assertIn(v.get("sample_aspect_ratio", "1:1"), ("1:1", "0:1", None))   # the 4:3 pixels of the generated clip are conformed
+        self.assertEqual((v.get("color_primaries"), v.get("color_transfer"), v.get("color_space")), ("bt709", "bt709", "bt709"))
+        self.assertTrue(any(st["codec_type"] == "audio" for st in info["streams"]), "a silent track was added for the generated clip")
+        # no duration drift: the output lasts the sum of the measured inputs, to within one frame of 29.97 fps, and so does the
+        # timeline this Skill reports
+        expected = 2 * duration(self.edit) + duration(self.gen)
+        frame = 1001 / 30000
+        self.assertAlmostEqual(float(info["format"]["duration"]), expected, delta=frame + 0.03)
+        self.assertAlmostEqual(int(v["nb_frames"]) * frame, expected, delta=frame + 0.001)
+        segs = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
+        self.assertAlmostEqual(float(segs[2]["timeline_range"]["start"]["seconds"]), duration(self.edit) + duration(self.gen), delta=0.001)
+        o = out["execution"]["outputs"][0]
+        self.assertEqual(o["marks"], ["AI_GENERATED"])
+        self.assertEqual(o["ai_generated"], [{"source": "G", "generator": "example-video-model 2.1", "licence": "CC-BY-4.0", "provenance": "DECLARED"}])
+        self.assertEqual(out["execution"]["operations"][0]["marks"], ["AI_GENERATED"])
+        src = {s["id"]: s for s in out["execution"]["sources"]}
+        self.assertEqual(src["G"]["ai_generated"]["provenance"], "DECLARED")
+        self.assertNotIn("ai_generated", src["E"])
+
+
+def frame_px(path, n, points, w=320):
+    """RGB of a few pixels of decoded frame n."""
+    raw = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", path, "-vf", f"select=eq(n\\,{n})", "-frames:v", "1", "-f", "rawvideo",
+                          "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE, check=True).stdout
+    return [tuple(raw[(y * w + x) * 3:(y * w + x) * 3 + 3]) for x, y in points]
+
+
+def colour(px):
+    r, g, b = px
+    return "red" if r > 150 and g < 90 and b < 90 else "blue" if b > 150 and r < 90 and g < 90 else "green" if g > 80 and r < 60 and b < 60 else "other"
+
+
+@unittest.skipUnless(READY, REASON)
+class StingerTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 13 (ADR-023): a red and a blue clip (2 s each, 30 fps) joined with a 1.2 s stinger cut at 0.5 s.
+    The stinger covers the left half throughout and the whole frame only at its frame 15 (0.5 s): the frame before the cut
+    shows red on the right, the cut frame is all stinger, the frame after shows blue. So the switch is at exactly frame 60."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-stinger-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        ff = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+        cls.a, cls.b, cls.st = (os.path.join(cls.media, n) for n in ("a.mp4", "b.mp4", "stinger.mov"))
+        for path, col, freq in ((cls.a, "red", 440), (cls.b, "blue", 660)):
+            subprocess.run(ff + ["-f", "lavfi", "-i", f"color=c={col}:s=320x180:r=30", "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=48000",
+                                 "-t", "2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", path], check=True)
+        subprocess.run(ff + ["-f", "lavfi", "-i", "color=c=black@0.0:s=320x180:r=30:d=1.2,format=rgba,"
+                             "drawbox=x=0:y=0:w=160:h=180:color=green@1:t=fill:replace=1,"
+                             "drawbox=x=0:y=0:w=320:h=180:color=green@1:t=fill:replace=1:enable='eq(n,15)'",
+                             "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=1.2",
+                             "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", "-c:a", "pcm_s16le", "-shortest", cls.st], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def doc(self, cut_point=0.5, cover=None):
+        tr = {"type": "stinger", "stinger": "S", "cut_point": cut_point, "cover": cover or {"start": 0.5, "end": {"frames": 16, "fps": 30}}}
+        return request([{"id": "A", "path": self.a}, {"id": "B", "path": self.b}, {"id": "S", "path": self.st}],
+                       [{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {"transition": tr}}],
+                       [{"id": "o", "operation": "c", "path": "out/stinger.mp4"}])
+
+    def run_cli(self, doc):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        return rc, out, os.path.join(ws, "out", "stinger.mp4")
+
+    @unittest.skipIf(HAS_STINGER, "this ffmpeg-skill has overlay --place, broll and audio --replace")
+    def test_refused_without_the_engine_tools(self):
+        rc, out, _ = self.run_cli(self.doc())
+        self.assertEqual(out["error"]["code"], "TOOL_ERROR", out)
+
+    @unittest.skipUnless(HAS_STINGER, "needs overlay.py --place, broll.py and audio.py --replace (ffmpeg-skill 2.x+)")
+    def test_switch_at_the_cut_point_frame(self):
+        rc, out, path = self.run_cli(self.doc())
+        self.assertEqual(rc, 0, json.dumps(out.get("error")))
+        self.assertAlmostEqual(duration(path), 4.0, delta=0.05)
+        left, right = (40, 90), (280, 90)
+        seen = {n: [colour(p) for p in frame_px(path, n, [left, right])] for n in (44, 45, 59, 60, 61, 80, 81, 100)}
+        self.assertEqual(seen[44], ["red", "red"], "before the stinger: clip A untouched")
+        self.assertEqual(seen[45], ["green", "red"], "stinger frame 0 at 1.5 s = 2.0 - 0.5")
+        self.assertEqual(seen[59], ["green", "red"], "the last frame of A, under the stinger's bar")
+        self.assertEqual(seen[60], ["green", "green"], "the cut frame: fully covered")
+        self.assertEqual(seen[61], ["green", "blue"], "the first frame after the cut shows B")
+        self.assertEqual(seen[80], ["green", "blue"], "stinger frame 35, its last")
+        self.assertEqual(seen[81], ["blue", "blue"], "after the stinger: clip B untouched")
+        rec = out["execution"]["operations"][0]
+        self.assertEqual(rec["stinger"]["joins"][0]["cut_at"]["rational"], "2/1")
+        self.assertEqual(rec["stinger"]["joins"][0]["stinger_start"]["rational"], "3/2")
+        ov = out["execution"]["outputs"][0]["timeline"]["tracks"][1]["segments"][0]
+        self.assertEqual((ov["kind"], ov["cut_at"]["rational"]), ("stinger", "2/1"))
+        # the stinger's sound is mixed in under the join: louder there than in the clip alone
+        def mean_db(ss):
+            err = subprocess.run(["ffmpeg", "-hide_banner", "-ss", str(ss), "-t", "0.6", "-i", path, "-vn", "-af", "volumedetect", "-f", "null", "-"],
+                                 capture_output=True, text=True).stderr
+            return float(re.search(r"mean_volume: (-?[\d.]+) dB", err).group(1))
+        self.assertGreater(mean_db(1.7), mean_db(0.3) + 1.0)
+
+    @unittest.skipUnless(HAS_STINGER, "needs overlay.py --place, broll.py and audio.py --replace (ffmpeg-skill 2.x+)")
+    def test_stream_copied_inputs_switch_on_a_whole_frame(self):
+        """Regression (ADR-030): clips cut by stream copy from mid-GOP carry their pre-roll behind an MP4 edit list, and their
+        length (2.116992 s here) is not whole frames. Joined as measured, the next clip started between frames, the joined
+        picture had a hole, and the output was measured at 29.764 fps against the requested 30 (VALIDATION_ERROR). Each
+        such clip is now cut to whole frames first: the cut lands on a frame (63, 2.1 s, with FFmpeg 6.1) and the output stays at 30 fps."""
+        ff = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
+        paths = {}
+        for name, col, freq in (("A", "red", 440), ("B", "blue", 660)):
+            long_, short = os.path.join(self.media, f"{name}_long.mp4"), os.path.join(self.media, f"{name}_copied.mp4")
+            subprocess.run(ff + ["-f", "lavfi", "-i", f"color=c={col}:s=320x180:r=30", "-f", "lavfi", "-i", f"sine=frequency={freq}:sample_rate=48000",
+                                 "-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", long_], check=True)
+            subprocess.run(ff + ["-ss", "0.85", "-i", long_, "-t", "2.018", "-c", "copy", short], check=True)
+            paths[name] = short
+        frames_a = duration(paths["A"]) * 30
+        self.assertNotAlmostEqual(frames_a, round(frames_a), places=2, msg="the fixture is not whole frames")
+        cut = int(frames_a + 0.001)   # A's length rounded down to whole frames: the cut frame
+        doc = self.doc()
+        doc["project"]["sources"][0]["path"], doc["project"]["sources"][1]["path"] = paths["A"], paths["B"]
+        doc["project"]["operations"][0]["params"]["fps"] = 30
+        rc, out, path = self.run_cli(doc)
+        self.assertEqual(rc, 0, json.dumps(out.get("error")))
+        rate = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=avg_frame_rate,r_frame_rate", "-of", "csv=p=0", path],
+                              capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(rate, "30/1,30/1")
+        rec = out["execution"]["operations"][0]
+        self.assertEqual(Fraction(rec["stinger"]["joins"][0]["cut_at"]["rational"]), Fraction(cut, 30))
+        left, right = (40, 90), (280, 90)
+        seen = {n: [colour(p) for p in frame_px(path, n, [left, right])] for n in (cut - 1, cut, cut + 1)}
+        self.assertEqual(seen[cut - 1], ["green", "red"], "the last frame of A, under the stinger's bar")
+        self.assertEqual(seen[cut], ["green", "green"], "the cut frame: fully covered")
+        self.assertEqual(seen[cut + 1], ["green", "blue"], "the first frame after the cut shows B")
+
+    def test_cut_point_outside_the_covered_window_is_refused(self):
+        rc, out, path = self.run_cli(self.doc(cut_point=0.4))
+        self.assertEqual((out["error"]["code"], out["error"]["details"].get("reason")), ("INVALID_REQUEST", "stinger_not_covering"))
+        self.assertFalse(os.path.exists(path))
+
+
+@unittest.skipUnless(READY, REASON)
+class MotionSpanTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 15 (ADR-025): 2 s of motion, 3 s of a still picture, 2 s of motion; the sound is silent from
+    2.5 s to 4.5 s. The still span is found to within one frame, and combined with the silence by and / or."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-motion-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "fixed_camera.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=2", "-f", "lavfi", "-i", "color=gray:s=320x180:r=30:d=3",
+                        "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=2",
+                        "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=2.5", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=2",
+                        "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=2.5",
+                        "-filter_complex", "[0][1][2]concat=n=3:v=1:a=0[v];[3][4][5]concat=n=3:v=0:a=1[a]", "-map", "[v]", "-map", "[a]",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", cls.src], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def propose(self, body):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        doc = dict({"schema": "video-editing/propose@1", "source": self.src}, **body)
+        rc, out, err = cli(["propose", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        return rc, out
+
+    @unittest.skipIf(HAS_SHOTS, "this ffmpeg-skill has scenes --shots")
+    def test_refused_without_scenes_shots(self):
+        rc, out = self.propose({"static": {}})
+        self.assertEqual(out["error"]["code"], "TOOL_ERROR", out)
+
+    @unittest.skipUnless(HAS_SHOTS, "needs ffmpeg-skill scenes.py --shots (2.x+)")
+    def test_still_span_within_one_frame_and_combined(self):
+        frame = 1 / 30
+        rc, out = self.propose({"static": {}})
+        self.assertEqual(rc, 0, out)
+        (p,) = out["proposals"]
+        self.assertEqual(p["label"], "static")
+        self.assertLessEqual(abs(float(p["start"]["seconds"]) - 2.0), frame + 1e-6, p)
+        self.assertLessEqual(abs(float(p["end"]["seconds"]) - 5.0), frame + 1e-6, p)
+        rc, out = self.propose({"static": {}, "silence": {"threshold_db": -50, "min_seconds": 0.5}, "combine": {"mode": "and"}})
+        (p,) = out["proposals"]
+        self.assertEqual(p["labels"], ["silence", "static"])
+        self.assertLessEqual(abs(float(p["start"]["seconds"]) - 2.5), 0.05, p)
+        self.assertLessEqual(abs(float(p["end"]["seconds"]) - 4.5), 0.05, p)
+        rc, out = self.propose({"static": {}, "silence": {"threshold_db": -50, "min_seconds": 0.5}, "combine": {"mode": "or"}})
+        (p,) = out["proposals"]
+        self.assertEqual(p["label"], "silence+static")
+        self.assertLessEqual(abs(float(p["start"]["seconds"]) - 2.0), frame + 1e-6, p)
+        self.assertLessEqual(abs(float(p["end"]["seconds"]) - 5.0), frame + 1e-6, p)
+        self.assertFalse(out["applied"])
+
+
+def pcm(path, start, dur, rate=48000):
+    """Mono signed 16-bit samples of a stretch of the sound."""
+    raw = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", str(start), "-t", str(dur), "-i", path, "-vn", "-ac", "1", "-ar", str(rate),
+                          "-f", "s16le", "-"], stdout=subprocess.PIPE, check=True).stdout
+    import array
+    a = array.array("h")
+    a.frombytes(raw[: len(raw) // 2 * 2])
+    return a
+
+
+def tone_hz(samples, rate=48000):
+    """Frequency of a pure tone by its zero crossings."""
+    crossings = sum(1 for x, y in zip(samples, samples[1:]) if (x < 0) != (y < 0))
+    return crossings / 2 / (len(samples) / rate)
+
+
+@unittest.skipUnless(READY, REASON)
+class CondenseTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 16 (ADR-026): a 6 s clip whose sound is a 440 Hz tone, then 2 s of near-silence (an 880 Hz tone
+    at -50 dBFS, under the -35 dB silence threshold), then the tone again. The silence is proposed, approved, and kept at
+    double speed: the result lasts 5 s and the quiet tone is still 880 Hz (atempo keeps the pitch)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-condense-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "talk.mp4")
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30:d=6",
+                        "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=2", "-f", "lavfi", "-i", "sine=f=880:sample_rate=48000:d=2",
+                        "-f", "lavfi", "-i", "sine=f=440:sample_rate=48000:d=2",
+                        "-filter_complex", "[2]volume=-50dB[q];[1][q][3]concat=n=3:v=0:a=1[a]", "-map", "0:v", "-map", "[a]",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", cls.src], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def cli_doc(self, cmd, doc, ws):
+        rc, out, err = cli([cmd, "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        self.assertEqual(rc, 0, json.dumps(out.get("error")) + err)
+        return out
+
+    def test_silence_kept_at_double_speed(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        props = self.cli_doc("propose", {"schema": "video-editing/propose@1", "source": self.src, "silence": {"threshold_db": -35, "min_seconds": 0.5}}, ws)
+        (p,) = props["proposals"]
+        self.assertAlmostEqual(float(p["start"]["seconds"]), 2.0, delta=0.05)
+        self.assertAlmostEqual(float(p["end"]["seconds"]), 4.0, delta=0.05)
+        seg = {"start": {"seconds": p["start"]["seconds"]}, "end": {"seconds": p["end"]["seconds"]}, "label": p["label"]}
+        doc = request([{"id": "S", "path": self.src}],
+                      [{"id": "c", "type": "CONDENSE", "input": "S", "params": {"segments": [seg], "rules": {"silence": {"speed": 2}}}}],
+                      [{"id": "o", "operation": "c", "path": "out/tight.mp4"}])
+        out = self.cli_doc("run", doc, ws)
+        path = os.path.join(ws, "out", "tight.mp4")
+        silent = float(p["end"]["seconds"]) - float(p["start"]["seconds"])
+        self.assertAlmostEqual(duration(path), 6 - silent / 2, delta=0.1)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([pc["action"] for pc in rec["condense"]["pieces"]], ["keep", "speed", "keep"])
+        # pitch: the loud tone untouched, the quiet tone still 880 Hz while it plays twice as fast (no chipmunk 1760 Hz)
+        self.assertAlmostEqual(tone_hz(pcm(path, 0.5, 1.0)), 440, delta=15)
+        q = pcm(path, 2.2, 0.6)
+        self.assertAlmostEqual(tone_hz(q), 880, delta=40)
+        self.assertAlmostEqual(tone_hz(pcm(path, 3.4, 1.0)), 440, delta=15)
+        seg_tl = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
+        self.assertEqual([s["speed"] for s in seg_tl], ["1/1", "2/1", "1/1"])
+
+    def test_review_file_lasts_the_removed_spans(self):
+        """ECOSYSTEM_ROADMAP step 17 (ADR-027): output removed joins only the spans the rules cut."""
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        segs = [{"start": 1, "end": 1.5, "label": "retake"}, {"start": 3, "end": 4.2, "label": "retake"}, {"start": 5, "end": 5.5, "label": "silence"}]
+        params = {"segments": segs, "rules": {"retake": "cut", "silence": {"speed": 2}}}
+        doc = request([{"id": "S", "path": self.src}],
+                      [{"id": "r", "type": "CONDENSE", "input": "S", "params": dict(params, output="removed")},
+                       {"id": "e", "type": "CONDENSE", "input": "S", "params": params}],
+                      [{"id": "review", "operation": "r", "path": "out/review.mp4"}, {"id": "edit", "operation": "e", "path": "out/edit.mp4"}])
+        out = self.cli_doc("run", doc, ws)
+        removed = 0.5 + 1.2
+        self.assertAlmostEqual(duration(os.path.join(ws, "out", "review.mp4")), removed, delta=0.1)
+        # the contract's frame tolerance: 0.11.0's join.py of four pieces lands 0.155 s long
+        self.assertAlmostEqual(duration(os.path.join(ws, "out", "edit.mp4")), 6 - removed - 0.25, delta=0.35)
+        rec = {r["operation"]: r for r in out["execution"]["operations"]}["r"]
+        self.assertEqual([(x["source_range"]["start"]["rational"], x["review_range"]["start"]["rational"]) for x in rec["condense"]["review"]],
+                         [("1/1", "0/1"), ("3/1", "1/2")])
+        self.assertEqual(rec["condense"]["removed"]["rational"], "17/10")
+
+
+@unittest.skipUnless(READY, REASON)
+class SizeLimitTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 18 (ADR-028): three fixtures, each delivered at or under its limit and at 90 % of it or more;
+    a limit no watchable bitrate can meet is refused with the reason."""
+    FIXTURES = {   # name: (lavfi video, seconds, audio?, limit in MB)
+        "talk": ("testsrc2=s=640x360:r=30", 20, True, 2.0),
+        "hd": ("mandelbrot=s=1280x720:r=25", 8, False, 3.0),
+        "long": ("testsrc2=s=320x180:r=30,noise=alls=30:allf=t", 60, True, 4.0),
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-size-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        for name, (vid, secs, audio, _) in cls.FIXTURES.items():
+            cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", vid]
+            if audio:
+                cmd += ["-f", "lavfi", "-i", f"sine=f=440:sample_rate=48000:d={secs}", "-c:a", "aac"]
+            subprocess.run(cmd + ["-t", str(secs), "-c:v", "libx264", "-preset", "veryfast", "-crf", "12", "-pix_fmt", "yuv420p",
+                                  os.path.join(cls.media, name + ".mp4")], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def run_size(self, name, limit):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        secs = self.FIXTURES[name][1]
+        doc = request([{"id": "S", "path": os.path.join(self.media, name + ".mp4")}],
+                      [{"id": "t", "type": "TRIM", "input": "S", "params": {"start": 0, "end": secs}}],
+                      [{"id": "o", "operation": "t", "path": "out/o.mp4", "max_size": limit}])
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        return rc, out, os.path.join(ws, "out", "o.mp4")
+
+    @unittest.skipIf(HAS_EXPORT_SIZE, "this ffmpeg-skill has export --max-mb")
+    def test_refused_without_export_max_mb(self):
+        rc, out, _ = self.run_size("talk", {"mb": 2})
+        self.assertEqual(out["error"]["code"], "TOOL_ERROR", out)
+
+    @unittest.skipUnless(HAS_EXPORT_SIZE, "needs ffmpeg-skill export --max-mb (2.x+)")
+    def test_each_fixture_lands_between_90_and_100_percent(self):
+        for name, (_, _, _, mb) in self.FIXTURES.items():
+            with self.subTest(name):
+                rc, out, path = self.run_size(name, {"mb": mb})
+                self.assertEqual(rc, 0, json.dumps(out.get("error")))
+                limit = int(mb * 1000 ** 2)
+                size = os.path.getsize(path)
+                self.assertLessEqual(size, limit)
+                self.assertGreaterEqual(size, 0.9 * limit, out["execution"]["outputs"][0].get("size_limit"))
+                rep = out["execution"]["outputs"][0]["size_limit"]
+                self.assertEqual((rep["limit_bytes"], rep["bytes"]), (limit, size))
+
+    @unittest.skipUnless(HAS_EXPORT_SIZE, "needs ffmpeg-skill export --max-mb (2.x+)")
+    def test_a_simple_picture_under_the_floor_is_delivered_and_said_so(self):
+        """A picture that needs fewer bits than the limit: a larger target stops growing the file, so it is delivered under the
+        limit with under_floor: true rather than refused or padded."""
+        rc, out, path = self.run_size("talk", {"mb": 40})
+        self.assertEqual(rc, 0, json.dumps(out.get("error")))
+        rep = out["execution"]["outputs"][0]["size_limit"]
+        self.assertLessEqual(os.path.getsize(path), 40_000_000)
+        if rep["ratio"] < 0.9:
+            self.assertTrue(rep["under_floor"], rep)
+
+    @unittest.skipUnless(HAS_EXPORT_SIZE, "needs ffmpeg-skill export --max-mb (2.x+)")
+    def test_a_limit_too_small_fails_with_the_reason(self):
+        rc, out, path = self.run_size("long", {"kb": 300})   # 60 s in 300 kB leaves under 100 kb/s for the picture
+        self.assertEqual((out["error"]["code"], out["error"]["details"]["reason"]), ("OUTPUT_ERROR", "size_limit_unreachable"), out["error"])
+        self.assertIn("watchable", out["error"]["message"])
+        self.assertFalse(os.path.exists(path))
+
+
 @unittest.skipUnless(READY, REASON)
 class MediaMatrixE2ETests(unittest.TestCase):
     """Real-media matrix (contract.media_policy, frame_semantics, encoding): A video-only, B video+audio, C mixed audio,
@@ -646,6 +1472,9 @@ class MediaMatrixE2ETests(unittest.TestCase):
         tags = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_primaries,color_transfer",
                                           "-of", "json", cls.media["hdr"]], check=True, capture_output=True, text=True).stdout)["streams"][0]
         assert (tags.get("color_primaries"), tags.get("color_transfer")) == ("bt2020", "smpte2084"), f"the HDR fixture is not tagged BT.2020 / PQ: {tags}"
+        cls.media["sdr_hevc"] = os.path.join(media, "sdr_hevc.mp4")   # an SDR HEVC phone-style clip (ffmpeg-skill 3.0 cut.py keeps HEVC by default)
+        run("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4",
+            "-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", "-c:a", "aac", cls.media["sdr_hevc"])
         cls.media["odd"] = os.path.join(media, "odd.mp4")   # 641x361: only mpeg4 stores an odd frame (libx264 yuv420p refuses it)
         run("-f", "lavfi", "-i", "testsrc2=size=642x362:rate=30", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "2", "-vf", "scale=641:361",
             "-c:v", "mpeg4", "-q:v", "3", "-c:a", "aac", cls.media["odd"])
@@ -915,6 +1744,22 @@ class MediaMatrixE2ETests(unittest.TestCase):
         out = self.run_cli("run", doc)
         path, streams, rec = self.facts(out, "o", 6.0, (180, 320), audio=True)
         self.assertEqual(rec["normalized"]["source_frame"], [360, 640])
+
+    def test_sdr_hevc_source_is_reencoded_h264_on_every_engine(self):
+        """A frame-precision TRIM / CUT re-encodes an SDR source as H.264 like every other operation, also on ffmpeg-skill 3.x
+        whose cut.py keeps HEVC by default (--no-keep-hevc is passed there, ADR-017); a keyframe TRIM is left to the engine."""
+        for op in ({"type": "TRIM", "input": "S", "params": {"start": 1, "end": 3}},
+                   {"type": "CUT", "input": "S", "params": {"keep": [{"start": 0, "end": 1}, {"start": 2, "end": 3}]}}):
+            self.setUp()
+            doc = request([self.src("sdr_hevc", "S")], [dict(op, id="t")], [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+            out = self.run_cli("run", doc)
+            path, streams, rec = self.facts(out, "o", 2.0, (640, 360), audio=True)
+            self.assertEqual(next(s for s in streams if s["codec_type"] == "video")["codec_name"], "h264", op["type"])
+        self.setUp()
+        doc = request([self.src("sdr_hevc", "S")], [{"id": "t", "type": "TRIM", "input": "S", "params": {"start": 1, "end": 3, "precision": "keyframe"}}],
+                      [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        out = self.run_cli("run", doc)
+        self.facts(out, "o", 2.0, (640, 360), audio=True, tol=1.5)   # copy or not is the engine's call; the result is validated either way
 
     def test_hdr_source_is_encoded_hevc_and_never_mixed(self):
         doc = request([self.src("hdr", "H")], [{"id": "t", "type": "TRIM", "input": "H", "params": {"start": 0, "end": 2}}], [{"id": "o", "operation": "t", "path": "out/o.mp4"}])

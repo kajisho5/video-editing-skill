@@ -560,3 +560,654 @@ output; a real-media test (`tests/test_integration.py::OperationE2ETests::test_i
 2.22.2: a 120x40 PNG with `height: 120` becomes a 360x120, 30 fps, silent H.264 clip of 2.0 s whose picture does not
 change, and an IMAGE_INSERT 640x360 card CONCATed in front of a 6 s clip with audio gives 7.5 s, 640x360, with audio,
 the card then the footage. CI runs the same test against the pinned 0.11.0 checkout.
+
+## ADR-016 — CROP is this Skill's: a typed operation on ffmpeg-skill's `crop.py`, not left to the caller
+
+**Context.** `ECOSYSTEM_ROADMAP.md` step 5 ("CROP: implement or leave to the agent", done when there is no duplicate
+ownership). ADR-014 left `CROP` in `unsupported` because video-production-agent already calls `ffmpeg-skill/crop`
+itself (its `video_crop` SkillSpec, fed by the `cropdetect_analysis` measurement and a CONFIRM decision), so who owns
+pixel-rectangle crops had to be decided before a mapping was added. Two facts decide it:
+- `AI-video-production-OS`'s `ecosystem.json`, which gives each job to exactly one repository, gives **尺・画角合わせ**
+  (duration and framing) to video-editing-skill. Its roadmap says "Work outside this list belongs to its owner and is
+  handed over, not re-implemented". Cutting the frame down to a rectangle is framing, like `FILL`'s aspect crop and
+  `RESIZE`, which already live here.
+- ADR-001 puts judgement with the caller and execution here. Choosing the rectangle (letterbox detection, a face box)
+  is judgement, and the agent keeps it: `cropdetect` stays a measurement it runs. Applying a given rectangle is
+  execution, which is this Skill's job.
+
+**Decision 1 — implement `CROP`; the agent's direct `ffmpeg-skill/crop` call is the duplicate.**
+`CROP {x, y, width, height}` → `crop.py --x --y --width --height` (+ the typed encoding profile). Retiring
+`video_crop` in the agent, or making it lower onto `video-editing/crop` the way it lowers `video.trim` onto `CUT`, is
+an agent-side change. It is not made here (this repository never edits the agent), but this ADR is the decision the
+agent can follow. Until then the agent's path keeps working: this change removes nothing it uses.
+
+**Decision 2 — exactly the rectangle, or a refusal; never rounded.** This follows crop.py's own contract, read from
+the code of both checkouts (2.21.0 and the pinned 0.11.0 `b388035`): `x, y >= 0`, `width, height > 0` and even (4:2:0),
+and the rectangle inside the source frame *as displayed* (rotation ±90/270 swaps the measured width and height).
+- Here: `x`, `y` are integers `0..8192`; `width`, `height` are even integers `2..8192` (`_even`, the same validator as
+  every other frame size).
+- *Inside the frame* is checked in `Executor._check_media`, before anything runs, against the input's measured or
+  expected frame (an operation's output frame when the input is another operation). An outside rectangle is
+  `INVALID_REQUEST`, `details.reason: crop_outside_frame`, with the frame and the rectangle. A request is malformed
+  for its input, and nothing about the input is unusable, so it is not `INVALID_INPUT`.
+- The output frame is `width × height` exactly (`target_frame`, verified after the run like every frame).
+- fps, duration and audio are as the input: crop.py adds no `--fps` unless asked, and none is exposed.
+- The timeline mapping is unchanged (a frame-only operation, like `RESIZE` / `ROTATE`).
+- An odd input frame is not refused: crop.py writes even output whatever the input, so `CROP` is not in the
+  `odd_frame` group.
+
+**Decision 3 — an optional engine tool.** `crop` joins `OPTIONAL_TOOLS` (`crop.py` ships from 0.11.0; the 0.10.0
+floor has none). A checkout without it makes only `CROP` MISSING (a doctor note, `ok` stays true), and a request using
+it is refused before anything runs (`TOOL_ERROR`, `tool:ffmpeg-skill/crop`, not retryable). `outputs[].encoding.crf`
+is passed under the detected spelling, `--crf` on 0.11.0 and `--quality` on 2.x (ADR-013).
+
+**Not done.** No `--fps` on CROP; no automatic rectangle of any kind. `cropdetect` is a measurement, and an
+aspect-ratio crop is `FILL`. `POSITION` remains the only `unsupported` entry.
+
+**Versioning.** `operations`, `unsupported` and `capabilities` change (pinned), as do `capability_names` and `tools`
+(a new `video-editing/crop`): breaking by ADR-007's convention. As with ADR-014 / ADR-015, the `version` /
+`contract_version` bump is left to the release that ships it (this change was asked not to move the package version).
+`video-production-agent` must re-pin; its `check_contract()` accepts the new contract. The golden copy
+`tests/contract/contract.json` is regenerated.
+
+**Verified directly, not assumed:** crop.py's flags and checks from both checkouts' code (`--x --y --width --height`,
+`--crf` on 0.11.0, `--quality` on 2.21.0), and a real-media test (`tests/test_integration.py::OperationE2ETests::test_crop`)
+against both. On a 320x240 clip whose left half is white and right half black:
+- `{176, 40, 120x160}` gives a 120x160 black clip, with audio and the same duration.
+- `{0, 0, 160x240}` gives the white half.
+- `{200, 0, 160x240}` is refused before anything runs.
+
+## ADR-017 — ffmpeg-skill 3.0.0: cut.py's new defaults against TRIM / CUT
+
+**Context.** ffmpeg-skill 3.0.0 (`1dc2f52`, its CHANGELOG "3.0.0" and `docs/contract.md` "What 3.0 changed") drops
+Python 3.9 and FFmpeg 5.x and changes four `cut.py` defaults; `contract_version` stays 2.0 and no tool or flag this
+Skill passes was removed. TRIM and CUT are `cut.py` calls, so each change was checked against them, on real media with
+ffmpeg 6.1.1, against 3.0.0, 2.24.1 and the pinned 0.11.0:
+
+- **SDR HEVC is re-encoded as HEVC** (2.x: x264; `--no-keep-hevc` restores x264). A frame-precision TRIM / CUT of an
+  SDR HEVC clip (a phone recording) came out HEVC, and output validation refused it: `VALIDATION_ERROR`, "video codec
+  hevc is not the engine's h264 for this source" (`reason: codec`). Every other re-encoding tool still writes H.264
+  for SDR, so a 3.x TRIM followed by FIT would also have changed codec mid-graph. **This one needed a change.**
+- **The MP4 edit list is kept on a stream copy** (2.x shifted timestamps and showed the keyframe's pre-roll). Only a
+  keyframe-precision TRIM / CUT stream-copies. Its output now starts at the requested time instead of the earlier
+  keyframe. That is the timeline this Skill already reports, and the duration check (1.5 s tolerance for keyframe)
+  passes either way. Kept, no flag.
+- **`--vfr-guard sampled`**: a copy is judged on measured packet timing instead of the average rate. This is the
+  engine's call about whether it may copy. Re-encoding instead of copying is always within a keyframe TRIM's contract
+  ("lossless when possible"). Kept, no flag.
+- **`precision` / `keyframe_snapped` result keys**: this Skill reads neither from cut.py's reply (it probes the output
+  itself). No effect.
+
+**Decision.** Keep this Skill's codec rule (H.264 for SDR, HEVC for HDR, never mixed) rather than adopt cut.py's new
+default for one operation type. A re-encoding (frame-precision) TRIM / CUT passes `--no-keep-hevc`, but only where the
+installed cut.py offers it (`FfmpegSkill.cut_keeps_hevc_by_default()`: the flag as detected per ADR-013, or, where
+flags were not detected, version `>= 3.0.0`). 2.x cut.py has no such flag and would reject it as an unknown argument, so it
+is never passed there. A keyframe-precision TRIM / CUT does not get it: a stream copy keeps the source codec in every
+release, and any re-encode there is the engine's fallback. The flag is added at argv time (`Executor._engine_args`,
+held to `compiler.ALLOWED_FLAGS`), not in the compiled step, because it depends on the checkout and not on the request.
+`--no-edit-list` / `--vfr-guard average` are not passed: 3.0's behaviour is the better one for both, and nothing here
+depends on 2.x's.
+
+**Version range.** `>=0.10.0` with no ceiling (ADR-013) already admits 3.x, so the range and `dependencies` are
+unchanged and video-production-agent need not re-pin for this. `engine.compatibility.detected` (non-pinned) gains one
+line; the golden `tests/contract/contract.json` is regenerated.
+
+**Python / FFmpeg.** This Skill stays Python 3.9+. Its unit jobs never run ffmpeg-skill, and its integration jobs
+already run Python 3.11 with the runner's apt ffmpeg (6.1 on ubuntu-24.04, 8.0 on ubuntu-latest), both inside 3.0's
+floors. No job combined 3.0 with Python 3.9 or FFmpeg 5.x, so no job had to be split.
+
+**CI.** The integration matrix adds 2.24.1 (`a2c8433`, the last 2.x) and 3.0.0 (`1dc2f52`), each pinned by commit, next to
+0.11.0 and main. `tests/test_integration.py::MediaMatrixE2ETests::test_sdr_hevc_source_is_reencoded_h264_on_every_engine`
+(a libx265 SDR fixture) fails on 3.0.0 without this change and passes on all three. `tests/test_engine_compat.py` gains
+a fake `3.x` layout whose cut.py keeps HEVC unless `--no-keep-hevc` is passed, and a 2.x case where the flag must not
+be passed.
+
+## ADR-018 — Segment cache and partial re-render for CUT (`options.segment_cache`)
+
+**Context.** ECOSYSTEM_ROADMAP step 8 (field review 2026-11-05): fixing one cut in a long programme re-encoded the whole
+CUT, because a frame-precision CUT is one `cut.py --segments ... --accurate` call and its result is reused only as a whole
+(ADR-001's operation-level reuse: a changed range is a new `operation_id`).
+
+**Decision.** A new request option, `options.segment_cache` (bool, default false). With it, a frame-precision CUT is
+rendered part by part:
+
+1. every keep range is cut alone, `cut.py <input> --start a --end b --accurate` (plus the output's encoding profile and
+   `--no-keep-hevc` where the release has it, ADR-017);
+2. each part is validated (video stream, duration within the frame tolerance of `b - a`, audio kept when the input has
+   it) and stored as `<work>/segments/seg_<key>.<ext>` with a record `{key, sha256, size, probe}`;
+3. the parts are joined by stream copy, `join.py <parts...> --transition none --copy` (one part is copied as is), and
+   the joined file is validated as every operation output is.
+
+A part's key is `sha256(input identity, range start / end as rationals, tool, tool versions, skill version, container,
+encoding, engine release flags)`. The rest of the keep list is not in it, so after one range changes the other parts
+keep their keys and are taken from the cache (`status: reused`); only the changed one is encoded. A part is reused when
+its file's size and sha256 match its record. The operation's own idempotency key gains `render: segments`, so a segment
+render and a single-pass render never stand in for each other. Running the same request twice reuses the operation
+itself and writes nothing in the work directory.
+
+**Why an option, default off.** The segment render butts the joins: cut.py's `--segments` declick fade (20 ms either side
+of each join) is not applied to a stream-copy join, and the bytes differ from the single-pass render. Turning it on for
+everyone would change every existing CUT's output. A caller that edits long programmes iteratively asks for it.
+
+**Fallback.** ffmpeg-skill refuses a copy join whose parts' picture and sound do not line up within 50 ms (found live:
+16 kHz AAC parts start their sound 64 ms early, the encoder's priming; at 44.1 / 48 kHz it is 21-23 ms and the join is
+accepted). Then the operation is rendered in one pass as without the cache; the parts stay cached, and the record says
+`join: single_pass_fallback` with the engine's reason. Nothing is hidden and no tolerance is widened.
+
+**Engine.** `join.py --copy` exists from ffmpeg-skill 2.24.0. It is detected (ADR-013), not version-guessed. On a checkout
+without it (the pinned 0.11.0) a request asking for the cache is refused before anything runs (`TOOL_ERROR`,
+`flag:ffmpeg-skill/join --copy`). The floor is not raised. `compiler.ALLOWED_FLAGS["join"]` gains `copy`, which only the
+executor sets for a segment join.
+
+**CONCAT.** The roadmap names CUT and CONCAT. CONCAT's own join stays one re-encode: it conforms size, frame rate and the
+audio layout (stereo), and a transition needs the pixels, so a copy join would change its contract. A CONCAT's partial
+re-render comes from its inputs: each input is an operation reused as a whole, or a segment-cached CUT. A copy-join mode
+for CONCAT when its inputs already match is left as a follow-up. It is not claimed here.
+
+**Report.** `execution.operations[].segments`: `{mode: segments, join: stream_copy | single | single_pass_fallback,
+parts: [{index, range, key, status: encoded | reused, sha256, seconds}], encoded, reused, fallback_reason?}`. In
+`plan.steps[].segments`: `[{index, range, key, cached}]`. The contract describes all of it in a new additive block,
+`segment_cache`.
+
+**Versioning.** `request_shape.options` gains `segment_cache`. `request_shape` is pinned by agents
+(`versioning.also_pinned_by_agents`), so this is breaking by ADR-007's convention. As with ADR-014 to ADR-016, the
+`version` / `contract_version` bump is left to the release, and video-production-agent re-pins. A request without the
+option compiles and runs exactly as before. The golden copy is regenerated.
+
+**Verified, not assumed.** `tests/test_integration.py::SegmentCacheLongFormTests` builds a 1-hour source (160x90 at 10
+fps, 48 kHz AAC) and cuts three ranges (at 10, 30 and 58 minutes). After the middle range changes, the run encodes
+exactly one part (`encoded: 1, reused: 2`). The output's framemd5 (picture and sound) equals that of the same changed
+request rendered from an empty cache, and a third run is `reused`. Against ffmpeg-skill main (3.2.0); against 0.11.0
+the refusal is tested instead. Offline: `tests/test_engine_contract.py::SegmentCacheTests` (fake engine) covers
+counting, the repeated request, `reuse: false`, the plan's `cached` flags and the refusal.
+
+## ADR-019 — Keyframe-aware cuts: `precision: auto`, the engine's choice reported per cut
+
+**Context.** ECOSYSTEM_ROADMAP step 9: trimming the head and tail of a 2-8 hour recording should not re-encode it. Until
+now a TRIM / CUT was either `frame` (always re-encoded) or `keyframe` (cut.py's lossless mode with its default 0.5 s
+tolerance: an in point may move to a keyframe up to 0.5 s away, and validation allows 1.5 s). Neither copies only when the
+copy is exact.
+
+**What the engine offers, measured (ffmpeg 6.1.1; a 12 s, 30 fps clip with a closed 30-frame GOP).** `cut.py --tolerance T`
+without `--accurate` stream-copies, then measures how far the copy's length lands from the asked one. Past `T` it
+re-encodes that cut ("hybrid", `reencode_reason: tolerance`). It judges the length, not the keyframe positions:
+- On a keyframe, 2 to 5 s: 3.2.0 lands 0.067 s long (two B-frames past the out point) and 0.11.0 lands 0.147 s long. So
+  `T` must be above about 0.15 s for a copy on a keyframe to stay a copy on every release.
+- Half a GOP off, 2.5 to 5 s: 0.11.0 / 2.x snap the start to 2.0 and re-encode. 3.x keeps the MP4 edit list (the
+  picture starts at 2.5 with the pre-roll hidden) and lands 0.167 s long, so with `T = 0.2` it is a lossless copy.
+- No public tool lists keyframe positions. cut.py reports `nearest_keyframes` only after a tolerance miss.
+
+**Decision.** A third precision, `auto`: cut.py's lossless mode with `--tolerance 0.2` (never `--accurate`). A cut whose
+copy lands within 0.2 s of the range is a stream copy, and an in point on a keyframe gives the source's packets byte for
+byte. Any other cut is re-encoded frame-accurately. Validation uses the frame tolerance (0.35 s), not keyframe's 1.5 s.
+Like `keyframe`, it may stream-copy, so an encoding profile on its output is refused (`encoding_needs_reencode`), and
+`--no-keep-hevc` / the codec check do not apply. Every keyframe or auto TRIM / CUT record now carries `cuts`: cut.py's
+own measured keys (`mode`, `reencoded`, `reencode_reason`, `precision`, `segment_precision` and
+`segment_end_snap_seconds` per range, `duration_delta_seconds`, `nearest_keyframes`, `edit_list`, `keyframe_snapped`),
+OBSERVED with `source: ffmpeg-skill/cut@<version>`. A key a release does not report is null. 0.11.0, for one, does not
+name `mode` for every case.
+
+**Not done (roadmap step 9's second condition).** "One cut between keyframes re-encodes at most two GOPs" is not met.
+cut.py re-encodes the whole cut, not the GOPs at its edges. A smart render here would need the keyframe positions
+(Velisa ROADMAP, proposal 1 to ffmpeg-skill: cut-point candidates). It would also need to splice an H.264 re-encode into
+copied packets with matching parameter sets, which is the engine's job and no tool offers it. Building it here would
+mean reading packets and running ffmpeg outside ffmpeg-skill, which ADR-001 / ADR-013 rule out. Proposal to
+ffmpeg-skill: a `cut.py` smart-render mode that re-encodes only the boundary GOPs, with its keyframe candidates in
+the result. Until then `auto` is the lossless-first choice and says per cut what it did.
+
+**Versioning.** `operations.TRIM` / `CUT.parameters.precision` gain a value (pinned): breaking by ADR-007's convention.
+The bump is left to the release (ADR-014 to ADR-016), and video-production-agent re-pins. `compiler.ALLOWED_FLAGS["cut"]`
+gains `tolerance`.
+
+**Verified.** `tests/test_integration.py::KeyframeAwareCutTests`, against ffmpeg-skill 3.2.0 and 0.11.0:
+- 2 to 5 s with `auto`: every video packet of the output is the source's, in order, byte for byte (packet md5s), and
+  `mode` is `copy` where the engine reports it.
+- 2.5 to 5 s: the report agrees with the packets (copy exactly when the packets are the source's, `reencoded` otherwise).
+
+## ADR-020 — PUNCH_IN: a hard-cut zoom on a subject box the caller gives
+
+**Context.** ECOSYSTEM_ROADMAP step 10: the usual punch-in on the speaker, a zoom on the face for a range, following
+detection-skill's face box. ADR-001 still holds. Detection, and choosing which jump cuts get a punch-in ("used at a
+share of jump cuts"), are the caller's: video-production-agent reads detection-skill and decides. This Skill takes the
+box and the range as typed values.
+
+**Decision.** A new operation type `PUNCH_IN {start, end, scale (1, 4], subject {x, y, width, height}}` (capability
+`video.punch_in`). The window is `floor_even(W / scale) x floor_even(H / scale)`. It is centred on the subject box, then
+moved only as far as needed to stay inside the frame, with even offsets where the box allows (`operations.punch_window`).
+A box outside the frame (`subject_outside_frame`) or larger than the window (`subject_larger_than_window`, since it could
+not stay in view) is refused before execution. The engine calls, each an ffmpeg-skill tool:
+1. `cut.py --accurate` cuts out the part before `start`, the range, and the part after `end`;
+2. `crop.py` crops the range to the window;
+3. `fit.py --aspect W:H --fit crop --width W` scales it back to the input frame (the window's aspect is the frame's to
+   within one even step, so at most a pixel row is cropped and nothing is stretched);
+4. `join.py --transition none --width W --height H --fps <input fps>` joins the three parts.
+The intermediate files are removed. The frame size, frame rate and duration are the input's. The timeline mapping is
+unchanged (as for CROP). The record and the plan carry `punch_in: {window, frame, subject, scale, transition: cut,
+range}`.
+
+**Not done.** "Or a short ease" is not provided, because an ease is a crop window that moves over time. `crop.py` takes
+one rectangle and `fit.py --fit crop` one position, which is Velisa's proposal 2 to ffmpeg-skill (a time-varying crop).
+Until it exists, the punch-in is a hard cut in and out, the common form. The sound passes through `join.py`, so it comes
+out stereo AAC (as from CONCAT), not the input's layout. That is stated in `media_compatibility.PUNCH_IN`.
+
+**Engine.** It needs crop.py (optional tool, ffmpeg-skill 0.11.0+). On a checkout without it, doctor reports PUNCH_IN
+MISSING as a note, like CROP, and a request is refused before execution. cut / fit / join flags are checked per request.
+
+**Versioning.** A new type in `operations`, `capabilities` and `tools` (pinned): breaking by ADR-007's convention. The
+bump is left to the release, and video-production-agent re-pins and needs a lowering for it.
+
+**Verified.** `tests/test_integration.py::PunchInTests`, against ffmpeg-skill 3.2.0 and 0.11.0. A 320x180 clip has a red
+40x40 "face" at (40, 60), left of centre. A 2x punch-in from 1 s to 3 s gives the window (0, 34, 160x90). In decoded
+frames at 1.05, 1.5, 2.0, 2.5 and 2.95 s, the box is about 80x80 at (80, 52), fully inside the frame and away from every
+edge. At 0.5 and 3.5 s the source picture is unchanged. The output stays 320x180 and 4 s.
+
+## ADR-021 — One edit, several aspects: a request graph, not a new type
+
+**Context.** ECOSYSTEM_ROADMAP step 11: ship the landscape programme and the vertical / square versions from one edit,
+in one request. Each shot of the vertical version is cropped with one window per shot taken from detection-skill's
+subject path.
+
+**Decision.** No new operation type. The graph already expresses it, and a dedicated type would duplicate CROP and
+CONCAT (ADR-016's "no duplicate ownership"). The cut list is one TRIM (or CUT) per shot. Each shot is shared by every
+version: the graph runs it once, and its intermediate is reused. Per aspect, one CROP per shot takes the window the
+caller computed from the subject path (ADR-001: choosing the window is the caller's), and a CONCAT with that aspect's
+`width` / `height` makes the delivery. The outputs are three `outputs[]` of one request. `examples/multi-aspect.json`
+is the template (16:9, 9:16 and 1:1 from a 1920x1080 talk).
+
+**What holds.** Every window is checked against its shot's measured frame before anything runs (`crop_outside_frame`).
+The three outputs come from the same shots, so they have the same duration to within a frame. The sound is the same
+source ranges in every version, but each CONCAT encodes it again. It is not bit-identical across outputs (decoded
+frames differ, measured). A single bit-identical track shared by all three would need a mux step (picture from one
+file, sound from another), and no typed operation does that yet. One window per shot is the rule: a window that moves
+within a shot needs a time-varying crop (Velisa proposal 2 to ffmpeg-skill).
+
+**Versioning.** Nothing in the contract changes. This ADR, an example, and a real-media test.
+
+**Verified.** `tests/test_integration.py::MultiAspectTests`, against ffmpeg-skill 3.2.0 and 0.11.0. A 6 s 320x180 clip is
+cut into three shots (5 s in all) and rendered as 320x180, 180x320 (90x160 windows) and 180x180 (180x180 windows):
+- the three outputs are equal in duration to within one frame;
+- the three TRIMs run once;
+- every CROP window lies inside its measured source frame;
+- a window past the right edge is refused before anything runs.
+
+## ADR-022 — AI-generated clips: declared by the caller, conformed by CONCAT, marked downstream
+
+**Context.** ECOSYSTEM_ROADMAP step 12: generated clips (24 fps, untagged, silent, any pixel shape) join edits. They need
+to arrive without a format mismatch and without a missing AI label.
+
+**Decision.**
+- **The declaration.** A source takes an optional `ai_generated: {generator, licence}`, each 1 to 200 printable
+  characters. It is the caller's statement and is never inferred from the media (ADR-001: no detection here). It is
+  reported with `provenance: DECLARED`.
+- **The mark.** Every operation record and delivered output whose result contains a declared source carries
+  `marks: ["AI_GENERATED"]` and `ai_generated: [{source, generator, licence, provenance: DECLARED}]`. The list comes from
+  the operation's reachable sources (`source_refs`). `execution.sources[]` repeats the declaration. Results without such
+  a source carry neither key.
+- **Not part of identity.** Identity is the bytes, and the declaration is metadata about them. The mark is recomputed on
+  every run, so a reused result is marked by the current request. Writing the mark into the container metadata of the
+  delivered file (ffmpeg-skill `metadata`) is not done: the contract's provenance is the record of truth, and a later
+  step can add a container tag.
+- **Normalisation is CONCAT's.** `join.py` already conforms every input:
+  - frame size: `params.width` / `height`, with `mode` pad or crop;
+  - frame rate: `params.fps`, else the first input's;
+  - square pixels: `setsar=1`;
+  - BT.709 tags on the H.264 output;
+  - a silent track for an input without sound when another input has sound.
+
+  No separate normalise step is added. The caller should set `width` / `height` / `fps` on the CONCAT, so that the edit's
+  format decides and not whichever clip comes first.
+
+**Engine finding (not masked).** `join.py` writes its frame rate with `fps={fps:g}`, so 30000/1001 (given, or taken from
+the first clip) comes out as `2997/100`. The frame count and duration are right: 0.003 % apart from 30000/1001, about 4
+ms an hour. The rate tag is not the NTSC rational a broadcast delivery expects. Proposal to ffmpeg-skill: carry the
+rate as a rational (`--fps 30000/1001`, and the probe's `r_frame_rate`) through to the filter. This Skill passes what
+the engine accepts (a float).
+
+**Versioning.** `request_shape.project.sources` gains `ai_generated` (agent-pinned), so this is breaking by ADR-007's
+convention. The bump is left to the release, and video-production-agent re-pins. There is a new additive contract block,
+`ai_generated`.
+
+**Verified.** `tests/test_integration.py::GeneratedClipTests`, against ffmpeg-skill 3.2.0 and 0.11.0:
+- **Input.** A 3 s 480x360 clip at 24 fps with 4:3 pixels, no colour tags and no sound, joined between two 29.97 fps
+  BT.709 clips with sound, with CONCAT `640x360 @ 30000/1001`.
+- **Format.** 640x360, square pixels, BT.709 tags, a sound track throughout.
+- **No drift.** Duration and frame count equal the sum of the measured inputs to within one frame, and the reported
+  timeline places the third clip exactly there.
+- **Marks.** The output and the CONCAT record carry the mark with the declared generator and licence.
+`tests/test_engine_contract.py::GeneratedSourceMarkTests` checks that the mark reaches only results that contain the
+source, and that the declaration does not change operation ids.
+
+## ADR-023 — Stinger transition: butt join, the stinger composited over each join, the switch at its cut point
+
+**Context.** ECOSYSTEM_ROADMAP step 13. A stinger is a graphic with alpha that covers the whole picture for a moment, and
+the edit cuts underneath it. It is an editing transition here, not live switching or playout. Velisa does neither.
+
+**Decision.** CONCAT gets `transition: {type: stinger, stinger: <video source id>, cut_point: time, cover: {start, end}}`.
+- **The stinger file.** A source file, not an operation: an encode would lose the alpha. It must have an alpha plane
+  (refused otherwise: `stinger_no_alpha`), and the edit's aspect and frame rate. Its length is the file's. As OVERLAY's
+  image is, the stinger is the operation's last input, so its bytes are part of the operation's identity and provenance.
+- **`cut_point` and `cover`.** Data from the stinger's maker. stinger.json is what hyperframes-skill step 15 will write
+  beside the file: the cut point and the fully covered window. The caller reads stinger.json and passes both values;
+  this Skill does not open sidecar files. Without either, the request is refused by schema. A cut point outside the
+  cover is `stinger_not_covering`, and one that is not on a frame of the stinger is `cut_point_not_on_frame`.
+- **Placement.** The clips are butt-joined. At each join, the cut is the first frame of the next clip, and the stinger
+  starts `cut_point` before it, so the stinger's covered frame lies on the cut frame. Each input must be at least as
+  long as the lead-in (before its join) and the tail (after it).
+- **Engine calls**, each an ffmpeg-skill tool:
+  1. `join.py`, no transition, with the CONCAT's size / rate / mode;
+  2. `overlay.py --video <stinger> --place 0-<len>@<start>`, once per join (alpha respected, measured below);
+  3. with sound, `broll.py --insert <stinger> --at <start> --duration <len> --audio mix` per join, because overlay.py drops
+     a layer's sound;
+  4. then `audio.py --replace`, which puts that mix onto the composite.
+
+  `broll` and `audio` join `OPTIONAL_TOOLS`, so their flags are detected. A checkout without overlay `--place` (0.11.0)
+  or without broll is refused before execution.
+- **Report.** The record and the plan carry `stinger: {source, cut_point, cover, duration, audio, joins: [{cut_at,
+  stinger_start, stinger_end}]}`. The output timeline gets an overlay-track segment `{kind: stinger, cut_at,
+  timeline_range}` per join, so the timeline reports the cut at that frame.
+
+**Not done (left unchecked in the roadmap).**
+- **Full cover is declared, not measured.** No ffmpeg-skill tool reports a stinger's alpha at one frame. export.py's
+  alpha statistics are internal to its own verification, and measuring here would mean running ffmpeg outside
+  ffmpeg-skill. So "a stinger that does not cover the frame there is refused" holds only against the declared cover
+  window.
+- **No qc-skill check exists yet.** "qc-skill's stinger cut-point check passes on the result" cannot be met: qc-skill
+  (1.0.0) has no stinger cut-point check yet (Velisa ROADMAP lists it as a qc-skill step). The real-media test makes the
+  same measurement itself, on decoded pixels.
+
+**Versioning.** `operations.CONCAT.parameters.transition` changes (pinned), and the `engine.tools_optional` list gains
+broll and audio (agent-pinned): breaking by ADR-007's convention. The bump is left to the release, and
+video-production-agent re-pins. There is a new additive block, `stinger`.
+
+**Verified.** `tests/test_integration.py::StingerTests`, against ffmpeg-skill 3.2.0 (0.11.0: refused, tested).
+- **Fixture.** A red and a blue 2 s clip at 30 fps, and a 1.2 s ProRes 4444 stinger with sound. The stinger covers the
+  left half throughout and the whole frame only at its frame 15 (0.5 s). The cut point is 0.5 s and the cover is [0.5,
+  16/30).
+- **Before and after.** Frame 44 is all red and frame 81 all blue: the clips are untouched outside the stinger.
+- **Around the cut.** Frames 45 and 59 show the bar over red. Frame 60, the cut at 2.0 s, is all stinger. Frames 61 and
+  80 show the bar over blue. So the switch is at exactly frame 60 and happens under full cover.
+- **Report.** The timeline reports `cut_at` 2/1 and the stinger start 3/2.
+- **Sound.** The mix is louder under the join than in the clip alone.
+- **Refusals.** A cut point outside the cover is refused before anything runs. Offline (fake engine), the no-alpha,
+  off-frame, too-long, and operation-as-stinger refusals are covered too.
+
+## ADR-024 — Retake proposals: rules over word timings, proposed with reasons, never applied
+
+**Context.** ECOSYSTEM_ROADMAP step 14 (added on the owner's instruction, 2026-11-06, with steps 15 to 18). Talks and
+interviews are cleaned up by cutting retakes, broken-off words, repeats and hesitation words. ADR-001 keeps editing
+judgement out of this Skill. This step therefore produces proposals only: deterministic rules, each finding stated with
+its reason. A person (or the agent, on a person's behalf) approves them by id, and only approved proposals reach an edit,
+as CONDENSE segments (step 16). This repository never applies a proposal by itself.
+
+**Decision.** A new command, `video-editing propose` (request `video-editing/propose@1`, response
+`video-editing/proposals@1`, contract block `proposals`). With `retakes: {transcript, profile?, min_confidence?}`, it
+reads a transcript with word timings from an allowed input root (`{words: [{word | text, start, end}]}`, in time order,
+validated). It writes nothing; the response says `applied: false`. The rules:
+- **repeat:** the same 1 to 4 words twice in a row. The first saying is proposed, up to where the second starts.
+- **restart:** a phrase of 2+ words said again within 8 words and 4 s, with only hesitation words or broken-off words in
+  between. A 3+ word opening said again after at most 3 words also counts. "in the morning and in the evening" is not a
+  restart.
+- **fragment:** a broken-off word (ending in -, — or ~), or a short false start that the next word begins with
+  ("st store").
+- **filler:** a hesitation word of the profile.
+
+Each rule has a fixed confidence (`contract.proposals.confidence`). It is a stated weight, not a probability.
+`min_confidence` (default 0.5) decides what is proposed, and how many findings fell below it is reported. Overlapping
+findings merge, and the higher-confidence one names the merged proposal. A one-word repeat of a word people double on
+purpose (very very, はい はい) scores 0.3, so by default it is seen but not proposed.
+
+**Language.** English is the default profile. Japanese (`profile: ja`: えー, えっと, あのー, …, with あの and まあ scored
+below the default because they are also ordinary words) is a selectable regional profile, per the ecosystem's
+internationalisation rule. There is no language detection: the caller names the profile.
+
+**Versioning.** It is a new command and new schemas, outside the pinned blocks. The contract gains an additive
+`proposals` block. The canonical `run` invocation is unchanged. It is additive by ADR-007's rules, and the agent needs a
+wrapper to use it.
+
+**Verified.** `tests/test_unit.py::RetakeProposalTests`:
+- **English.** A fixture with a filler, a one-word repeat, a four-word repeat, a cut-off word, a false start and a
+  restart after "uh": all six are proposed, in order, with reasons.
+- **Clean speech.** A clean fixture, with "very very", "had had", "that that" and "in the morning and in the evening",
+  gives no proposal at the default threshold. The emphatic doubles appear only at 0.2.
+- **Japanese.** A Japanese fixture gives its two fillers and two repeats under `profile: ja`.
+- **Refusals and the CLI.** Bad timings and unknown profiles or ids are refused. The CLI writes nothing to the
+  workspace.
+
+## ADR-025 — Spans by motion and sound: the engine measures, `propose` combines
+
+**Context.** ECOSYSTEM_ROADMAP step 15: find the dead spans of a fixed-camera recording (nobody in frame) from the
+picture, and combine them with the sound.
+
+**Decision.** `propose` takes `source` (a video under an allowed root) together with:
+- `static: {}`: the shots that `ffmpeg-skill scenes --shots` labels `static`. That label comes from a measured
+  optical-flow proxy, and the shot boundaries come from the engine's scene detection.
+- `silence: {threshold_db, min_seconds}`: `ffmpeg-skill silence --list` with `--threshold` and `--min-silence`.
+
+Both are measurements by ffmpeg-skill tools; this Skill runs no frame differencing of its own (ADR-001 / ADR-013). The
+edges are snapped to the source's frame grid. `combine: {mode, min_seconds}` joins them:
+- `and` keeps only the time where every asked measurement holds, labelled `silence+static`.
+- `or` keeps every span where any holds, labelled with each measurement that touches it.
+
+Each span is a proposal (`kind: span`, `labels`, `action: cut`, `reason`). As with retakes, nothing is applied: approved
+spans become CONDENSE segments, and the rule for each label (cut, keep, speed) is chosen there (step 16). `silence` and
+`scenes` join `OPTIONAL_TOOLS`, so their flags are detected. 0.11.0's scenes.py has no `--shots`, so a static request is
+refused there (`TOOL_ERROR`).
+
+**Limit, stated in the contract.** The static span's edges are the shot boundaries scene detection finds. A span whose
+picture goes still without a visible change at its edges (a person walking slowly out of a fixed shot) is found only as
+far as the engine's shots go. Finer motion spans would need a motion-measurement mode in ffmpeg-skill (a proposal there,
+not a change from here).
+
+**Versioning.** It is additive: the `proposals` block gains `spans` and the request shape gains keys. `engine.tools_optional`
+gains silence and scenes. The agent pins that block, so the agent re-pins.
+
+**Verified.**
+- `tests/test_integration.py::MotionSpanTests`, against ffmpeg-skill 3.2.0 (0.11.0: refused, tested). The fixture has 2 s of
+  motion, a 3 s still picture and 2 s of motion, with the sound silent from 2.5 to 4.5 s:
+  - the still span is found at 2.0 to 5.0 s, to within one frame;
+  - `and` with the silence gives 2.5 to 4.5 s (within 50 ms);
+  - `or` gives 2.0 to 5.0 s, labelled `silence+static`;
+  - the response stays `applied: false`.
+- `tests/test_unit.py::SpanCombineTests` covers the and / or arithmetic.
+
+## ADR-026 — CONDENSE: one rule per labelled span (cut, keep, speed)
+
+**Context.** ECOSYSTEM_ROADMAP step 16: once proposals are approved (retakes, silences, static spans; ADR-024 / ADR-025),
+each kind of span needs its own treatment. Retakes are cut, silences may be kept at double speed, and the rest is kept.
+
+**Decision.** A new operation type, `CONDENSE {segments: [{start, end, label}], rules: {label: cut | keep | {speed:
+factor}}, default}` (capability `video.condense`).
+- **The parameters.** `segments` are spans of the input; they may not overlap, and they are sorted. Labels are lower-case
+  tokens (`retake`, `silence`, `silence+static`, ...). Every label used needs a rule (`missing_rule`). `default` (keep
+  by default) is the rule for the time that no segment covers. A speed factor is SPEED's range [1/4, 4], and not 1. An
+  edit that keeps nothing is refused (`nothing_kept`).
+- **Pieces.** The input is split into pieces in order (`operations.condense_pieces`), and neighbours with the same rule
+  merge.
+- **Engine calls.**
+  - Each kept piece is cut with `cut.py --start --end --accurate` (`--no-keep-hevc` where the release has it, ADR-017).
+  - A sped piece is then retimed with `fit.py --duration <len / factor> --method speed --max-speed 4`, the same call as
+    SPEED. The sound keeps its pitch (atempo).
+  - The pieces are joined with `join.py --transition none` at the input's size and rate. The sound comes out as stereo
+    AAC.
+- **Timeline and report.** The timeline maps each kept piece at speed 1 and each sped piece at speed `factor`. Cut pieces
+  leave the timeline. The record and the plan carry `condense: {pieces: [{start, end, label, action, factor,
+  output_seconds}], removed, input_duration}`.
+
+The judgement stays outside, as ADR-001 requires: the caller decides which proposals are approved and which rule each
+label gets.
+
+**Versioning.** A new type in `operations`, `capabilities` and `tools` (pinned): breaking by ADR-007's convention. The
+bump is left to the release, and the agent re-pins and needs a lowering.
+
+**Verified.**
+- `tests/test_integration.py::CondenseTests`, against ffmpeg-skill 3.2.0 and 0.11.0:
+  - **Fixture.** A 6 s clip: a 440 Hz tone, then 2 s at -50 dBFS (an 880 Hz tone), then the tone again.
+  - **Proposal.** `propose` finds the 2 s silence. The test approves it and runs CONDENSE with `silence: {speed: 2}`.
+  - **Result.** The output lasts 5 s (within 0.1 s). The tones measure 440 / 880 / 440 Hz, so the sped span keeps its
+    pitch. The timeline shows speeds 1 / 2 / 1.
+- `tests/test_unit.py::CondenseParamTests` (pieces, timeline, refusals) and `test_engine_contract.CondenseFakeTests` (the
+  calls, `nothing_kept`).
+
+## ADR-027 — Review of the planned cuts: CONDENSE `output: removed`
+
+**Context.** ECOSYSTEM_ROADMAP step 17: before cutting, check what will be cut.
+
+**Decision.** CONDENSE takes `output: result | removed` (default `result`, the edit). With `removed`, it writes a review
+file instead: only the pieces its rules cut, in order, at speed 1, each cut frame-accurately and joined. The engine
+calls are the same as for the edit (`cut.py --accurate`, `join.py`). The record and the plan carry `condense.review`:
+every removed span with its label, its source range and its range in the review file, plus `removed` (the total). A
+review with nothing cut is refused (`nothing_removed`). One request can carry the review and the edit as two CONDENSE
+operations with the same segments and rules, so both are made from one approved list.
+
+**Versioning.** `operations.CONDENSE.parameters` gains `output` (pinned). It ships in the same unreleased batch as
+ADR-026, with the bump left to the release, and the agent re-pins.
+
+**Verified.**
+- `tests/test_integration.py::CondenseTests::test_review_file_lasts_the_removed_spans`, against 3.2.0 and 0.11.0: two
+  retakes of 0.5 s and 1.2 s (and a silence kept at 2x) give a review file of 1.7 s (within 0.1 s). The review list
+  places the second span at 0.5 s. The edit from the same request lasts 6 - 1.7 - 0.25 s, within the frame tolerance.
+- `tests/test_unit.py::CondenseReviewTests` covers the timeline, and the fake-engine tests cover `nothing_removed`.
+
+## ADR-028 — Target file size: ffmpeg-skill export --max-mb, measured and retried
+
+**Context.** ECOSYSTEM_ROADMAP step 18: deliveries with a size cap (mail, chat, upload limits). Given a limit such as 25
+MB, the file should land at or just under it on the first request.
+
+**Decision.** An output takes `max_size: {mb: 25}`: exactly one of `bytes`, `kb`, `mb`, `gb` (10^3 steps) or `kib`,
+`mib`, `gib` (2^10 steps), from 100 kB to 50 GB.
+- **The encode.** The output is delivered through `ffmpeg-skill export <intermediate> --preset youtube --no-scale
+  --allow-long --max-mb <target MiB>`. That is a two-pass x264 encode at the video bitrate the running time leaves after
+  the audio (AAC 192k), at the produced frame size and rate. The engine does the bitrate arithmetic; this Skill does not
+  run ffmpeg.
+- **Measure and retry.** The written size is measured. Over the limit, the next target is `target x limit / size x 0.97`.
+  Under 90 % of the limit, it is `target x 0.95 x limit / size`. This repeats up to 5 encodes.
+- **A picture that cannot use the bits.** When a larger target stops growing the file (two sizes within 1 %), the picture
+  needs fewer bits than the limit allows. The file is delivered under the limit with `under_floor: true` and a note. It
+  is never padded.
+- **Failure.** A limit the engine refuses fails with `OUTPUT_ERROR` `size_limit_unreachable`, with the attempts and the
+  engine's own reason. The engine refuses a video bitrate under 100 kb/s ("not watchable") and anything past 400 Mb/s.
+  So does a run of 5 encodes that never lands in range. Nothing is delivered then.
+- **Not done.** Nothing is lowered automatically to make a small limit fit, neither the frame size nor the audio
+  bitrate. The failure says why, and the caller decides (RESIZE first, or a shorter cut).
+- **Refusals before execution.** `max_size` with `encoding` is refused (a quality and a size: give one;
+  `size_and_encoding`), as is a path that is not `.mp4` (`size_needs_mp4`). So is an ffmpeg-skill without
+  `export --max-mb` (2.x+, detected; `export` joins `OPTIONAL_TOOLS`).
+- **Report.** `execution.outputs[].size_limit: {limit_bytes, bytes, ratio, attempts, two_pass, under_floor}`.
+
+**Versioning.** `request_shape.outputs` gains `max_size` (agent-pinned), and there is a new additive block,
+`size_limit`. The bump is left to the release, and the agent re-pins.
+
+**Verified.** `tests/test_integration.py::SizeLimitTests`, against ffmpeg-skill 3.2.0. On 0.11.0 the refusal is tested.
+- **Three fixtures in range.** Each lands in [90 %, 100 %] of its limit:
+  - 640x360, 20 s with sound, at 2 MB;
+  - 1280x720, 8 s, no sound, at 3 MB;
+  - 320x180, 60 s with sound, at 4 MB.
+- **Too small a limit.** 60 s into 300 kB fails with the engine's "not watchable" reason, and no file is delivered.
+- **Too large a limit.** At 40 MB the 20 s clip stays under the limit; if it lands under 90 %, it says `under_floor`.
+- **Offline.** `tests/test_unit.py::SizeLimitParamTests` covers the units, the refusals and the retry arithmetic.
+
+
+## ADR-029 — `contract_version` 5.0 for the shape 0.4.8 .. 0.4.18 shipped
+
+**Context.** ADR-018 to ADR-028 changed blocks a dependent pins: `operations` gained `PUNCH_IN` (ADR-020) and
+`CONDENSE` (ADR-026), TRIM / CUT gained `precision: auto` (ADR-019), CONCAT gained the `stinger` transition (ADR-023);
+`capability_names`, `request_shape` (`options.segment_cache`, `sources[].ai_generated`, `outputs[].max_size`) and
+`response_shape` changed with them. Each ADR left the bump to the release, but the release workflow only bumps
+`version` (patch / minor from labels), so 0.4.8 to 0.4.18 all published `contract_version` "4.0". By ADR-007 that is
+wrong: a change inside a pinned block is breaking and bumps `contract_version`.
+
+**Decision.** `contract_version` "4.0" → "5.0", and `version` 0.4.18 → 0.5.0 by hand in the same change (CLAUDE.md
+"Contract discipline": this package does not release independently of its contract; the release workflow releases a
+hand-bumped version as written). Nothing else changes: no operation, parameter or argv differs from 0.4.18. The golden
+copy `tests/contract/contract.json` is regenerated. `versioning.next["0.5.0"]` described candidates that 0.5.0 does not
+ship; it moves to `next["0.6.0"]` unchanged, and `contract_check` asks for "0.6.0".
+
+**Consequence.** `video-production-agent` widens its version gate to 0.5.x and re-pins from the v0.5.0 tag.
+
+## ADR-030 — Stinger CONCAT: every clip joined at whole frames
+
+**Context.** A CONCAT with a stinger failed its own validation when its clips had been cut by stream copy: "frame rate
+29.955 is not the requested 30" (reproduced with two clips cut `-ss 0.85 -t 2.018 -c copy` from mid-GOP: 29.764). Such a
+clip keeps its pre-roll behind an MP4 edit list, and the length probe reports (2.116992 s, 63.5 frames at 30 fps) is the
+edit list's: not whole frames, and its last frames can end before it. join.py trims each clip's picture and sound to that
+length, so the next clip started between frames and the joined picture had a hole of one frame at the join. Its average
+frame rate (frames / duration) fell below 30, overlay.py took the joined file for variable-frame-rate and conformed the
+composite to that average (`-r 29.955`), and the output really ran at 29.955 fps. A plain CONCAT of the same clips is
+refused the same way when it names `fps` (its joined output is measured, not conformed). The stinger was also placed from
+the clips' planned lengths, which a stream-copied clip's measured length differs from.
+
+**Decision.** In a stinger CONCAT, each clip at the edit's frame rate takes its planned length rounded down to whole
+frames of that rate; the plan's joins (`cut_at`, `stinger_start`) are computed from those lengths, so every cut is on a
+frame. Before the join, a clip whose measured length differs from that (by more than 1 ms) is cut to it with
+`ffmpeg-skill/cut --start 0 --end <length> --accurate` (the operation's crf / preset); a clip already whole frames long is
+joined as it is, with no extra encode. A clip at another frame rate is joined as before (cutting it at its own rate
+cannot put its end on the edit's frames). The rest of the stinger path is unchanged. The plain CONCAT path is not
+changed here.
+
+**Tests.** Fake engine: a source of 2.116992 s plans and reports its join at 21/10 (63 frames) and is cut once before the
+join; the standard 2 s fixtures run with no cut. Real media: two clips stream-copied from mid-GOP join with the stinger,
+the output is 30/1 fps, and the cut frame (A's length rounded down to frames) is the fully covered one with A before it and
+B after it.
+
+
+## ADR-031 — Smart cut: `precision: smart`, only the partial GOPs at each cut point re-encoded
+
+**Context.** ECOSYSTEM_ROADMAP step 9's second condition, left open by ADR-019: a cut between keyframes should re-encode
+at most two GOPs, not the whole cut. ADR-019 ruled out building it here (reading packets and splicing an H.264
+re-encode into copied packets is the engine's job, ADR-001 / ADR-013). ffmpeg-skill 3.2.3 now offers it:
+`cut.py --smart` (H.264 only) re-encodes from each cut point to the next keyframe and from the last keyframe to the
+end point with libx264 matched to the source (profile, level, pixel format, reorder depth, size, SAR, colour tags),
+stream-copies the whole GOPs between, cuts the sound on the picture's frame grid and encodes it once (AAC), and checks
+the output against the source (frame count and grid, copied packet MD5s, framemd5 of the re-encoded parts, stream
+parameters and time base) before moving it into place. When it cannot match the source or a check fails, it
+re-encodes the whole cut as `--accurate` would and says why (`mode: accurate`, `smart: {applied: false, reason,
+reason_code}`, `diagnostics.fallbacks`). `--smart` with `--accurate` is refused. `probe.py --keyframes-near` lists the
+keyframes around a time.
+
+**Decision.** A fourth precision, `smart`, chosen by the caller; the default stays `frame`.
+- `smart` compiles to `cut.py --smart` (TRIM `--start` / `--end`, CUT `--segments`), never with `--accurate` or
+  `--tolerance`. `--no-keep-hevc` is passed where offered, as for `frame` (ADR-017), so the engine's whole re-encode of
+  an SDR HEVC source writes H.264. Validation is `frame`'s: duration within 0.35 s, the input frame, audio kept and the
+  re-encode codec rule (the copied GOPs are H.264, which is that rule's SDR codec, and the engine only copies H.264).
+- Capability gate (ADR-013): `--smart` is used only where the checkout's detected `cut.py` flags list it. Elsewhere
+  (any release before 3.2.3, or a checkout whose flags were not detected) the step is compiled as `frame` (`--accurate`):
+  the same frames, re-encoded whole. The request is not refused, because the cut asked for is still made exactly. The
+  record says so (`cuts.smart: {applied: false, reason_code: engine_without_smart, reason}`), the plan step says
+  `smart.engine_flag: --accurate`, a warning is added, and doctor reports `engine.compatibility.smart_cut: false`.
+- Report: `execution.operations[].cuts` (ADR-019's record) gains `smart` (the engine's document passed through,
+  OBSERVED, with `source`) and `fallbacks` (the engine's `diagnostics.fallbacks`, `[]` when none). `mode` is the
+  engine's (`smart` or `accurate`), so a fallback is visible without reading `smart`.
+- An `outputs[].encoding` profile on its output is refused (`encoding_needs_reencode`), as for `keyframe` / `auto`:
+  the copied GOPs keep the source's quality, so a profile would apply to a few frames at the edges only.
+
+**Why not the default, and why not inside `auto`.** `frame`'s promise is a full re-encode at the output's encoding
+profile, in the re-encode codec; `smart` keeps most of the source's bitstream, so it changes what a caller who asked
+for a profile or a uniform encode gets. `auto`'s promise (ADR-019) is lossless first: a cut on a keyframe is the
+source's packets byte for byte, and on 3.x a cut whose edit-list copy lands within 0.2 s is a copy too. `--smart`
+re-encodes the sound and carries the parameter sets in band, so routing `auto` through it would turn results that are
+lossless today into partial re-encodes, and choosing per cut would need a second engine pass. Both stay as they were;
+the caller who wants frame accuracy without a whole re-encode asks for `smart`. A later change can revisit the default
+once the agent has used `smart` on real long-form material.
+
+**Not applied.** `options.segment_cache` stays a `frame`-precision CUT feature (ADR-018): its parts are joined by
+`join.py --copy`, and copy-joining parts that each carry their own in-band parameter sets is not verified by the engine.
+The cuts CONDENSE, PUNCH_IN and a stinger CONCAT make inside themselves keep `--accurate`: their result is re-encoded by
+the next step (fit / crop / join / overlay) anyway, so a smart cut there saves nothing.
+
+**Versioning.** `operations.TRIM` / `CUT.parameters.precision` gain a value (pinned): `contract_version` "5.0" → "6.0"
+and `version` 0.5.1 → 0.6.0, by hand in this change (ADR-029: the release workflow does not bump `contract_version`).
+`versioning.next["0.6.0"]` moves to `next["0.7.0"]` unchanged. Additive: the `smart_cut` block,
+`engine.compatibility.detected`, doctor's `engine.compatibility.smart_cut`, `plan.steps[].smart`.
+`compiler.ALLOWED_FLAGS["cut"]` gains `smart`. video-production-agent widens its version gate and re-pins.
+
+**Verified.** `tests/test_integration.py::SmartCutTests` against the real engine (CI: ffmpeg-skill 0.11.0, 2.24.1, 3.0.0
+and main), on an 8 s, 30 fps H.264 clip with a closed GOP of 30:
+- TRIM 2.5 to 6.5 s: 120 frames. With `--smart`: `mode: smart`, parts re-encode 2.5-3.0 and 6.0-6.5 and copy 3.0-6.0
+  (the keyframes `probe.py --keyframes-near` reports), 30 frames re-encoded (at most two GOPs), and the 90 packets of
+  the GOPs from 3 to 6 s are the source's in order (MD5 with the parameter-set and delimiter NAL units removed on both
+  sides). Without it: `reason_code: engine_without_smart` and the warning.
+- CUT of two ranges: each range re-encodes at most two GOPs; at least three GOPs copied.
+- An MPEG-4 Part 2 source: the engine falls back (`mode: accurate`, `reason_code: codec`, `smart_fallback` in
+  `fallbacks`) and the output is H.264.
+Fake-engine tests (`tests/test_engine_compat.py`): argv, record, plan, the engine fallback, the degraded path on a
+checkout without `--smart`, and the refused encoding profile.

@@ -35,13 +35,17 @@ class EditSource:
     kind: str            # video | image
     sha256: str
     size: int
+    ai_generated: Optional[Dict[str, str]] = None   # {generator, licence} as declared by the caller (ADR-022); never inferred
 
     @property
     def identity(self) -> str:
         return "sha256:" + self.sha256
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"id": self.ref, "kind": self.kind, "path": self.path, "sha256": self.sha256, "size": self.size}
+        d: Dict[str, Any] = {"id": self.ref, "kind": self.kind, "path": self.path, "sha256": self.sha256, "size": self.size}
+        if self.ai_generated is not None:
+            d["ai_generated"] = dict(self.ai_generated, provenance="DECLARED")
+        return d
 
 
 @dataclass
@@ -54,6 +58,17 @@ class EditOperation:
     depends_on: List[str] = field(default_factory=list)   # operation refs only
     source_refs: List[str] = field(default_factory=list)  # every source reachable upstream
     encoding: Optional[Dict[str, Any]] = None             # profile asked for by the output(s) this operation produces
+
+    @property
+    def stinger(self) -> Optional[str]:
+        """The stinger source of a CONCAT with transition stinger (ADR-023); it is the last entry of `inputs`."""
+        tr = self.params.get("transition") if self.type == "CONCAT" else None
+        return tr["stinger"] if tr and tr.get("type") == "stinger" else None
+
+    @property
+    def video_inputs(self) -> List[str]:
+        """The inputs that are picture slots: all but OVERLAY's image and CONCAT's stinger."""
+        return self.inputs[:-1] if (self.type == "OVERLAY" or self.stinger is not None) else list(self.inputs)
 
     @property
     def tool(self) -> str:
@@ -79,11 +94,14 @@ class EditOutput:
     raw_path: str
     path: str
     encoding: Optional[Dict[str, Any]] = None
+    max_bytes: Optional[int] = None   # outputs[].max_size: written by ffmpeg-skill export --max-mb, two-pass, retried to fit (ADR-028)
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"id": self.ref, "operation": self.operation, "path": self.path}
         if self.encoding:
             d["encoding"] = dict(self.encoding)
+        if self.max_bytes is not None:
+            d["max_bytes"] = self.max_bytes
         return d
 
 
@@ -92,9 +110,10 @@ class EditOptions:
     timeout_seconds: float = 3600.0
     overwrite: bool = False
     reuse: bool = True
+    segment_cache: bool = False   # CUT renders each keep range alone, cached by content, joined by stream copy (ADR-018)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"timeout_seconds": self.timeout_seconds, "overwrite": self.overwrite, "reuse": self.reuse}
+        return {"timeout_seconds": self.timeout_seconds, "overwrite": self.overwrite, "reuse": self.reuse, "segment_cache": self.segment_cache}
 
 
 @dataclass
@@ -161,19 +180,54 @@ def parse_options(raw: Any) -> EditOptions:
     if raw is None:
         return EditOptions()
     d = _obj(raw, "options")
-    _keys(d, "options", ("timeout_seconds", "overwrite", "reuse"))
+    _keys(d, "options", ("timeout_seconds", "overwrite", "reuse", "segment_cache"))
     o = EditOptions()
     if "timeout_seconds" in d:
         t = d["timeout_seconds"]
         if isinstance(t, bool) or not isinstance(t, (int, float)) or not (1 <= t <= 86400):
             raise EditError("INVALID_REQUEST", "options.timeout_seconds: must be a number between 1 and 86400")
         o.timeout_seconds = float(t)
-    for k in ("overwrite", "reuse"):
+    for k in ("overwrite", "reuse", "segment_cache"):
         if k in d:
             if not isinstance(d[k], bool):
                 raise EditError("INVALID_REQUEST", f"options.{k}: must be a boolean")
             setattr(o, k, d[k])
     return o
+
+
+_LABEL = re.compile(r"^[^\x00-\x1f\x7f]{1,200}$")
+
+
+def _ai_generated(raw: Any, what: str) -> Optional[Dict[str, str]]:
+    """A source the caller declares AI-generated: {generator, licence}, both short printable text. Reported as declared
+    (provenance DECLARED) and carried to every operation and output it reaches; it is never inferred from the media."""
+    if raw is None:
+        return None
+    d = _obj(raw, what)
+    _keys(d, what, ("generator", "licence"), ("generator", "licence"))
+    out = {}
+    for k in ("generator", "licence"):
+        if not isinstance(d[k], str) or not _LABEL.fullmatch(d[k]) or not d[k].strip():
+            raise EditError("INVALID_REQUEST", f"{what}.{k}: must be 1..200 printable characters")
+        out[k] = d[k]
+    return out
+
+
+_SIZE_UNITS = {"bytes": 1, "kb": 1000, "mb": 1000 ** 2, "gb": 1000 ** 3, "kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3}
+
+
+def _max_size(raw: Any, what: str) -> int:
+    """{mb: 25} (or bytes / kb / gb / kib / mib / gib: exactly one key) -> bytes. MB is 1,000,000 bytes, MiB 1,048,576."""
+    d = _obj(raw, what)
+    if len(d) != 1 or next(iter(d)) not in _SIZE_UNITS:
+        raise EditError("INVALID_REQUEST", f"{what}: must be one of {{bytes | kb | mb | gb | kib | mib | gib: number}}", {"allowed": list(_SIZE_UNITS)})
+    unit, v = next(iter(d.items()))
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not v > 0:
+        raise EditError("INVALID_REQUEST", f"{what}.{unit}: must be a positive number")
+    n = int(v * _SIZE_UNITS[unit])
+    if not (100_000 <= n <= 50 * 1000 ** 3):
+        raise EditError("INVALID_REQUEST", f"{what}: must be between 100 kB and 50 GB")
+    return n
 
 
 # ---------------------------------------------------------------- main entry
@@ -197,7 +251,7 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
     for i, raw in enumerate(_list(proj["sources"], "project.sources", MAX_SOURCES)):
         what = f"project.sources[{i}]"
         s = _obj(raw, what)
-        _keys(s, what, ("id", "path", "kind"), ("id", "path"))
+        _keys(s, what, ("id", "path", "kind", "ai_generated"), ("id", "path"))
         ref = _ref(s["id"], what + ".id")
         if ref in sources:
             raise EditError("INVALID_REQUEST", f"{what}: duplicate source id {ref!r}")
@@ -207,7 +261,7 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
         exts = VIDEO_EXTENSIONS if kind == "video" else IMAGE_EXTENSIONS
         path = policy.resolve_input(s["path"], what + ".path", exts)
         digest = sha256_file(path) if hash_sources else ""
-        sources[ref] = EditSource(ref, s["path"], path, kind, digest, os.path.getsize(path))
+        sources[ref] = EditSource(ref, s["path"], path, kind, digest, os.path.getsize(path), _ai_generated(s.get("ai_generated"), what + ".ai_generated"))
     if not sources:
         raise EditError("INVALID_REQUEST", "project.sources: at least one source is required")
 
@@ -239,6 +293,8 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
                 raise EditError("INVALID_REQUEST", f"{what}: {t} needs at least two inputs")
         if t == "OVERLAY":
             inputs.append(params["image"])
+        if t == "CONCAT" and (params.get("transition") or {}).get("type") == "stinger":
+            inputs.append(params["transition"]["stinger"])
         ops[ref] = EditOperation(ref, t, inputs, params)
     if not ops:
         raise EditError("INVALID_REQUEST", "project.operations: at least one operation is required")
@@ -248,6 +304,9 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
         for j, r in enumerate(op.inputs):
             # image slots: OVERLAY's params.image and IMAGE_INSERT's input (a still becomes a clip there, ADR-015); every other slot is video
             is_image_slot = (op.type == "OVERLAY" and j == len(op.inputs) - 1) or op.type == "IMAGE_INSERT"
+            if op.stinger is not None and j == len(op.inputs) - 1 and r not in sources:   # the stinger keeps its alpha only as a source file
+                raise EditError("DEPENDENCY_ERROR", f"operation {op.ref!r}: transition.stinger must reference a video source (a file with alpha), not an operation",
+                                {"reason": "kind_mismatch"})
             if r in sources:
                 want = "image" if is_image_slot else "video"
                 if sources[r].kind != want:
@@ -279,7 +338,7 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
     for i, raw in enumerate(_list(proj["outputs"], "project.outputs", MAX_OUTPUTS)):
         what = f"project.outputs[{i}]"
         o = _obj(raw, what)
-        _keys(o, what, ("id", "operation", "path", "encoding"), ("id", "operation", "path"))
+        _keys(o, what, ("id", "operation", "path", "encoding", "max_size"), ("id", "operation", "path"))
         ref = _ref(o["id"], what + ".id")
         if ref in outputs:
             raise EditError("INVALID_REQUEST", f"{what}: duplicate output id {ref!r}")
@@ -289,8 +348,9 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
         encoding = validate_encoding(o["encoding"], what + ".encoding") if o.get("encoding") is not None else None
         if encoding is not None:
             producer = ops[op_ref]
-            if producer.type in ("TRIM", "CUT") and producer.params.get("precision") == "keyframe":
-                raise EditError("INVALID_REQUEST", f"{what}.encoding: {producer.type} with precision keyframe may stream-copy and ignore a profile; use precision frame",
+            if producer.type in ("TRIM", "CUT") and producer.params.get("precision") in ("keyframe", "auto", "smart"):
+                raise EditError("INVALID_REQUEST", f"{what}.encoding: {producer.type} with precision {producer.params['precision']} may stream-copy and ignore a profile; "
+                                "use precision frame",
                                 {"reason": "encoding_needs_reencode"})
             if producer.encoding is not None and producer.encoding != encoding:
                 raise EditError("DEPENDENCY_ERROR", f"{what}: operation {op_ref!r} is asked for two different encoding profiles", {"reason": "conflicting_encodings"})
@@ -304,7 +364,14 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
         if os.path.normcase(path) in seen_paths:
             raise EditError("DEPENDENCY_ERROR", f"{what}: two outputs share the path", {"reason": "conflicting_outputs"})
         seen_paths.add(os.path.normcase(path))
-        outputs[ref] = EditOutput(ref, op_ref, raw_path, path, encoding)
+        max_bytes = _max_size(o["max_size"], what + ".max_size") if o.get("max_size") is not None else None
+        if max_bytes is not None:
+            if encoding is not None:
+                raise EditError("INVALID_REQUEST", f"{what}: max_size sets the bitrate from the size and encoding sets a quality; give one of them",
+                                {"reason": "size_and_encoding"})
+            if os.path.splitext(raw_path)[1].lower() != ".mp4":
+                raise EditError("INVALID_REQUEST", f"{what}: max_size writes H.264 / AAC in .mp4; use an .mp4 path", {"reason": "size_needs_mp4"})
+        outputs[ref] = EditOutput(ref, op_ref, raw_path, path, encoding, max_bytes)
     if not outputs:
         raise EditError("INVALID_REQUEST", "project.outputs: at least one output is required")
 

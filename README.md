@@ -66,9 +66,13 @@ Provided (capabilities are declared only where an implementation exists):
 | `video.freeze` | `FREEZE` hold one frame for `hold` seconds: at `at` (the rest plays on after the hold) or, without `at`, the last frame at the end | `ffmpeg-skill/freeze` |
 | `video.reverse` | `REVERSE` play the input backwards, picture and audio | `ffmpeg-skill/reverse` |
 | `video.image_insert` | `IMAGE_INSERT` turn one image source into a silent clip of `duration` seconds (`width` / `height` / `fps` optional) that `CONCAT` and every other type can take | `ffmpeg-skill/insert` |
+| `video.crop` | `CROP` keep exactly the pixel rectangle `{x, y, width, height}` the caller gives (even sizes, inside the frame as displayed; no scaling or padding) | `ffmpeg-skill/crop` |
+| `video.condense` | `CONDENSE` apply a rule per labelled span — `segments: [{start, end, label}]`, `rules: {label: cut \| keep \| {speed: f}}`, `default` for the rest (keep): approved proposals (retakes, silences, static spans) become segments here (ADR-026) | `ffmpeg-skill/cut` + `fit` + `join` |
+| (review) | `CONDENSE` with `output: "removed"`: a review file of only the spans the rules would cut, joined in order, with the list of where each came from (ADR-027) | `ffmpeg-skill/cut` + `join` |
+| `video.punch_in` | `PUNCH_IN` zoom by `scale` (1..4) on a `subject` box the caller gives (detection-skill's face box) from `start` to `end`: a hard cut in and out, the window centred on the box and kept inside the frame, the frame size unchanged (ADR-020) | `ffmpeg-skill/cut` + `crop` + `fit` + `join` |
 
-`FREEZE`, `REVERSE` and `IMAGE_INSERT` run on ffmpeg-skill tools older checkouts do not ship (`freeze.py` from 0.16.0,
-`reverse.py` and `insert.py` from 0.11.0). Whether the installed checkout has them is detected: without one, `doctor`
+`FREEZE`, `REVERSE`, `IMAGE_INSERT` and `CROP` run on ffmpeg-skill tools older checkouts do not ship (`freeze.py` from 0.16.0,
+`reverse.py`, `insert.py` and `crop.py` from 0.11.0). Whether the installed checkout has them is detected: without one, `doctor`
 reports that type MISSING (a note, not a problem — every other operation still runs) and a request using it is refused
 before anything runs (`TOOL_ERROR`, `missing: ["tool:ffmpeg-skill/freeze"]`). The `>=0.10.0` floor is not raised for
 them. ADR-014, ADR-015.
@@ -95,9 +99,10 @@ no ProductionPlan / Project IR / policy / preference / constraint model, no LLM,
 no scripting, no raw ffmpeg or filter interface. See "Explicit non-goals" in the contract (`not_provided`).
 
 **Not implemented in this version** (declared as gaps in `contract.unsupported`, refused with
-`UNSUPPORTED_OPERATION`): `CROP` (pixel rectangle), `POSITION` (free video-layer placement). These are gaps in this Skill's typed model, not claims about the engine: each entry names the
+`UNSUPPORTED_OPERATION`): `POSITION` (free video-layer placement). These are gaps in this Skill's typed model, not claims about the engine: each entry names the
 ffmpeg-skill tool that would execute it (`engine_tool`), and `doctor --json` reports whether the installed checkout
-ships it (`unsupported[].engine_tool_status`, detected, ADR-014) — current ffmpeg-skill has `crop.py`. Multi-track assembly is limited to one video track plus image overlays.
+ships it (`unsupported[].engine_tool_status`, detected, ADR-014). `CROP` was the other gap; it is an operation since
+ADR-016, which records that pixel-rectangle crops are this Skill's job (尺・画角合わせ), not the caller's. Multi-track assembly is limited to one video track plus image overlays.
 
 ## Architecture
 
@@ -180,7 +185,8 @@ the same `contract_version` — this is how 0.1.0 gained `media_compatibility`, 
   `options.overwrite`. `outputs[].encoding` (optional): `{"crf": 14..28, "preset": "ultrafast" … "veryslow"}` for the
   operation that produces the output (see `contract.encoding`; codec, bitrate modes, audio, pixel format are fixed
   by ffmpeg-skill and reported, not configured).
-- `options`: `timeout_seconds` (per tool call, 1..86400, default 3600), `overwrite`, `reuse`.
+- `options`: `timeout_seconds` (per tool call, 1..86400, default 3600), `overwrite`, `reuse`, `segment_cache`
+  (default false; see "Segment cache" below).
 - The workspace, the allowed input roots and the ffmpeg-skill location are **CLI flags / environment**, not
   request fields.
 
@@ -354,6 +360,33 @@ values are reported under `project`, never as observations.
   key, size and hash match re-validates them (probe, duration, frame, audio) and reuses them (`status: "reused"`,
   `execution.reused: true`, `outputs[].reused`); a candidate that no longer validates is run again.
   `options.reuse: false` disables it.
+- **Target file size** (ADR-028): `outputs[].max_size: {"mb": 25}` delivers that output through ffmpeg-skill `export
+  --max-mb` (two-pass H.264 at the bitrate the duration allows), measures it and retries until it lands between 90 % and
+  100 % of the limit; a limit too small for a watchable picture fails with the reason. `.mp4` only; not with `encoding`.
+- **Retake proposals** (ADR-024): `video-editing propose - --json --workspace W` with
+  `{"schema": "video-editing/propose@1", "retakes": {"transcript": "in/words.json", "profile": "en"}}` lists repeats,
+  restarts, broken-off words and hesitation words as cut proposals with reasons (`applied: false`, nothing written).
+  Approve them by id; only approved spans are cut (CONDENSE). With `"source"`, `"static": {}` (no motion: shots
+  ffmpeg-skill `scenes --shots` labels static) and / or `"silence": {"threshold_db": -40}` and `"combine": {"mode":
+  "and"}`, it proposes labelled spans (`static`, `silence`, `silence+static`) the same way (ADR-025).
+- **Stinger transition** (ADR-023): `CONCAT` `params.transition: {"type": "stinger", "stinger": "<video source with
+  alpha>", "cut_point": 0.5, "cover": {"start": 0.5, "end": 0.5333}}` (cut point and cover from the stinger's
+  stinger.json). The clips are butt-joined, and the stinger is laid over each join so that its cut-point frame is the
+  cut frame. Every clip is joined at whole frames of the edit's rate: a clip whose length is not (a stream-copied
+  segment, as a rule) is first cut frame-accurately to it (ADR-030). Its sound is mixed in. Needs ffmpeg-skill 2.x+ (overlay `--place`, broll, audio `--replace`).
+- **AI-generated sources** (ADR-022): `sources[].ai_generated: {"generator": "…", "licence": "…"}` declares a source
+  generated; every operation record and output that contains it carries `marks: ["AI_GENERATED"]` and the declaration
+  (`provenance: "DECLARED"`). Join it with `CONCAT` and give `width` / `height` / `fps`: the engine conforms size, rate,
+  pixel shape and colour tags, and adds silence where it has no sound.
+- **Several aspects from one edit** (ADR-021): one TRIM per shot, then per aspect one `CROP` per shot (the window you
+  computed, e.g. from detection-skill's subject path) and one `CONCAT` with that aspect's `width` / `height`; three
+  `outputs[]` in one request. The shots run once and are shared. Template: `examples/multi-aspect.json`.
+- **Segment cache** (`options.segment_cache: true`, ADR-018): a frame-precision `CUT` cuts every keep range on its own
+  (ffmpeg-skill `cut --start --end --accurate`), keeps each part in `<work>/segments/` under a key made of the input's
+  identity, the range, the encoding and the engine versions, and joins the parts by stream copy (`join --copy`). After
+  one range of a long programme changes, only that part is encoded again; the record says so per part
+  (`execution.operations[].segments`: `encoded` / `reused`). The joins are butted (no declick fade), so the bytes differ
+  from the single-pass render. Needs ffmpeg-skill 2.24.0+ (`join --copy`, detected); refused before execution without it.
 - Nothing machine-specific enters an identity: paths, timestamps, the work directory and the engine location are
   reported, not hashed.
 - Output settings are explicit (frame precision re-encodes; CONCAT can pin width / height / fps). Encoded
@@ -436,7 +469,7 @@ and `hdr` where not — and `doctor --json` reports what was detected (`engine.c
 the installed release lacks (ROTATE on 0.10.0, which has no `fit.py --rotate`) is reported MISSING and refused up front.
 The one version number kept is the `>=0.10.0` floor, for a behaviour no flag reveals (ADR-010's `overlay.py -t` bound).
 Nothing here builds ffmpeg command lines or filter strings; what ffmpeg-skill ran is reported verbatim in
-`commands`. A type this Skill does not map (pixel crop, image-to-clip) is reported as a gap, never worked around with
+`commands`. A type this Skill does not map (free video-layer placement) is reported as a gap, never worked around with
 a direct ffmpeg call; whether ffmpeg-skill has a tool for it is detected, not declared. ffmpeg-skill's `render.py` project format is not used: it has a fixed stage
 order, no schema validation and no path policy.
 
@@ -453,7 +486,8 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 
 ## Current limitations
 
-- `CROP`, `POSITION` are not implemented (ADR-014: CROP's ownership is undecided).
+- `POSITION` is not implemented. `CROP` takes exactly the rectangle it is given: choosing it (detecting black bars,
+  a face, a region of interest) is the caller's, and the measurement it can use is ffmpeg-skill's `cropdetect` (ADR-016).
 - `IMAGE_INSERT` makes a static clip: insert.py's Ken Burns `--zoom` / `--pan` are not mapped (ADR-015). Its input is an
   image source only (not an operation's output), and the clip is silent and SDR H.264 whatever the image is.
 - `REVERSE` is executed by ffmpeg's `reverse` / `areverse`, which buffer the whole input in memory: keep its input
@@ -464,13 +498,28 @@ are vocabulary the agent does not yet generate. No agent code is changed by this
 - `TRIM` / `CUT` / `SPEED` / `OVERLAY` / `ROTATE` / `FREEZE` / `REVERSE` refuse an input whose frame has an odd width or height
   (`odd_frame`); the frame-changing operations normalize it to even first.
 - The integration HDR fixture is an SDR pattern flagged as HDR (colour tags); real HDR10 / HLG content and tone
-  mapping are not covered. The real-media integration suite runs in CI against ffmpeg-skill 0.11.0 (pinned commit)
-  and ffmpeg-skill main, daily as well as on every change (ADR-013).
+  mapping are not covered. The real-media integration suite runs in CI against ffmpeg-skill 0.11.0, 2.24.1 and 3.0.0
+  (each pinned by commit) and ffmpeg-skill main, daily as well as on every change (ADR-013, ADR-017).
 - Real rotation metadata (a display matrix) is honoured; a legacy `rotate` tag is ignored by ffmpeg ≥ 5 and therefore
   by this Skill's probe-based normalization (the frame is then the stored one).
 - One video track plus image overlays; no picture-in-picture of video, no audio-only sources, no per-track audio.
-- Encoding parameters are ffmpeg-skill's defaults (x264 CRF 18 medium, AAC 192k; HDR sources become HEVC 10-bit).
+- Encoding parameters are ffmpeg-skill's defaults (x264 CRF 18 medium, AAC 192k; HDR sources become HEVC 10-bit). An SDR
+  HEVC source re-encoded by a frame-precision TRIM / CUT is H.264 on every ffmpeg-skill release (3.x: `--no-keep-hevc`
+  is passed, ADR-017).
   A `keyframe` precision `TRIM` / `CUT` may stream-copy and land on a keyframe (tolerance 1.5 s in validation).
+  An `auto` precision `TRIM` / `CUT` (ADR-019) is a stream copy where the copy lands within 0.2 s of the asked range (an
+  in point on a keyframe gives the source's packets byte for byte) and a frame-accurate re-encode of that cut otherwise;
+  `execution.operations[].cuts` reports the engine's choice (`mode` copy / accurate / hybrid, `reencode_reason`,
+  `segment_precision` per range, `duration_delta_seconds`). It re-encodes a whole cut, not only the GOPs at its edges.
+  A `smart` precision `TRIM` / `CUT` (0.6.0, ADR-031; opt-in, the default stays `frame`) is frame-accurate and
+  re-encodes only the partial GOPs at each cut point: ffmpeg-skill `cut.py --smart` (3.2.3+) copies the whole GOPs
+  between, encodes the sound once, and checks the result against the source before writing it.
+  `execution.operations[].cuts` carries `mode` (`smart`, or `accurate` when the engine fell back), `fallbacks` and
+  `smart` (`applied`, `parts` `[{segment, kind: reencode | copy, start, end, frames}]`, or `reason` / `reason_code`).
+  The engine falls back to a whole re-encode, with the reason, for a source it cannot match (not 8-bit 4:2:0 H.264,
+  interlaced, variable-rate, HDR, an open GOP at a copy boundary, ...). With an ffmpeg-skill whose `cut.py` has no
+  `--smart` the cut runs as `frame` (`--accurate`), with `reason_code: engine_without_smart` and a warning.
+  An `outputs[].encoding` profile is refused on it, as on `keyframe` / `auto`.
 - Source durations come from the container; ranges are checked against them with 0.1 s slack.
 - `SPEED` computes its target duration from the timeline; the tool retimes to that duration (audio via `atempo`).
   Optional `smooth: blend | interpolate` (0.4.0, ADR-012) maps to `fit.py`'s own `--smooth` flag and only affects a
@@ -504,9 +553,10 @@ convention (`operations`, `unsupported`, `capabilities` all changed): `video-pro
 Then (ADR-015, step 4): `IMAGE_INSERT` (`ffmpeg-skill/insert`), a still as a clip `CONCAT` can take — same convention,
 same re-pin, in the same release.
 
+Then (ADR-016, step 5): `CROP` (`ffmpeg-skill/crop`): pixel-rectangle crops are owned here — same convention, same re-pin.
+
 Contract 0.5.0 candidates, none scheduled (ADR-002 / ADR-003 / ADR-014, `contract.versioning.next`, `kajisho5/video-editing-skill#11`):
-`CROP` (pixel rectangle) via `crop.py` or left to
-the caller (ownership to be decided), and `RESIZE.height`, which waits on a `fit.py` flag — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be
+`RESIZE.height`, which waits on a `fit.py` flag — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be
 blocked this way too (`fit.py` has no `--height` flag), not the small addition ADR-003 first described. Flagged but
 not decided or scheduled (issue #11 items 2 and 3): `OVERLAY` video-layer + chroma-key parameters
 (`overlay.py --video`/`--chromakey`, per ADR-002's own "extend OVERLAY rather than add a type" prescription), and

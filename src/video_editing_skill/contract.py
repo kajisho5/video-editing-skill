@@ -27,13 +27,94 @@ TOOL_REQUIREMENTS = {
     "ffmpeg-skill/freeze": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
     "ffmpeg-skill/insert": ["ffmpeg", "ffprobe", "encoder:libx264"],   # a silent clip: no audio encoder
     "ffmpeg-skill/reverse": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
+    "ffmpeg-skill/crop": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac"],
     "ffmpeg-skill/probe": ["ffprobe"],
 }
 
+SEGMENT_CACHE: Dict[str, Any] = {
+    "request_field": "options.segment_cache (bool, default false)",
+    "applies_to": "CUT with precision frame; every other type is one engine call and is reused as a whole (contract.identity.reuse)",
+    "render": ["each keep range is cut on its own: ffmpeg-skill/cut --start --end --accurate (plus the output's encoding profile)",
+               "each part is validated (video, duration within the frame tolerance, audio kept) and stored under <work>/segments/ with its record",
+               "the parts are joined by stream copy: ffmpeg-skill/join --transition none --copy (one part: copied as is)"],
+    "segment_key": "sha256(input identity, range start / end as rationals, tool, tool versions, skill version, container, encoding, engine release flags); "
+                   "the rest of the keep list is not part of it",
+    "partial_re_render": "after a change only the parts whose key is new are encoded; the rest are taken from the cache (status reused)",
+    "same_request_twice": "the operation itself is reused (idempotency_key); nothing is encoded or written in the work directory",
+    "report": "execution.operations[].segments: {mode: segments, join: stream_copy | single | single_pass_fallback, parts: [{index, range, key, status: "
+              "encoded | reused, sha256, seconds}], encoded, reused, fallback_reason?}; plan.steps[].segments: [{index, range, key, cached}]",
+    "differs_from_single_pass": ["the joins are butted: cut.py's declick fades (--segments) are not applied to a stream-copy join",
+                                 "the bytes differ from the single-pass render, so the idempotency key carries render: segments"],
+    "fallback": "when ffmpeg-skill refuses the copy join (the parts' picture and sound do not line up within its limit), the operation is rendered in one "
+                "pass as without the cache; the parts stay cached and the record says single_pass_fallback with the engine's reason",
+    "needs": "ffmpeg-skill/join --copy (from ffmpeg-skill 2.24.0, detected); without it a request asking for the cache is refused before execution (TOOL_ERROR)",
+    "reuse_false": "options.reuse false also bypasses the segment cache (every part is encoded again and the cache is refreshed)",
+}
+
+SMART_CUT: Dict[str, Any] = {
+    "request_field": "TRIM / CUT params.precision: smart (opt-in; the default stays frame)",
+    "engine_call": "ffmpeg-skill/cut --smart (TRIM: --start --end; CUT: --segments), plus --no-keep-hevc where offered",
+    "what_it_does": "a cut point between keyframes is re-encoded from that point to the next keyframe, and from the last keyframe to the end point; "
+                    "the whole GOPs between are the source's packets; the sound is cut on the picture's frame grid and encoded once (AAC). The engine "
+                    "checks the result against the source (frame count and grid, copied packets, decoded frames of each re-encoded part, stream "
+                    "parameters) before it is written; the result is frame-accurate like precision frame",
+    "engine_fallback": "a source the engine cannot match (not H.264 8-bit 4:2:0 Baseline / Main / High, interlaced, variable-rate, HDR, an open GOP at a "
+                       "copy boundary, ...) or a check that fails: the engine re-encodes the whole cut (mode accurate) and says why (smart.reason, "
+                       "smart.reason_code, diagnostics.fallbacks); the operation still succeeds",
+    "engine_without_smart": "an ffmpeg-skill whose cut.py has no --smart (detected; before 3.2.3): the cut runs as precision frame (--accurate), a warning is "
+                            "added, and the record says smart.applied false, reason_code engine_without_smart",
+    "refused": ["an outputs[].encoding profile on its output (INVALID_REQUEST encoding_needs_reencode): the copied GOPs keep the source's quality"],
+    "not_applied": ["options.segment_cache (frame precision only)", "the cuts CONDENSE / PUNCH_IN / a stinger CONCAT make inside themselves (their "
+                    "result is re-encoded by the next step anyway)"],
+    "validation": "as precision frame: duration within 0.35 s, the input frame, audio kept, and the re-encode codec rule (H.264 for SDR)",
+    "report": "execution.operations[].cuts: cut.py's mode (smart | accurate), reencoded, reencode_reason, duration_delta_seconds, ..., fallbacks (the "
+              "engine's diagnostics.fallbacks) and smart: {applied, parts: [{segment, kind: reencode | copy, start, end, frames}], reencoded_frames, "
+              "copied_frames, checks, source} or {applied: false, reason, reason_code, source}; plan.steps[].smart: {engine_flag: --smart | --accurate, "
+              "available, reason_code, reason}",
+}
+
+STINGER: Dict[str, Any] = {
+    "request_field": "CONCAT params.transition: {type: stinger, stinger, cut_point, cover: {start, end}}",
+    "file": "a video source with an alpha plane (ProRes 4444, QuickTime Animation, PNG in MOV, ...), the edit's aspect and frame rate; its length is "
+            "the file's; its sound, if any, is mixed in. hyperframes-skill / remotion-ffmpeg-skill / blender-skill write one with its stinger.json: "
+            "cut_point and cover come from it (the caller reads it and passes them)",
+    "placement": "the clips are butt-joined; at each join the cut is the first frame of the next clip, and the stinger starts cut_point before it, so its "
+                 "frame at cut_point lies on the cut frame; a clip at the edit's frame rate takes its length rounded down to whole frames, so every cut is "
+                 "on a frame",
+    "engine_calls": ["ffmpeg-skill/cut --start 0 --end <whole frames> --accurate, only for a clip whose measured length is not that (a stream-copied "
+                     "segment, as a rule)", "ffmpeg-skill/join (no transition, the CONCAT's size / rate / mode)", "ffmpeg-skill/overlay --video <stinger> --place 0-<length>@<start> per join "
+                     "(alpha respected)", "with sound: ffmpeg-skill/broll --insert <stinger> --at <start> --duration <length> --audio mix per join, then "
+                     "ffmpeg-skill/audio --replace (that mix onto the composite)"],
+    "refused": ["no cut_point or no cover, or cut_point outside cover (INVALID_REQUEST stinger_not_covering)",
+                "cut_point not on a frame of the stinger (INVALID_REQUEST cut_point_not_on_frame)",
+                "a stinger without an alpha plane (INVALID_INPUT stinger_no_alpha), of another aspect (stinger_aspect) or frame rate (stinger_fps)",
+                "an input shorter than the stinger's lead-in (before the join) or tail (after it) (INVALID_TIME_RANGE)",
+                "a stinger that is an operation, not a source (DEPENDENCY_ERROR kind_mismatch)",
+                "an ffmpeg-skill without overlay.py --place, or (stinger with sound) broll.py / audio.py --replace (TOOL_ERROR)"],
+    "report": "execution.operations[].stinger and plan.steps[].stinger: {source, cut_point, cover, duration, audio, joins: [{cut_at, stinger_start, "
+              "stinger_end}]}; the output timeline's overlay track has a {kind: stinger, cut_at, timeline_range} segment per join",
+    "cover_check": "declared: the cover window is the stinger maker's statement and is checked against cut_point; the pixels are not measured here "
+                   "(qc-skill's stinger cut-point check is the measurement)",
+}
+
+AI_GENERATED: Dict[str, Any] = {
+    "request_field": "project.sources[].ai_generated: {generator: text, licence: text} (each 1..200 printable characters)",
+    "meaning": "declared by the caller, never inferred from the media; reported with provenance DECLARED",
+    "mark": "AI_GENERATED: execution.operations[].marks / ai_generated and execution.outputs[].marks / ai_generated list every declared source the result "
+            "contains ({source, generator, licence, provenance: DECLARED}); execution.sources[].ai_generated repeats the declaration",
+    "identity": "not part of operation_id or idempotency_key: the bytes decide identity; the mark is recomputed on every run, so a reused result is marked too",
+    "normalisation": ["CONCAT conforms a generated clip with the rest (ffmpeg-skill/join): frame size by params.width / height (mode pad | crop), frame rate by "
+                      "params.fps or the first input's, square pixels (setsar=1), BT.709 tags on the H.264 output, and a silent track for an input "
+                      "without sound when another has sound",
+                      "set params.width / height / fps on the CONCAT so the edit's format decides, not whichever clip comes first"],
+}
+
 PARAM_DOCS: Dict[str, Dict[str, str]] = {
-    "TRIM": {"start": "time", "end": "time (> start)", "precision": "frame (default, re-encode) | keyframe (lossless when possible)"},
-    "CUT": {"keep": "[{start, end}, ...] in output order", "precision": "frame | keyframe"},
-    "CONCAT": {"transition": "{type: " + "|".join(TRANSITIONS) + ", duration: time 0.01..10} (optional)",
+    "TRIM": {"start": "time", "end": "time (> start)", "precision": "frame (default, re-encode) | keyframe (lossless when possible) | auto (stream copy when the copy lands within 0.2 s of the range, e.g. an in point on a keyframe; else a frame-accurate re-encode; reported per cut) | smart (frame-accurate; only the partial GOPs at each cut point re-encoded, the whole GOPs between copied, verified against the source; else the whole cut re-encoded, with the reason; contract.smart_cut)"},
+    "CUT": {"keep": "[{start, end}, ...] in output order", "precision": "frame | keyframe | auto | smart"},
+    "CONCAT": {"transition": "{type: " + "|".join(TRANSITIONS) + ", duration: time 0.01..10} (optional), or {type: stinger, stinger: video source id "
+                             "(a file with alpha), cut_point: time (the frame the clips switch at), cover: {start, end} (the window the graphic covers the "
+                             "whole frame; must contain cut_point)} (contract.stinger)",
                "width": "even int (optional)", "height": "even int (optional)", "fps": "number or N/D (optional)",
                "mode": "pad | crop (how inputs of another aspect reach the frame)", "pad_color": "named colour or 0xRRGGBB"},
     "SPEED": {"factor": "number or N/D in [1/4, 4], not 1",
@@ -52,7 +133,53 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
                      "width": "even int px (optional; alone: height follows the image aspect)",
                      "height": "even int px (optional; alone: width follows the image aspect; both: exact frame, the image covers it, centre-cropped)",
                      "fps": "1..240 (optional, default 30)"},
+    "CONDENSE": {"segments": "[{start, end, label}] non-overlapping spans of the input (e.g. approved proposals: retake, silence, static); label "
+                             "[a-z0-9][a-z0-9_+.-]{0,39}",
+                 "rules": "{label: cut | keep | {speed: factor 1/4..4, not 1}}: one per label used",
+                 "default": "cut | keep | {speed: factor} for the time no segment covers (default keep)",
+                 "output": "result (default: the edit) | removed (a review file: only the spans the rules cut, joined in order at speed 1; the record lists each "
+                           "with its place in the file)"},
+    "PUNCH_IN": {"start": "time", "end": "time (> start): the zoomed range; a hard cut in at start and out at end",
+                 "scale": "number or N/D in (1, 4]: the zoom (2 = the window is half the frame in each dimension)",
+                 "subject": "{x, y, width, height} int px in the input frame as displayed: the box to keep in view (e.g. detection-skill's face box); "
+                            "the window is centred on it and kept inside the frame"},
+    "CROP": {"x": "int px >= 0: left edge in the input frame as displayed", "y": "int px >= 0: top edge",
+             "width": "even int px: the rectangle's width (x + width <= input width)", "height": "even int px: the rectangle's height (y + height <= input height)"},
 }
+
+
+def proposals_block() -> Dict[str, Any]:
+    from .proposals import CONFIDENCE, DEFAULT_MIN_CONFIDENCE, DEFAULT_PROFILE, PROFILES, PROPOSALS_SCHEMA, PROPOSE_SCHEMA, RESTART_MAX_SECONDS, RESTART_WINDOW
+    return {
+        "invocation": ["video-editing", "propose", "-", "--json", "--workspace", "<dir>", "--allowed-input", "<root>"],
+        "request_schema": PROPOSE_SCHEMA, "response_schema": PROPOSALS_SCHEMA,
+        "request_shape": {"schema": PROPOSE_SCHEMA,
+                          "retakes": {"transcript": "JSON file under an allowed root: {words: [{word | text, start, end}]} in time order",
+                                      "profile": f"{' | '.join(sorted(PROFILES))} (default {DEFAULT_PROFILE}; others are regional profiles)",
+                                      "min_confidence": f"0..1 (default {DEFAULT_MIN_CONFIDENCE})"},
+                          "source": "the video silence / static measure (under an allowed root)",
+                          "silence": "{threshold_db: -90..-5 (default -35), min_seconds: 0.05.. (default 0.6)}: ffmpeg-skill/silence --list",
+                          "static": "{}: spans with no motion, the shots ffmpeg-skill/scenes --shots labels static",
+                          "combine": "{mode: and | or (default or), min_seconds: time (default 0)}"},
+        "spans": {"silence": "ffmpeg-skill/silence --list --threshold --min-silence: its silences, snapped to the source's frame grid",
+                  "static": "ffmpeg-skill/scenes --shots: shots labelled static (a measured optical-flow proxy); the span edges are the shot "
+                            "boundaries the engine's scene detection finds, so a still span that starts or ends without a visible change of "
+                            "picture is found only at the shot's edges",
+                  "and": "only where every asked measurement holds (silent and static); label silence+static",
+                  "or": "wherever any holds; labelled with every measurement that touches the span",
+                  "needs": "ffmpeg-skill silence.py; scenes.py --shots (2.x+, detected; TOOL_ERROR without it)"},
+        "applies": "nothing: the response says applied: false; approved proposal ids become CONDENSE segments, and only those are cut",
+        "rules": {"repeat": "the same 1-4 words twice in a row; the first saying is proposed, up to where the second starts",
+                  "restart": f"a phrase of 2+ words said again within {RESTART_WINDOW} words and {RESTART_MAX_SECONDS:g} s, with only hesitations "
+                             "between (or a 3+ word opening after at most 3 words)",
+                  "fragment": "a broken-off word (ends with -, —, ~) or a short false start the next word begins with",
+                  "filler": {k: sorted(v["fillers"]) for k, v in sorted(PROFILES.items())}},
+        "confidence": {"per_rule": dict(CONFIDENCE), "filler": "per word, in the profile",
+                       "meaning": "a fixed weight of the rule that fired, not a probability; emphatic doubles of the profile (very very, はい はい) score below the default"},
+        "proposal_shape": {"id": "p1..", "kind": "repeat | restart | fragment | filler | span", "labels": "span: the measurements that hold", "label": "retake", "action": "cut", "start": "time", "end": "time",
+                           "word_range": "[first, last] word index", "text": "the words", "reason": "why, in words", "confidence": "0..1", "also": "merged overlaps"},
+        "not_provided": ["any model, score or language detection", "automatic application"],
+    }
 
 
 def ffmpeg_skill_version_range() -> str:
@@ -128,7 +255,9 @@ def skill_contract() -> Dict[str, Any]:
                                                   "optional tools (tools_optional): a checkout without one leaves only the operation it executes MISSING",
                                                   "the ffmpeg-skill tool of each unsupported type (doctor: unsupported[].engine_tool_status)",
                                                   "encoding quality flag: --quality where offered, else --crf (same CRF scale)",
-                                                  "probe colour key: video.bt2020_or_hdr where present, else video.hdr (same meaning)"],
+                                                  "probe colour key: video.bt2020_or_hdr where present, else video.hdr (same meaning)",
+                                                  "cut.py's SDR HEVC re-encode codec: --no-keep-hevc passed where offered (3.0+), so a frame-precision TRIM / CUT writes H.264 for SDR like every other operation",
+                                                  "cut.py --smart (3.2.3+): a precision smart TRIM / CUT uses it where offered, else --accurate (contract.smart_cut)"],
                                      "floor_reason": "overlay.py bounds a looped-image composite with -t only from 0.10.0 (behaviour, not a flag)"}},
         "execution": {
             "mode": "local_subprocess",
@@ -145,11 +274,14 @@ def skill_contract() -> Dict[str, Any]:
         "schemas": {"request": REQUEST_SCHEMA, "response": RESPONSE_SCHEMA, "plan": PLAN_SCHEMA, "contract": CONTRACT_SCHEMA, "doctor": DOCTOR_SCHEMA},
         "request_shape": {
             "schema": REQUEST_SCHEMA,
-            "project": {"id": "optional label", "sources": [{"id": "label", "path": "file under an allowed root", "kind": "video | image"}],
+            "project": {"id": "optional label", "sources": [{"id": "label", "path": "file under an allowed root", "kind": "video | image",
+                                                             "ai_generated": "optional {generator, licence}: the caller declares the source AI-generated (contract.ai_generated)"}],
                         "operations": [{"id": "label", "type": "one of operations", "input": "source or operation id", "inputs": "[ids] for CONCAT", "params": {}}],
                         "outputs": [{"id": "label", "operation": "operation id", "path": "relative path under the workspace (.mp4 | .mov | .mkv)",
-                                     "encoding": "optional {crf, preset} (contract.encoding); refused where noted there"}]},
-            "options": {"timeout_seconds": "1..86400 (default 3600)", "overwrite": "bool (default false)", "reuse": "bool (default true)"},
+                                     "encoding": "optional {crf, preset} (contract.encoding); refused where noted there",
+                                     "max_size": "optional {bytes | kb | mb | gb | kib | mib | gib: number} (MB = 10^6 bytes): fit the file under it (contract.size_limit)"}]},
+            "options": {"timeout_seconds": "1..86400 (default 3600)", "overwrite": "bool (default false)", "reuse": "bool (default true)",
+                        "segment_cache": "bool (default false): a frame-precision CUT renders each keep range alone, cached by content, joined by stream copy (contract.segment_cache)"},
         },
         "time": {"forms": ["number (seconds)", "'ss.fff' | 'mm:ss' | 'hh:mm:ss.fff'", "{seconds}", "{rational: 'N/D'}", "{frames, timebase}", "{frames, fps}"],
                  "representation": "exact rationals; serialised as {seconds: 'fixed 6 places', rational: 'N/D'}",
@@ -182,7 +314,7 @@ def skill_contract() -> Dict[str, Any]:
         "validation": {"before_execution": ["schema and typed parameters", "path policy", "graph", "every source probed by ffmpeg-skill (video: stream + duration; image: decodes)",
                                             "ranges against probed durations", "media compatibility (operations.MEDIA)", "engine tools and capabilities (ffmpeg-skill doctor)"],
                        "after_each_operation": ["file exists, non-empty, readable", "probe: video stream, duration, frame size",
-                                                "duration within tolerance of the timeline (frame 0.35 s, keyframe 1.5 s)",
+                                                "duration within tolerance of the timeline (frame / auto / smart 0.35 s, keyframe 1.5 s)",
                                                 "frame size / aspect / width as requested, or equal to the input for TRIM / CUT / SPEED / OVERLAY / FREEZE / REVERSE",
                                                 "frame rate as requested", "audio stream kept when the input(s) had one"],
                        "on_reuse": "the candidate is re-validated with the same checks (hash, size, probe); a stale record is discarded and the operation runs again",
@@ -200,15 +332,37 @@ def skill_contract() -> Dict[str, Any]:
                                "allowed within the same contract_version; the golden copy tests/contract/contract.json is regenerated deliberately in "
                                "the same change, and `contract --check` classifies every difference as breaking or additive",
                        "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
-                       "next": {"0.5.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
+                       "next": {"0.7.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
                                          "(docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
-                                         "CROP (pixel rectangle) via ffmpeg-skill/crop, or left to the caller -- ownership to be decided (ADR-014)",
                                          "OVERLAY video-layer + chroma-key params (ffmpeg-skill overlay.py --video/--chromakey), per ADR-002's own \"extend OVERLAY rather than add a "
                                          "type\" prescription -- flagged, not decided or scheduled here (see kajisho5/video-editing-skill#11 item 2)",
                                          "stabilize / sequence / background: capability ownership (here, elsewhere, or nowhere) not yet decided (see kajisho5/video-editing-skill#11 item 3)",
                                          "POSITION: not planned as a type (see docs/decisions.md ADR-002)"]}},
         # ---- 0.1.x additive blocks: encoding profile, frame semantics, media policy (docs/decisions.md ADR-003 .. ADR-005)
         "encoding": ENCODING,
+        # ---- target file size (docs/decisions.md ADR-028)
+        "size_limit": {"request_field": "project.outputs[].max_size: {mb: 25} (one of bytes, kb, mb, gb = 10^3 steps; kib, mib, gib = 2^10 steps); 100 kB .. 50 GB",
+                       "engine": "ffmpeg-skill/export --preset youtube --no-scale --allow-long --max-mb <target MiB>: a two-pass x264 encode at the video bitrate "
+                                 "the running time leaves after the audio (AAC 192k), at the produced frame size and rate",
+                       "retry": "measured after each encode: over the limit -> target x limit / size x 0.97; under 90 % -> target x 0.95 x limit / size; up to 5 "
+                                "encodes; the delivered file lies in [90 %, 100 %] of the limit",
+                       "refused": ["with outputs[].encoding (a quality and a size: give one; INVALID_REQUEST size_and_encoding)",
+                                   "a path that is not .mp4 (INVALID_REQUEST size_needs_mp4)",
+                                   "an ffmpeg-skill without export --max-mb (2.x+; TOOL_ERROR before execution)",
+                                   "a limit the engine cannot meet (under its lowest watchable video bitrate, 100 kb/s, for the duration; or none of 5 encodes "
+                                   "in range): OUTPUT_ERROR size_limit_unreachable with the attempts and the engine's reason; nothing is delivered"],
+                       "not_done": "no automatic downscale or audio-bitrate reduction to make a small limit fit: the failure says so and the caller decides",
+                       "report": "execution.outputs[].size_limit: {limit_bytes, bytes, ratio, attempts: [{target_mib, bytes, ratio}], two_pass}"},
+        # ---- cut proposals (docs/decisions.md ADR-024)
+        "proposals": proposals_block(),
+        # ---- stinger transition (docs/decisions.md ADR-023)
+        "stinger": STINGER,
+        # ---- AI-generated sources (docs/decisions.md ADR-022)
+        "ai_generated": AI_GENERATED,
+        # ---- segment cache and partial re-render (docs/decisions.md ADR-018)
+        "segment_cache": SEGMENT_CACHE,
+        # ---- keyframe-aware smart cut (docs/decisions.md ADR-031)
+        "smart_cut": SMART_CUT,
         "frame_semantics": FRAME_SEMANTICS,
         "media_policy": MEDIA_POLICY,
     }

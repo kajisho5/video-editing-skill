@@ -117,11 +117,30 @@ gains `ffmpeg-skill/insert`; `engine.version_range` / `dependencies` stay `>=0.1
 detected tool, not on a raised floor). Breaking by the same convention as ADR-014 and shipped in the same release:
 one `version` / `contract_version` bump and one agent re-pin cover both.
 
-## 0.5.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011 / ADR-014, `kajisho5/video-editing-skill#11`)
+## 0.5.0 (shipped; docs/decisions.md ADR-029)
 
-`versioning.next["0.5.0"]` lists breaking-change candidates for a future version, none currently in progress:
-`CROP` via `crop.py` or left to the caller (ownership undecided,
-ADR-014), and `RESIZE.height` — found, by live verification against ffmpeg-skill 0.10.0, to be blocked on the engine
+`version` `0.4.18` → `0.5.0`, `contract_version` `"4.0"` → `"5.0"`, both by hand. Releases 0.4.8 to 0.4.18 changed
+pinned blocks under `"4.0"`: `operations` gained `PUNCH_IN` and `CONDENSE`, TRIM / CUT gained `precision: auto`,
+CONCAT gained the `stinger` transition, and `capability_names`, `request_shape` (`options.segment_cache`,
+`sources[].ai_generated`, `outputs[].max_size`) and `response_shape` changed with them (ADR-018 to ADR-028). This
+release changes no behaviour; it gives that shape its own `contract_version`. `video-production-agent` widens its
+`SUPPORTED_SKILL_VERSIONS` and re-pins.
+
+## 0.6.0 (docs/decisions.md ADR-031)
+
+`version` `0.5.1` → `0.6.0`, `contract_version` `"5.0"` → `"6.0"`, both by hand in the same change (ADR-029's lesson:
+the release workflow does not bump `contract_version`). The pinned `operations` block's TRIM / CUT `precision`
+documentation gains `smart` (`frame | keyframe | auto | smart`); `tools[].parameters` changes with it. Additive: a
+`smart_cut` block (what precision smart asks of the engine, its fallbacks, the report), `engine.compatibility.detected`
+gains the `cut.py --smart` line, doctor's `engine.compatibility.smart_cut` (bool), and on a smart TRIM / CUT
+`execution.operations[].cuts.smart` / `cuts.fallbacks` and `plan.steps[].smart`. Nothing an existing request does
+changes: the default precision is still `frame`, and `keyframe` / `auto` compile to the same argv as in 0.5.x.
+`video-production-agent` widens its `SUPPORTED_SKILL_VERSIONS` to 0.6.x and re-pins from the v0.6.0 tag.
+
+## 0.7.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011 / ADR-014, `kajisho5/video-editing-skill#11`)
+
+`versioning.next["0.7.0"]` (formerly `next["0.6.0"]` and `next["0.5.0"]`, carried over unchanged) lists breaking-change candidates for a future version, none currently in progress:
+`RESIZE.height` — found, by live verification against ffmpeg-skill 0.10.0, to be blocked on the engine
 (`fit.py` has no `--height` flag), not the small addition it was first framed as; `OVERLAY` video-layer + chroma-key parameters
 (`overlay.py --video`/`--chromakey`), per ADR-002's own "extend OVERLAY rather than add a type" prescription —
 flagged by issue #11 item 2, not decided or scheduled; and capability ownership for `stabilize` / `sequence` /

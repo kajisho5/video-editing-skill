@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-015). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-031). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -29,8 +29,8 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 Two independent version axes, both on `skill_contract()`:
 
-- **`version`** (currently `"0.4.0"`) — this package's release version. Free to move on any release.
-- **`contract_version`** (currently `"4.0"`) — the version of the *pinned shape*
+- **`version`** (currently `"0.6.0"`) — this package's release version. Free to move on any release.
+- **`contract_version`** (currently `"6.0"`) — the version of the *pinned shape*
   (`PINNED_BLOCKS` in `contract.py`). Bumps only when a pinned block changes in a breaking way.
   A dependent pins a range against `contract_version`, never `version`.
 
@@ -213,13 +213,48 @@ exception to ADR-001.
   ordinary operation, so CONCAT (and every other type) can take a still. `insert` is an optional engine tool (absent
   in 0.10.0): the floor stays 0.10.0. `media_compatibility.IMAGE_INSERT.requires.video` is `false`, the first such
   entry. No Ken Burns (`--zoom` / `--pan`) yet. Real-media test green against ffmpeg-skill 2.22.2.
+
+- (this change, ADR-016, `ECOSYSTEM_ROADMAP.md` step 5; same convention: breaking, version / contract_version not
+  bumped here, the agent re-pins) — `CROP {x, y, width, height}` → `crop.py`, an optional engine tool (absent in 0.10.0).
+  Ownership decided: pixel-rectangle crops are this Skill's (ecosystem.json gives it 尺・画角合わせ); the agent's own
+  `video_crop` SkillSpec that calls `ffmpeg-skill/crop` directly is the duplicate to retire on the agent side.
   Also in the same PR (roadmap step 6): `CHANGELOG.md`, release workflow (release-drafter + autolabel + tag-based
   release, as in the sibling skills), dependabot, actions pinned by SHA.
+
+- (ADR-018, `ECOSYSTEM_ROADMAP.md` step 8) — `options.segment_cache`: a frame-precision CUT is cut range by range into
+  `<work>/segments/` (content-keyed), joined by `join.py --copy`; one changed range re-encodes one part. Needs
+  ffmpeg-skill 2.24.0+ (`--copy`, detected; refused before execution without it). CONCAT's own join is unchanged.
+- (ADR-019, step 9) — TRIM / CUT `precision: auto`: cut.py lossless mode, `--tolerance 0.2`; `execution.operations[].cuts`
+  passes through cut.py's per-cut choice. Boundary-GOP smart render: ADR-031.
+- (ADR-020, step 10) — `PUNCH_IN {start, end, scale, subject}`: cut / crop / fit / join in turn; window centred on the
+  caller's box, kept in frame. Hard cut only (an ease needs a time-varying crop in ffmpeg-skill).
+- (ADR-021, step 11) — several aspects from one edit is a request graph (shared TRIMs, CROP per shot per aspect, CONCAT
+  per aspect), `examples/multi-aspect.json`; no new type, no contract change.
+- (ADR-022, step 12) — `sources[].ai_generated {generator, licence}` (declared): `marks: [AI_GENERATED]` on every record /
+  output containing it; CONCAT conforms the clip. Engine finding: join.py writes 30000/1001 as 2997/100.
+- (ADR-023, step 13) — CONCAT `transition: stinger {stinger, cut_point, cover}`: join, overlay --video --place, broll mix +
+  audio --replace; switch on the cut frame. Cover is declared (not measured); qc-skill has no stinger check yet.
+- (ADR-024, step 14) — `video-editing propose` (retakes from word timings: repeat / restart / fragment / filler; en default,
+  ja profile): proposals with reasons only, `applied: false`; approved ids become CONDENSE segments (step 16).
+- (ADR-025, step 15) — `propose` `static` (scenes --shots static shots) / `silence` (silence --list), `combine` and / or:
+  labelled span proposals. Edges = the engine's shot boundaries.
+- (ADR-026, step 16) — `CONDENSE {segments, rules: {label: cut | keep | {speed}}, default}`: cut / fit --duration / join;
+  where approved proposals are applied.
+- (ADR-027, step 17) — CONDENSE `output: removed`: review file of only the cut spans + `condense.review` list.
+- (ADR-028, step 18) — `outputs[].max_size {mb: 25}`: export --max-mb (two-pass), measured, retried into [90 %, 100 %];
+  unreachable -> OUTPUT_ERROR with the engine's reason; under_floor when the picture needs fewer bits.
+- (ADR-029) — `contract_version` "4.0" -> "5.0", `version` 0.5.0 (bumped by hand): ADR-018 .. ADR-028 changed pinned blocks
+  (PUNCH_IN, CONDENSE, `precision: auto`, `stinger`; `capability_names`, `request_shape`, `response_shape`) while 0.4.8 ..
+  0.4.18 kept "4.0". No behaviour change; `versioning.next` moves to "0.6.0" unchanged.
+- (ADR-031, step 9 completed) — TRIM / CUT `precision: smart` → ffmpeg-skill 3.2.3+ `cut.py --smart`: only the partial GOPs at
+  each cut point re-encoded, the rest copied and checked by the engine; `cuts.mode` / `cuts.smart` (parts, or reason /
+  reason_code) / `cuts.fallbacks`. Without `--smart` (detected) it runs as `frame` with `reason_code: engine_without_smart`.
+  Opt-in (default stays `frame`; `auto` unchanged). `contract_version` "5.0" -> "6.0", `version` 0.6.0 by hand; `next` -> "0.7.0".
 
 ## Picking the next task
 
 There is no standing task queue; the next gap is found, not assigned. To find it: re-read this
-file and `docs/decisions.md` for anything marked planned-but-undone (e.g. `contract.versioning.next["0.5.0"]`
+file and `docs/decisions.md` for anything marked planned-but-undone (e.g. `contract.versioning.next["0.7.0"]`
 and `kajisho5/video-editing-skill#11` items 2 and 3), re-check `AI-video-production-OS`'s
 `docs/ROADMAP.md` / `docs/ECOSYSTEM_CHANGELOG.md` for
 this Skill's outstanding per-repo items, and re-run `contract --check` and the test suite to make

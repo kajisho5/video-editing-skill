@@ -30,13 +30,18 @@ ENV_DIR = "VIDEO_EDITING_FFMPEG_SKILL_DIR"
 # old release and is not refused for it.
 MIN_VERSION = (0, 10, 0)
 FIT_BOUNDED_SINCE = (0, 16, 10)   # fit.py's aspect-only canvas rule changed here (FfmpegSkill.fit_bounds_by_source)
+KEEP_HEVC_DEFAULT_SINCE = (3, 0, 0)   # cut.py re-encodes SDR HEVC as HEVC by default from here (FfmpegSkill.cut_keeps_hevc_by_default)
+FREEZE_HOLDS_AT_SINCE = (3, 1, 6)   # freeze.py --at T holds the frame shown at T from here, before: the frame before T (FfmpegSkill.freeze_holds_frame_at_t)
 REQUIRED_TOOLS = ("probe", "cut", "join", "fit", "overlay")
 # Tools only their own operation type needs (ADR-014): FREEZE -> freeze.py (shipped from ffmpeg-skill 0.16.0; the
 # pinned 0.11.0 has none), REVERSE -> reverse.py (from 0.11.0), IMAGE_INSERT -> insert.py (from 0.11.0, ADR-015). A
 # checkout without one still runs every other operation; doctor reports that one type MISSING (`tool:ffmpeg-skill/<name>`,
 # detected from the checkout, never inferred from its version) and a request using it is refused before anything runs.
-# This is the capability gate for a type newer than MIN_VERSION: the floor itself is not raised for it.
-OPTIONAL_TOOLS = ("freeze", "reverse", "insert")
+# This is the capability gate for a type newer than MIN_VERSION: the floor itself is not raised for it. CROP -> crop.py
+# (from 0.11.0, ADR-016) is optional the same way.
+# broll / audio: a stinger's sound (ADR-023); silence / scenes: measured spans for `propose` (ADR-025)
+# export: outputs[].max_size (ADR-028)
+OPTIONAL_TOOLS = ("freeze", "reverse", "insert", "crop", "broll", "audio", "silence", "scenes", "export")
 ENGINE_TOOLS = REQUIRED_TOOLS + OPTIONAL_TOOLS
 # A typed flag whose CLI spelling changed between releases, with the spellings in order of preference: ffmpeg-skill
 # 1.10 added --quality (same CRF scale and default) and 2.0 removed --crf from every re-encoding tool that takes it.
@@ -79,6 +84,31 @@ class FfmpegSkill:
         the release that changed it; a version that does not parse gets the current rule."""
         v = parse_version(self.version)
         return v is None or v >= FIT_BOUNDED_SINCE
+
+    def cut_keeps_hevc_by_default(self) -> bool:
+        """cut.py re-encodes an SDR HEVC source as HEVC by default from 3.0.0 (before: x264, like every other re-encoding
+        tool), and 3.0.0 added `--no-keep-hevc` to restore x264 (ADR-017). Read from the flag where flags were detected;
+        where they were not, from the version (a version that does not parse is not evidence of 3.x)."""
+        known = self.cli_flags("cut")
+        if known is not None:
+            return "--no-keep-hevc" in known
+        v = parse_version(self.version)
+        return v is not None and v >= KEEP_HEVC_DEFAULT_SINCE
+
+    def cut_has_smart(self) -> bool:
+        """cut.py --smart (ffmpeg-skill 3.2.3+): the keyframe-aware cut that re-encodes only the partial GOPs at each cut
+        point and copies the whole GOPs between (ADR-031). Only a checkout whose flags were detected and list it counts:
+        an undetected one is not assumed to have it, so a precision smart TRIM / CUT there re-encodes the whole cut."""
+        known = self.cli_flags("cut")
+        return known is not None and "--smart" in known
+
+    def freeze_holds_frame_at_t(self) -> bool:
+        """freeze.py --at T --mode insert holds the frame shown at T from 3.1.6 (ffmpeg-skill #411, shipped in #416); through
+        3.1.5 it held the frame before T, which at a cut is the last frame of the previous shot. The timeline this skill
+        reports for FREEZE (a speed-0 segment at source instant T) describes the 3.1.6 picture. This is behaviour, not a
+        flag, so it is chosen by the release that changed it; a version that does not parse gets the current rule."""
+        v = parse_version(self.version)
+        return v is None or v >= FREEZE_HOLDS_AT_SINCE
 
     def missing_tools(self) -> List[str]:
         return [t for t in REQUIRED_TOOLS if t not in self.tools]

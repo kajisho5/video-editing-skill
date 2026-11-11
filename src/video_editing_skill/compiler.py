@@ -11,18 +11,23 @@ from typing import Any, Callable, Dict, List, Optional
 
 from .errors import EditError
 from .project import EditOperation, EditProject
+from .operations import AUTO_TOLERANCE
 from .timebase import Time, fraction_text
 
 ENCODING_FLAGS = ("crf", "preset")   # the typed encoding profile (operations.validate_encoding): every re-encoding tool takes them
                                      # (crf is passed as --quality where the engine has it: ffmpeg_skill.FLAG_SPELLINGS)
 ALLOWED_FLAGS: Dict[str, tuple] = {
-    "cut": ("start", "end", "segments", "accurate") + ENCODING_FLAGS,
-    "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color") + ENCODING_FLAGS,
+    "cut": ("start", "end", "segments", "accurate", "smart", "tolerance", "no_keep_hevc") + ENCODING_FLAGS,   # no_keep_hevc: set by the executor only (ADR-017)
+    "join": ("transition", "duration", "width", "height", "fps", "fit", "pad_color", "copy") + ENCODING_FLAGS,   # copy: segment joins only (ADR-018)
     "fit": ("duration", "method", "max_speed", "smooth", "aspect", "fit", "width", "pad_color", "crop_x", "crop_y", "fps", "rotate", "flip") + ENCODING_FLAGS,
-    "overlay": ("image", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,
+    "overlay": ("image", "video", "place", "position", "margin", "scale", "opacity", "start", "end", "fade") + ENCODING_FLAGS,   # video / place: stinger only
+    "broll": ("insert", "at", "duration", "audio"),   # stinger sound only (ADR-023): the stinger's audio mixed in under each join
+    "audio": ("replace",),                            # stinger sound only: the mixed track onto the composited picture
+    "export": ("preset", "no_scale", "allow_long", "max_mb"),   # outputs[].max_size only (ADR-028)
     "freeze": ("at", "hold", "mode") + ENCODING_FLAGS,
     "reverse": ENCODING_FLAGS,
     "insert": ("duration", "width", "height", "fps") + ENCODING_FLAGS,
+    "crop": ("x", "y", "width", "height") + ENCODING_FLAGS,
     "probe": (),
 }
 
@@ -33,7 +38,9 @@ OPERATION_FLAGS: Dict[str, tuple] = {
     "TRIM": ("--start", "--end"), "CUT": ("--segments",), "CONCAT": ("--transition", "--duration", "--fit", "--pad-color"),
     "SPEED": ("--duration", "--method", "--max-speed"), "FIT": ("--aspect", "--fit", "--pad-color"), "FILL": ("--aspect", "--fit"),
     "RESIZE": ("--width",), "ROTATE": ("--rotate", "--flip"), "OVERLAY": ("--image", "--position", "--margin"),
-    "FREEZE": ("--hold", "--mode"), "REVERSE": (), "IMAGE_INSERT": ("--duration", "--fps"),
+    "FREEZE": ("--hold", "--mode"), "REVERSE": (), "IMAGE_INSERT": ("--duration", "--fps"), "CROP": ("--x", "--y", "--width", "--height"),
+    "PUNCH_IN": ("--x", "--y", "--width", "--height"),
+    "CONDENSE": ("--start", "--end", "--accurate"),
 }
 
 
@@ -67,12 +74,15 @@ class Step:
         return ["--" + k.replace("_", "-") for k in keys] + (["--image"] if self.image_input else [])
 
     def argv_for(self, inputs: List[str], output: str, image: Optional[str] = None, input_duration: Optional[Time] = None,
-                 resolve: Optional[Callable[[str], Optional[str]]] = None) -> List[str]:
+                 resolve: Optional[Callable[[str], Optional[str]]] = None, engine_args: Optional[Dict[str, Any]] = None) -> List[str]:
         """Materialise argv from resolved paths. Paths are positional / -o / --image only. `resolve` maps a flag to the
-        spelling the installed engine accepts (FfmpegSkill.resolve_flag); None when it accepts no spelling of it."""
+        spelling the installed engine accepts (FfmpegSkill.resolve_flag); None when it accepts no spelling of it.
+        `engine_args`: flags the executor adds for the installed release only (e.g. cut.py --no-keep-hevc on 3.x, ADR-017),
+        held to ALLOWED_FLAGS like every other."""
         allowed = ALLOWED_FLAGS[self.script]
         argv: List[str] = list(inputs) + ["-o", output]
         args = dict(self.args)
+        args.update(engine_args or {})
         if self.needs_input_duration:
             if input_duration is None:
                 raise EditError("INTERNAL_ERROR", "SPEED needs the input duration")
@@ -114,20 +124,30 @@ def compile_operation(op: EditOperation) -> Step:
 
 def _compile(op: EditOperation) -> Step:
     p = op.params
-    video_inputs = op.inputs[:-1] if op.type == "OVERLAY" else op.inputs
+    video_inputs = op.video_inputs
     if op.type == "TRIM":
         args: Dict[str, Any] = {"start": p["start"].tool_arg(), "end": p["end"].tool_arg()}
         if p["precision"] == "frame":
             args["accurate"] = True
+        elif p["precision"] == "auto":   # stream copy where it lands within AUTO_TOLERANCE, else that cut re-encoded (ADR-019)
+            args["tolerance"] = AUTO_TOLERANCE
+        elif p["precision"] == "smart":   # only the partial GOPs at each cut point re-encoded (ADR-031); --accurate where the engine has no --smart
+            args["smart"] = True
         return Step(op, "ffmpeg-skill/cut", args, video_inputs)
     if op.type == "CUT":
         segs = ",".join(f"{r['start'].tool_arg()}-{r['end'].tool_arg()}" for r in p["keep"])
         args = {"segments": segs}
         if p["precision"] == "frame":
             args["accurate"] = True
+        elif p["precision"] == "auto":   # stream copy where it lands within AUTO_TOLERANCE, else that cut re-encoded (ADR-019)
+            args["tolerance"] = AUTO_TOLERANCE
+        elif p["precision"] == "smart":   # only the partial GOPs at each cut point re-encoded (ADR-031); --accurate where the engine has no --smart
+            args["smart"] = True
         return Step(op, "ffmpeg-skill/cut", args, video_inputs)
     if op.type == "CONCAT":
         tr = p.get("transition")
+        if tr and tr["type"] == "stinger":   # butt-joined here; the stinger is laid over each join afterwards (ADR-023)
+            tr = None
         args = {"transition": tr["type"] if tr else "none", "duration": tr["duration"].tool_arg() if tr else "0",
                 "fit": p["mode"], "pad_color": p["pad_color"]}
         for k in ("width", "height"):
@@ -175,6 +195,15 @@ def _compile(op: EditOperation) -> Step:
         return Step(op, "ffmpeg-skill/freeze", args, video_inputs)
     if op.type == "REVERSE":
         return Step(op, "ffmpeg-skill/reverse", {}, video_inputs)   # audio is reversed with the picture (no --no-audio)
+    if op.type == "CROP":
+        # crop.py: the rectangle in source pixels of the frame as displayed, exactly as given (ADR-016); no --fps (the input's rate)
+        return Step(op, "ffmpeg-skill/crop", {"x": p["x"], "y": p["y"], "width": p["width"], "height": p["height"]}, video_inputs)
+    if op.type == "CONDENSE":   # one cut per kept / sped piece, fit --duration for a sped one, join (ADR-026); built by the executor
+        return Step(op, "ffmpeg-skill/cut", {}, video_inputs)
+    if op.type == "PUNCH_IN":
+        # several engine calls (cut, crop, fit, join), built by the executor once the input frame is measured (ADR-020); the
+        # step names the tool that makes the zoom, and its rectangle is filled in at run time
+        return Step(op, "ffmpeg-skill/crop", {}, video_inputs)
     if op.type == "IMAGE_INSERT":
         # insert.py: the still is the positional input; --fps is always passed (a still has no rate of its own), --width /
         # --height only when asked (insert.py's rule fills the other from the image aspect). No --zoom / --pan (ADR-015).

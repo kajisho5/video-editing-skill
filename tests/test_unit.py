@@ -9,7 +9,7 @@ from helpers import make_workspace, request, write_fake_media
 from video_editing_skill import contract, contract_check, operations
 from video_editing_skill.canonical import canonical_json, stable_hash
 from video_editing_skill.errors import ERROR_CODES, EXIT_CODES, EditError
-from video_editing_skill.compiler import compile_operation, compile_project
+from video_editing_skill.compiler import ALLOWED_FLAGS, compile_operation, compile_project
 from video_editing_skill.paths import PathPolicy
 from video_editing_skill.project import EditOperation, parse_request
 from video_editing_skill.timebase import Time, parse_fraction
@@ -52,7 +52,7 @@ class OperationParamTests(unittest.TestCase):
         with self.assertRaises(EditError) as cm:
             operations.validate_params("EXPLODE", {}, "op")
         self.assertEqual(cm.exception.code, "UNSUPPORTED_OPERATION")
-        for t in ("CROP", "POSITION", "REORDER", "TRANSITION"):
+        for t in ("POSITION", "REORDER", "TRANSITION"):
             with self.assertRaises(EditError) as cm:
                 operations.validate_params(t, {}, "op")
             self.assertEqual(cm.exception.code, "UNSUPPORTED_OPERATION")
@@ -234,7 +234,11 @@ class ProjectTests(unittest.TestCase):
             (lambda d: d["project"]["sources"][0].update(kind="audio"), "INVALID_REQUEST"),
             (lambda d: d.update(options={"timeout_seconds": 0}), "INVALID_REQUEST"),
             (lambda d: d.update(options={"workspace": "/"}), "INVALID_REQUEST"),
-            (lambda d: d["project"]["operations"][0].update(type="CROP", params={"x": 0, "y": 0, "width": 2, "height": 2}), "UNSUPPORTED_OPERATION"),
+            (lambda d: d.update(options={"segment_cache": "yes"}), "INVALID_REQUEST"),
+            (lambda d: d["project"]["sources"][0].update(ai_generated={"generator": "x"}), "INVALID_REQUEST"),
+            (lambda d: d["project"]["sources"][0].update(ai_generated={"generator": "x", "licence": ""}), "INVALID_REQUEST"),
+            (lambda d: d["project"]["sources"][0].update(ai_generated={"generator": "x\n", "licence": "y"}), "INVALID_REQUEST"),
+            (lambda d: d["project"]["operations"][0].update(type="POSITION", params={"x": 0, "y": 0}), "UNSUPPORTED_OPERATION"),
             (lambda d: d["project"]["outputs"][0].update(path="out/final.avi"), "UNSUPPORTED_FORMAT"),
             (lambda d: d["project"]["sources"][0].update(path="in/missing.mp4"), "MISSING_INPUT"),
             (lambda d: d["project"]["outputs"][0].update(path="in/a.mp4"), "PATH_NOT_ALLOWED"),
@@ -281,6 +285,37 @@ class ProjectTests(unittest.TestCase):
         self.assertNotIn("--json", argv)
         t = steps["t1"].argv_for(["/x/1.mp4"], "/x/o.mp4")
         self.assertEqual(t, ["/x/1.mp4", "-o", "/x/o.mp4", "--start", "1.000000", "--end", "3.000000", "--accurate"])
+
+    def test_precision_auto_is_a_copy_with_a_tolerance(self):
+        """precision auto (ADR-019): cut.py's lossless mode with --tolerance 0.2, never --accurate."""
+        from video_editing_skill.timebase import Time
+        t = compile_operation(EditOperation("t", "TRIM", ["A"], {"start": Time.parse(2, "s"), "end": Time.parse(5, "e"), "precision": "auto"}))
+        argv = t.argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertNotIn("--accurate", argv)
+        self.assertEqual(argv[argv.index("--tolerance") + 1], "0.2")
+        c = compile_operation(EditOperation("c", "CUT", ["A"], {"keep": [{"start": Time.parse(0, "s"), "end": Time.parse(1, "e")}], "precision": "auto"}))
+        self.assertIn("--tolerance", c.argv_for(["/x/a.mp4"], "/x/o.mp4"))
+        k = compile_operation(EditOperation("k", "TRIM", ["A"], {"start": Time.parse(2, "s"), "end": Time.parse(5, "e"), "precision": "keyframe"}))
+        self.assertNotIn("--tolerance", k.argv_for(["/x/a.mp4"], "/x/o.mp4"))
+
+    def test_precision_smart_is_cut_smart(self):
+        """precision smart (ADR-031): cut.py --smart, never with --accurate (cut.py refuses the pair) or --tolerance."""
+        from video_editing_skill.timebase import Time
+        t = compile_operation(EditOperation("t", "TRIM", ["A"], {"start": Time.parse(2.5, "s"), "end": Time.parse(5, "e"), "precision": "smart"}))
+        self.assertEqual(t.argv_for(["/x/a.mp4"], "/x/o.mp4"), ["/x/a.mp4", "-o", "/x/o.mp4", "--start", "2.500000", "--end", "5.000000", "--smart"])
+        c = compile_operation(EditOperation("c", "CUT", ["A"], {"keep": [{"start": Time.parse(0.5, "s"), "end": Time.parse(1, "e")},
+                                                                        {"start": Time.parse(3, "s"), "end": Time.parse(4.5, "e")}], "precision": "smart"}))
+        argv = c.argv_for(["/x/a.mp4"], "/x/o.mp4")
+        self.assertIn("--smart", argv)
+        self.assertNotIn("--accurate", argv)
+        self.assertNotIn("--tolerance", argv)
+        self.assertEqual(argv[argv.index("--segments") + 1], "0.500000-1.000000,3.000000-4.500000")
+        self.assertIn("smart", ALLOWED_FLAGS["cut"])
+        self.assertIn("smart", operations.PRECISIONS)
+        c = contract.skill_contract()
+        self.assertIn("smart", c["operations"]["TRIM"]["parameters"]["precision"])
+        self.assertIn("smart", c["operations"]["CUT"]["parameters"]["precision"])
+        self.assertEqual(c["smart_cut"]["request_field"], "TRIM / CUT params.precision: smart (opt-in; the default stays frame)")
 
     def test_rotate_compiles_to_ffmpeg_skill_fit_flags(self):
         # kajisho5/video-editing-skill#11 item 1: ROTATE -> fit.py --rotate / --flip
@@ -365,19 +400,23 @@ class FreezeReverseParamTests(unittest.TestCase):
         self.assertEqual((step.tool, step.argv_for(["/x/a.mp4"], "/x/o.mp4")), ("ffmpeg-skill/reverse", ["/x/a.mp4", "-o", "/x/o.mp4", "--crf", "20"]))
 
     def test_contract_names_no_missing_engine_tool(self):
-        """Roadmap step 1: the static contract never says ffmpeg-skill lacks a tool (doctor detects it); FREEZE / REVERSE are
-        operations, not gaps; video.freeze / video.reverse are provided."""
+        """Roadmap step 1: the static contract never says ffmpeg-skill lacks a tool (doctor detects it); FREEZE / REVERSE (and,
+        from roadmap step 5, CROP) are operations, not gaps; video.freeze / video.reverse / video.crop are provided."""
         c = contract.skill_contract()
-        self.assertEqual(sorted(u["type"] for u in c["unsupported"]), ["CROP", "POSITION"])
+        self.assertEqual(sorted(u["type"] for u in c["unsupported"]), ["POSITION"])
         for u in c["unsupported"]:
             self.assertNotIn("ffmpeg-skill has no", u["reason"])
             self.assertNotIn("no tool", u["reason"])
-        self.assertEqual({u["type"]: u["engine_tool"] for u in c["unsupported"]}, {"CROP": "ffmpeg-skill/crop", "POSITION": None})
+        self.assertEqual({u["type"]: u["engine_tool"] for u in c["unsupported"]}, {"POSITION": None})
         provided = {p["id"]: p["tool_id"] for p in c["provides"]}
         self.assertEqual((provided["video.freeze"], provided["video.reverse"]), ("video-editing/freeze", "video-editing/reverse"))
         self.assertEqual((c["operations"]["FREEZE"]["tool"], c["operations"]["REVERSE"]["tool"]), ("ffmpeg-skill/freeze", "ffmpeg-skill/reverse"))
-        self.assertEqual(c["engine"]["tools_optional"], ["ffmpeg-skill/freeze", "ffmpeg-skill/reverse", "ffmpeg-skill/insert"])
-        self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.5.0"]))
+        self.assertEqual(c["engine"]["tools_optional"], ["ffmpeg-skill/freeze", "ffmpeg-skill/reverse", "ffmpeg-skill/insert", "ffmpeg-skill/crop",
+                                                         "ffmpeg-skill/broll", "ffmpeg-skill/audio", "ffmpeg-skill/silence", "ffmpeg-skill/scenes",
+                                                         "ffmpeg-skill/export"])
+        self.assertEqual((provided["video.crop"], c["operations"]["CROP"]["tool"]), ("video-editing/crop", "ffmpeg-skill/crop"))
+        self.assertFalse(any("CROP" in n for n in c["versioning"]["next"]["0.7.0"]))
+        self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.7.0"]))
 
 
 class ImageInsertTests(unittest.TestCase):
@@ -444,7 +483,7 @@ class ImageInsertTests(unittest.TestCase):
         self.assertEqual(c["media_compatibility"]["IMAGE_INSERT"]["requires"], {"video": False, "audio": False, "image": True})
         self.assertIn("ffmpeg-skill/insert", c["engine"]["tools_optional"])
         self.assertEqual(c["engine"]["version_range"], ">=0.10.0")   # gated on the tool, not by raising the floor
-        self.assertFalse(any("IMAGE_INSERT" in n for n in c["versioning"]["next"]["0.5.0"]))
+        self.assertFalse(any("IMAGE_INSERT" in n for n in c["versioning"]["next"]["0.7.0"]))
 
 
 class TimelineTests(unittest.TestCase):
@@ -589,7 +628,7 @@ class ContractTests(unittest.TestCase):
             (lambda d: d["tools"][0].update(result_keys=["x"]), "result_keys changed"),
             (lambda d: d["tools"][0].update(produces_output=False), "produces_output changed"),
             (lambda d: d["tools"].pop(), "tool added"),
-            (lambda d: d["tools"].append({"tool_id": "video-editing/crop"}), "tool removed"),
+            (lambda d: d["tools"].append({"tool_id": "video-editing/position"}), "tool removed"),
             (lambda d: d.update(contract_version="9.9"), "pinned block contract_version changed"),
             (lambda d: d.update(skill_id="other"), "skill_id changed"),
             (lambda d: d["errors"]["exit_codes"].update(TOOL_ERROR=99), "errors (codes / exit codes / retryable) changed"),
@@ -613,10 +652,10 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(contract_check.check_saved("junk", live)["status"], "drift")
         # a contract that lies about the implementation is caught too
         lying = json.loads(json.dumps(live))
-        lying["capabilities"].append({"capability": "video.crop", "operations": ["CROP"], "tool": "x"})
+        lying["capabilities"].append({"capability": "video.position", "operations": ["POSITION"], "tool": "x"})
         self.assertTrue(any("capabilities differ" in p for p in contract_check.verify_implementation(lying)))
         lying = json.loads(json.dumps(live))
-        lying["operations"]["CROP"] = {}
+        lying["operations"]["POSITION"] = {}
         self.assertTrue(any("allowlist" in p for p in contract_check.verify_implementation(lying)))
         lying = json.loads(json.dumps(live))
         lying["execution"]["shell"] = True
@@ -843,7 +882,7 @@ class DoctorAvailabilityTests(unittest.TestCase):
         from video_editing_skill.doctor import operation_availability
         from video_editing_skill.ffmpeg_skill import FfmpegSkill
         full = {"ffmpeg": "6", "ffprobe": "6", "ok": True, "missing": [], "available": ["ffmpeg", "ffprobe", "encoder:libx264", "encoder:aac", "filter:xfade", "filter:acrossfade"]}
-        skill = FfmpegSkill("/x", "0.10.0", ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert"])
+        skill = FfmpegSkill("/x", "0.10.0", ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop"])
         rows = {r["type"]: r for r in operation_availability(skill, full)}
         self.assertEqual(sorted(rows), sorted(operations.OPERATIONS))
         self.assertTrue(all(r["status"] == "AVAILABLE" and r["missing"] == [] for r in rows.values()), rows)
@@ -856,10 +895,10 @@ class DoctorAvailabilityTests(unittest.TestCase):
         self.assertEqual(rows["OVERLAY"]["missing"], ["tool:ffmpeg-skill/overlay"])
         # no version ceiling (ADR-013): a newer release is judged by what it offers; only the 0.10.0 floor is a version check
         for newer in ("1.2.0", "2.10.3"):
-            rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", newer, ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert"]), full)}
+            rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", newer, ["probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop"]), full)}
             self.assertTrue(all(r["status"] == "AVAILABLE" for r in rows.values()), rows)
         # a checkout without the optional tools (ffmpeg-skill 0.11.0 has no freeze.py): only the types they execute are MISSING
-        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.11.0", ["probe", "cut", "join", "fit", "overlay", "reverse", "insert"]), full)}
+        rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.11.0", ["probe", "cut", "join", "fit", "overlay", "reverse", "insert", "crop"]), full)}
         self.assertEqual({t: r["missing"] for t, r in rows.items() if r["status"] != "AVAILABLE"}, {"FREEZE": ["tool:ffmpeg-skill/freeze"]})
         rows = {r["type"]: r for r in operation_availability(FfmpegSkill("/x", "0.9.1", ["probe", "cut", "join", "fit", "overlay"]), full)}
         self.assertTrue(all(r["status"] == "MISSING" for r in rows.values()))
@@ -923,9 +962,12 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
             self.assertEqual(ex.target_frame("x"), want, degrees)
         ex = self.executor([{"id": "x", "type": "ROTATE", "input": "A", "params": {"flip": "h"}}], probes={"A": self.probe(640, 360), "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
         self.assertEqual(ex.target_frame("x"), (640, 360), "a flip alone never changes the frame size")
-        # the semantics block names the four types and no operation stretches
+        # CROP delivers exactly its rectangle (ADR-016)
+        ex = self.executor([{"id": "x", "type": "CROP", "input": "A", "params": {"x": 10, "y": 20, "width": 320, "height": 180}}], probes={"A": self.probe(640, 360), "B": self.probe(), "logo": {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}})
+        self.assertEqual(ex.target_frame("x"), (320, 180))
+        # the semantics block names the five types and no operation stretches
         sem = contract.skill_contract()["frame_semantics"]
-        self.assertEqual(set(sem) - {"rules"}, {"RESIZE", "FIT", "FILL", "ROTATE"})
+        self.assertEqual(set(sem) - {"rules"}, {"RESIZE", "FIT", "FILL", "ROTATE", "CROP"})
         self.assertTrue(any("stretch" in r for r in sem["rules"]))
 
     def test_hdr_vfr_and_codec(self):
@@ -986,33 +1028,310 @@ class FrameSemanticsAndEncodingTests(ExecutorHarness):
             parse_request(request(self.sources_(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "keyframe"}}],
                                   [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"crf": 20}}]), self.policy)
         self.assertEqual(cm.exception.details["reason"], "encoding_needs_reencode")
+        with self.assertRaises(EditError) as cm:   # precision auto may stream-copy too (ADR-019)
+            parse_request(request(self.sources_(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "auto"}}],
+                                  [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"crf": 20}}]), self.policy)
+        self.assertEqual(cm.exception.details["reason"], "encoding_needs_reencode")
+        with self.assertRaises(EditError) as cm:   # precision smart copies the whole GOPs between its re-encoded edges (ADR-031)
+            parse_request(request(self.sources_(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "smart"}}],
+                                  [{"id": "o", "operation": "t", "path": "out/o.mp4", "encoding": {"crf": 20}}]), self.policy)
+        self.assertEqual(cm.exception.details["reason"], "encoding_needs_reencode")
         # the contract's encoding block is the source of truth for the vocabulary
         c = contract.skill_contract()
         self.assertEqual(c["encoding"], operations.ENCODING)
         self.assertIn("video codec choice", c["encoding"]["not_configurable"])
-        self.assertEqual(c["request_shape"], json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))["request_shape"])
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json"), encoding="utf-8") as fh:
+            self.assertEqual(c["request_shape"], json.load(fh)["request_shape"])
 
-    def test_pinned_blocks_are_unchanged_since_0_4_0(self):
+    def test_pinned_blocks_are_unchanged_since_0_6_0(self):
         """The blocks video-production-agent pins (PR #18 / #19) must be byte-identical to the golden copy.
 
-        Bumped from 0.3.0 to 0.4.0 deliberately (docs/decisions.md ADR-012: SPEED gained an optional `smooth`
-        parameter) - a breaking contract_version change video-production-agent's SUPPORTED_SKILL_VERSIONS =
-        ("0.1.",) must widen before it accepts this release, same as 0.2.0 / 0.3.0 (ADR-009 / ADR-011); this test
-        only guards against further *undocumented* drift from here, not against 0.4.0 itself.
+        Bumped from 5.0 to 6.0 deliberately (docs/decisions.md ADR-031: TRIM / CUT `precision: smart`).
+        Before that, from 4.0 to 5.0 (docs/decisions.md ADR-029: PUNCH_IN, CONDENSE, TRIM / CUT
+        `precision: auto`, CONCAT `stinger` and the request / response shapes that came with them, shipped in
+        0.4.8-0.4.18 under "4.0"). Before that, 0.3.0 to 0.4.0 (ADR-012: SPEED gained an optional `smooth`
+        parameter). Each is a breaking contract_version change video-production-agent's SUPPORTED_SKILL_VERSIONS
+        must widen before it accepts the release, same as 0.2.0 / 0.3.0 (ADR-009 / ADR-011); this test only
+        guards against further *undocumented* drift from here, not against 0.6.0 itself.
 
         `engine` is deliberately excluded from the fields compared below: it is an additive block
         (docs/decisions.md ADR-008), free to drift as the ffmpeg-skill version range this Skill enforces changes
         (ADR-010 bumped it to >=0.10.0) — covered by test_drift_is_detected, not by this byte-identity freeze."""
         c = contract.skill_contract()
-        golden = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json")))
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tests", "contract", "contract.json"), encoding="utf-8") as fh:
+            golden = json.load(fh)
         for k in ("schema", "skill_id", "version", "operations", "unsupported", "errors", "execution", "capabilities", "capability_names", "schemas",
                   "response_shape", "request_shape", "formats"):
             self.assertEqual(c[k], golden[k], k)
         # `version` moves with every release (the release workflow bumps it and regenerates the golden copy); the shape this
         # test guards is versioned by contract_version
         self.assertEqual(c["version"], golden["version"])
-        self.assertEqual(c["contract_version"], "4.0")
+        self.assertEqual(c["contract_version"], "6.0")
         for t in c["tools"]:
             g = next(x for x in golden["tools"] if x["tool_id"] == t["tool_id"])
             for f in ("parameters", "required_capabilities", "inputs", "result_keys", "executed_by", "deterministic", "produces_output", "writes_media", "kind"):
                 self.assertEqual(t[f], g[f], (t["tool_id"], f))
+
+
+class CropTests(ExecutorHarness):
+    """ECOSYSTEM_ROADMAP step 5, docs/decisions.md ADR-016: CROP -> ffmpeg-skill crop.py, exactly the rectangle the caller
+    gives (never rounded), refused up front when it does not lie inside the input frame."""
+
+    def test_params(self):
+        p = operations.validate_params("CROP", {"x": 10, "y": 0, "width": 320, "height": 180}, "op")
+        self.assertEqual(p, {"x": 10, "y": 0, "width": 320, "height": 180})
+        for bad in ({"x": 0, "y": 0, "width": 320},                         # height missing
+                    {"x": 0, "y": 0, "width": 321, "height": 180},          # odd: never rounded
+                    {"x": -1, "y": 0, "width": 320, "height": 180},
+                    {"x": True, "y": 0, "width": 320, "height": 180},
+                    {"x": 0.5, "y": 0, "width": 320, "height": 180},
+                    {"x": 0, "y": 0, "width": 0, "height": 180},
+                    {"x": 0, "y": 0, "width": 320, "height": 180, "anchor": {"x": 0, "y": 0}}):
+            with self.assertRaises(EditError, msg=bad) as cm:
+                operations.validate_params("CROP", bad, "op")
+            self.assertEqual(cm.exception.code, "INVALID_REQUEST")
+
+    def test_compiles_to_crop_py(self):
+        step = compile_operation(EditOperation("c", "CROP", ["A"], {"x": 10, "y": 20, "width": 320, "height": 180}, encoding={"crf": 20}))
+        self.assertEqual((step.tool, step.argv_for(["/x/a.mp4"], "/x/o.mp4")),
+                         ("ffmpeg-skill/crop", ["/x/a.mp4", "-o", "/x/o.mp4", "--x", "10", "--y", "20", "--width", "320", "--height", "180", "--crf", "20"]))
+
+    def test_target_frame_and_timeline(self):
+        logo = {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}
+        ex = self.executor([{"id": "c", "type": "CROP", "input": "A", "params": {"x": 0, "y": 0, "width": 200, "height": 100}}],
+                           probes={"A": self.probe(640, 360), "B": self.probe(), "logo": logo})
+        self.assertEqual(ex.target_frame("c"), (200, 100))
+        self.assertEqual(ex.normalized("c")["target_frame"], [200, 100])
+
+    def test_a_rectangle_outside_the_frame_is_refused_before_execution(self):
+        logo = {"duration": None, "video": {"width": 1, "height": 1}, "audio": None}
+        for params in ({"x": 400, "y": 0, "width": 320, "height": 180}, {"x": 0, "y": 200, "width": 320, "height": 180}):
+            ex = self.executor([{"id": "c", "type": "CROP", "input": "A", "params": params}], probes={"A": self.probe(640, 360), "B": self.probe(), "logo": logo})
+            with self.assertRaises(EditError) as cm:
+                ex._check_media()
+            self.assertEqual((cm.exception.code, cm.exception.details["reason"]), ("INVALID_REQUEST", "crop_outside_frame"))
+        # as displayed: a 640x360 source tagged rotation 90 is 360x640, so a tall rectangle fits and a wide one does not
+        rotated = self.probe(640, 360)
+        rotated["video"]["rotation"] = 90
+        ex = self.executor([{"id": "c", "type": "CROP", "input": "A", "params": {"x": 0, "y": 0, "width": 360, "height": 600}}], probes={"A": rotated, "B": self.probe(), "logo": logo})
+        ex._check_media()
+        ex = self.executor([{"id": "c", "type": "CROP", "input": "A", "params": {"x": 0, "y": 0, "width": 600, "height": 360}}], probes={"A": rotated, "B": self.probe(), "logo": logo})
+        with self.assertRaises(EditError):
+            ex._check_media()
+        # the input of a CROP may be another operation's output: its expected frame is what is checked
+        ex = self.executor([{"id": "r", "type": "RESIZE", "input": "A", "params": {"width": 320}},
+                            {"id": "c", "type": "CROP", "input": "r", "params": {"x": 0, "y": 0, "width": 320, "height": 200}}],
+                           probes={"A": self.probe(640, 360), "B": self.probe(), "logo": logo})
+        with self.assertRaises(EditError) as cm:
+            ex._check_media()
+        self.assertEqual(cm.exception.details["frame"], [320, 180])
+
+
+class PunchWindowTests(unittest.TestCase):
+    """PUNCH_IN's window (ADR-020): centred on the subject, inside the frame, holding the whole box, even sizes."""
+
+    def test_window(self):
+        from fractions import Fraction
+        from video_editing_skill.operations import punch_window
+        # a face left of centre: the window is pushed right only as far as the frame needs
+        w = punch_window(320, 180, Fraction(2), {"x": 40, "y": 60, "width": 40, "height": 40})
+        self.assertEqual(w, {"x": 0, "y": 34, "width": 160, "height": 90})
+        # centred where there is room
+        w = punch_window(1920, 1080, Fraction(3, 2), {"x": 900, "y": 400, "width": 120, "height": 160})
+        self.assertEqual((w["width"], w["height"]), (1280, 720))
+        self.assertEqual(w["x"], 320)
+        self.assertEqual(w["y"], 120)
+        for scale in (Fraction(11, 10), Fraction(2), Fraction(4)):
+            for box in ({"x": 0, "y": 0, "width": 10, "height": 10}, {"x": 300, "y": 170, "width": 20, "height": 10}, {"x": 150, "y": 80, "width": 2, "height": 2}):
+                win = punch_window(320, 180, scale, box)
+                self.assertTrue(0 <= win["x"] and win["x"] + win["width"] <= 320 and 0 <= win["y"] and win["y"] + win["height"] <= 180, (scale, box, win))
+                self.assertTrue(win["x"] <= box["x"] and box["x"] + box["width"] <= win["x"] + win["width"], (scale, box, win))
+                self.assertTrue(win["y"] <= box["y"] and box["y"] + box["height"] <= win["y"] + win["height"], (scale, box, win))
+                self.assertEqual((win["width"] % 2, win["height"] % 2), (0, 0))
+
+    def test_refusals(self):
+        from fractions import Fraction
+        from video_editing_skill.operations import punch_window
+        with self.assertRaises(EditError) as cm:
+            punch_window(320, 180, Fraction(4), {"x": 0, "y": 0, "width": 100, "height": 20})
+        self.assertEqual(cm.exception.details["reason"], "subject_larger_than_window")
+        with self.assertRaises(EditError) as cm:
+            punch_window(320, 180, Fraction(2), {"x": 300, "y": 0, "width": 40, "height": 20})
+        self.assertEqual(cm.exception.details["reason"], "subject_outside_frame")
+        with self.assertRaises(EditError):
+            operations.validate_params("PUNCH_IN", {"start": 0, "end": 1, "scale": 1, "subject": {"x": 0, "y": 0, "width": 2, "height": 2}}, "op")
+        with self.assertRaises(EditError):
+            operations.validate_params("PUNCH_IN", {"start": 0, "end": 1, "scale": 2, "subject": {"x": 0, "y": 0, "width": 2}}, "op")
+
+
+def _words(text, start=0.0, step=0.3):
+    """A transcript with even word timings: 'word word ...' -> [{word, start, end}]."""
+    out, t = [], start
+    for w in text.split():
+        out.append({"word": w, "start": round(t, 3), "end": round(t + step * 0.8, 3)})
+        t += step
+    return out
+
+
+class RetakeProposalTests(unittest.TestCase):
+    """ECOSYSTEM_ROADMAP step 14 (ADR-024): every retake in the fixture is proposed with its reason; clean speech gives no
+    proposal at the default threshold; nothing is applied."""
+
+    RETAKES = ("so um today we will look at the the budget and I went to the I went to the bank "
+               "then th- this is where st store prices rise and we need uh we need more time thanks")
+
+    def test_every_retake_is_proposed(self):
+        from video_editing_skill.proposals import detect_retakes, load_words
+        res = detect_retakes(load_words({"words": _words(self.RETAKES)}))
+        got = [(p["kind"], p["text"]) for p in res["proposals"]]
+        self.assertEqual(got, [("filler", "um"), ("repeat", "the"), ("repeat", "I went to the"), ("fragment", "th-"), ("fragment", "st"),
+                               ("restart", "we need uh")], got)
+        for p in res["proposals"]:
+            self.assertEqual((p["label"], p["action"]), ("retake", "cut"))
+            self.assertTrue(p["reason"] and 0.5 <= p["confidence"] <= 1)
+            self.assertLess(Fraction(p["start"]["rational"]), Fraction(p["end"]["rational"]))
+        # the repeat is cut up to where the kept saying starts
+        rep = res["proposals"][2]
+        words = _words(self.RETAKES)
+        self.assertEqual(float(rep["end"]["seconds"]), words[[w["word"] for w in words].index("I", 13)]["start"])
+
+    def test_clean_speech_has_no_proposal_at_the_default_threshold(self):
+        from video_editing_skill.proposals import detect_retakes, load_words
+        clean = ("good morning everyone it is a very very good day in the morning and in the evening we had had enough rain "
+                 "so the team that that we hired will start on Monday thank you all")
+        res = detect_retakes(load_words({"words": _words(clean)}))
+        self.assertEqual(res["proposals"], [], res["proposals"])
+        self.assertGreaterEqual(res["below_threshold"], 3, "the emphatic doubles are seen, and held below the threshold")
+        low = detect_retakes(load_words({"words": _words(clean)}), min_confidence=0.2)
+        self.assertEqual({p["rule"] for p in low["proposals"]}, {"repeat_emphatic"})
+
+    def test_japanese_profile(self):
+        from video_editing_skill.proposals import detect_retakes, load_words
+        words = _words("えーと 今日 は 今日 は 予算 の 話 を し ます あのー 来月 から 来月 から 始め ます")
+        res = detect_retakes(load_words({"words": words}), profile="ja")
+        self.assertEqual([(p["kind"], p["text"]) for p in res["proposals"]],
+                         [("filler", "えーと"), ("repeat", "今日 は"), ("filler", "あのー"), ("repeat", "来月 から")])
+        self.assertEqual(detect_retakes(load_words({"words": words}))["proposals"][0]["kind"], "repeat", "the default profile is English: no ja fillers")
+
+    def test_refusals_and_approval(self):
+        from video_editing_skill.proposals import detect_retakes, load_words, to_segments
+        with self.assertRaises(EditError):
+            load_words({"words": [{"word": "a", "start": 1, "end": 0.5}]})
+        with self.assertRaises(EditError):
+            load_words({"words": [{"word": "a", "start": 1, "end": 1.2}, {"word": "b", "start": 0, "end": 0.2}]})
+        with self.assertRaises(EditError):
+            detect_retakes([], profile="xx")
+        props = detect_retakes(load_words({"words": _words(self.RETAKES)}))["proposals"]
+        segs = to_segments(props, ["p2", "p3"])
+        self.assertEqual([s["label"] for s in segs], ["retake", "retake"])
+        with self.assertRaises(EditError):
+            to_segments(props, ["p99"])
+
+    def test_cli_propose_writes_nothing(self):
+        ws = make_workspace()
+        path = os.path.join(ws, "in", "words.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"words": _words(self.RETAKES)}, fh)
+        before = sorted(os.listdir(ws))
+        from helpers import cli
+        rc, out, err = cli(["propose", "-", "--json", "--workspace", ws],
+                           stdin=json.dumps({"schema": "video-editing/propose@1", "retakes": {"transcript": "in/words.json"}}).encode())
+        self.assertEqual(rc, 0, err)
+        self.assertEqual((out["schema"], out["applied"], out["status"]), ("video-editing/proposals@1", False, "proposed"))
+        self.assertEqual(len(out["proposals"]), 6)
+        self.assertEqual(sorted(os.listdir(ws)), before)
+        rc, out, err = cli(["propose", "-", "--json", "--workspace", ws], stdin=json.dumps({"schema": "video-editing/propose@1"}).encode())
+        self.assertEqual(out["error"]["code"], "INVALID_REQUEST")
+
+
+class SpanCombineTests(unittest.TestCase):
+    """ADR-025: and = where every measurement holds, or = wherever any holds, labelled with all that do."""
+
+    def test_and_or(self):
+        from video_editing_skill.proposals import combine_spans
+        F = Fraction
+        m = {"silence": [(F(5, 2), F(9, 2)), (F(10), F(11))], "static": [(F(2), F(5)), (F(10, 1), F(21, 2))]}
+        a = combine_spans(m, "and", F(0))
+        self.assertEqual([(x["start"]["rational"], x["end"]["rational"], x["label"]) for x in a],
+                         [("5/2", "9/2", "silence+static"), ("10/1", "21/2", "silence+static")])
+        o = combine_spans(m, "or", F(0))
+        self.assertEqual([(x["start"]["rational"], x["end"]["rational"], x["label"]) for x in o],
+                         [("2/1", "5/1", "silence+static"), ("10/1", "11/1", "silence+static")])
+        self.assertEqual([x["label"] for x in combine_spans({"static": [(F(1), F(2))]}, "or", F(0))], ["static"])
+        self.assertEqual(combine_spans(m, "and", F(1)), [x for x in a if x["start"]["rational"] == "5/2"])
+
+
+class CondenseParamTests(unittest.TestCase):
+    """CONDENSE (ADR-026): the pieces over the input, rules per label, refusals."""
+
+    def test_pieces_and_timeline(self):
+        p = operations.validate_params("CONDENSE", {"segments": [{"start": 4, "end": 5, "label": "retake"}, {"start": 1, "end": 2, "label": "silence"}],
+                                                    "rules": {"silence": {"speed": 2}, "retake": "cut"}}, "op")
+        pieces = operations.condense_pieces(p, Time.parse(6))
+        self.assertEqual([(str(x["start"].value), str(x["end"].value), x["action"]) for x in pieces],
+                         [("0", "1", "keep"), ("1", "2", "speed"), ("2", "4", "keep"), ("4", "5", "cut"), ("5", "6", "keep")])
+        from video_editing_skill.timeline import _condense, Clip, Segment
+        src = Clip(Time.parse(6), [Segment("A", Time.parse(0), Time.parse(6), Time.parse(0), Time.parse(6))])
+        c = _condense(src, p)
+        self.assertEqual(c.duration.value, Fraction(9, 2))
+        self.assertEqual([(s.timeline_start.value, s.timeline_end.value, s.speed) for s in c.segments],
+                         [(0, 1, 1), (1, Fraction(3, 2), 2), (Fraction(3, 2), Fraction(7, 2), 1), (Fraction(7, 2), Fraction(9, 2), 1)])
+
+    def test_refusals(self):
+        bad = [{"segments": [{"start": 0, "end": 2, "label": "a"}, {"start": 1, "end": 3, "label": "b"}], "rules": {"a": "cut", "b": "cut"}},
+               {"segments": [{"start": 0, "end": 1, "label": "a"}], "rules": {"b": "cut"}},
+               {"segments": [{"start": 0, "end": 1, "label": "a"}], "rules": {"a": {"speed": 1}}},
+               {"segments": [{"start": 0, "end": 1, "label": "A B"}], "rules": {"A B": "cut"}},
+               {"segments": [], "rules": {"a": "cut"}},
+               {"segments": [{"start": 0, "end": 1, "label": "a"}], "rules": {"a": "drop"}}]
+        for params in bad:
+            with self.assertRaises(EditError, msg=params):
+                operations.validate_params("CONDENSE", params, "op")
+
+
+class CondenseReviewTests(unittest.TestCase):
+    """CONDENSE output removed (ADR-027): only the cut spans, at speed 1, back to back."""
+
+    def test_review_timeline(self):
+        p = operations.validate_params("CONDENSE", {"segments": [{"start": 1, "end": 2, "label": "retake"}, {"start": 3, "end": 4, "label": "silence"},
+                                                                 {"start": 5, "end": 5.5, "label": "retake"}],
+                                                    "rules": {"retake": "cut", "silence": {"speed": 2}}, "output": "removed"}, "op")
+        from video_editing_skill.timeline import _condense, Clip, Segment
+        src = Clip(Time.parse(6), [Segment("A", Time.parse(0), Time.parse(6), Time.parse(0), Time.parse(6))])
+        c = _condense(src, p)
+        self.assertEqual(c.duration.value, Fraction(3, 2))
+        self.assertEqual([(s.source_start.value, s.source_end.value, s.speed) for s in c.segments], [(1, 2, 1), (5, Fraction(11, 2), 1)])
+        with self.assertRaises(EditError):
+            operations.validate_params("CONDENSE", dict(p, output="both", segments=[{"start": 0, "end": 1, "label": "a"}], rules={"a": "cut"}), "op")
+
+
+class SizeLimitParamTests(unittest.TestCase):
+    """outputs[].max_size (ADR-028): units, refusals, the retry arithmetic."""
+
+    def setUp(self):
+        self.ws = make_workspace()
+        write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
+        self.policy = PathPolicy(self.ws)
+
+    def doc(self, out):
+        return request([{"id": "A", "path": "in/a.mp4"}], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}], [out])
+
+    def test_units_and_refusals(self):
+        p = parse_request(self.doc({"id": "o", "operation": "t", "path": "out/o.mp4", "max_size": {"mb": 25}}), self.policy, hash_sources=False)
+        self.assertEqual(p.outputs["o"].max_bytes, 25_000_000)
+        p = parse_request(self.doc({"id": "o", "operation": "t", "path": "out/o.mp4", "max_size": {"mib": 8}}), self.policy, hash_sources=False)
+        self.assertEqual(p.outputs["o"].max_bytes, 8 * 1024 * 1024)
+        for out, reason in (({"max_size": {"mb": 25}, "encoding": {"crf": 20}}, "size_and_encoding"), ({"max_size": {"mb": 25}, "path": "out/o.mov"}, "size_needs_mp4")):
+            with self.assertRaises(EditError) as cm:
+                parse_request(self.doc(dict({"id": "o", "operation": "t", "path": "out/o.mp4"}, **out)), self.policy, hash_sources=False)
+            self.assertEqual(cm.exception.details["reason"], reason)
+        for bad in ({"mb": 0}, {"mb": 1, "kb": 1}, {"tb": 1}, {"kb": 10}, {"mb": True}):
+            with self.assertRaises(EditError, msg=bad):
+                parse_request(self.doc({"id": "o", "operation": "t", "path": "out/o.mp4", "max_size": bad}), self.policy, hash_sources=False)
+
+    def test_retry_arithmetic(self):
+        from video_editing_skill.executor import Executor
+        self.assertIsNone(Executor.next_size_target(2.0, 1_950_000, 2_000_000))
+        self.assertLess(Executor.next_size_target(2.0, 2_100_000, 2_000_000), 2.0 * 2_000_000 / 2_100_000)
+        up = Executor.next_size_target(2.0, 1_600_000, 2_000_000)
+        self.assertAlmostEqual(up, 2.0 * 0.95 * 2_000_000 / 1_600_000)

@@ -75,7 +75,9 @@ def engine_compatibility(skill) -> Dict[str, Any]:
         known = skill.cli_flags(t)
         tools[t] = {"flags_from": skill.flag_source.get(t), "flag_count": len(known) if known is not None else None,
                     "spellings": {f: skill.resolve_flag(t, f) for f in FLAG_SPELLINGS if t != "probe"}}
-    return {"version_floor": ">=" + _floor(), "upper_bound": None, "tools": tools}
+    # cut.py --smart (3.2.3+): what precision smart runs as on this checkout (ADR-031)
+    return {"version_floor": ">=" + _floor(), "upper_bound": None, "tools": tools,
+            "smart_cut": "cut" in skill.tools and skill.cut_has_smart()}
 
 
 def doctor_report(ffmpeg_skill_dir: Optional[str] = None, workspace: Optional[str] = None, allowed_inputs: Optional[List[str]] = None) -> Dict[str, Any]:

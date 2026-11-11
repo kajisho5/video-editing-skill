@@ -181,14 +181,19 @@ class Engine2xTests(LayoutCase):
         self.assertIn("IMAGE_INSERT", res["error"]["message"])
 
     def test_unsupported_engine_tools_are_detected(self):
-        """Roadmap step 1: whether the checkout ships the engine tool of an unsupported type is detected, not declared."""
+        """Roadmap step 1: whether the checkout ships an engine tool is detected, not declared. CROP is an operation since
+        roadmap step 5 (ADR-016): a checkout without crop.py makes only CROP MISSING, as a note."""
         rc, rep, err = cli(["doctor", "--json"], env=self.env)
-        self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"CROP": "MISSING", "POSITION": None})
-        root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-crop-")
+        self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"POSITION": None})
+        self.assertIn("CROP", rep["supported_operations"])
+        root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-nocrop-")
         try:
-            make_fake_skill(root, version=self.version, layout=self.layout, extra=("crop",))
+            make_fake_skill(root, version=self.version, layout=self.layout, absent=("crop",))
             rc, rep, err = cli(["doctor", "--json"], env={"VIDEO_EDITING_FFMPEG_SKILL_DIR": root})
-            self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"CROP": "AVAILABLE", "POSITION": None})
+            self.assertEqual(rc, 0, err)
+            rows = {r["type"]: r for r in rep["operations"]}
+            self.assertEqual((rows["CROP"]["status"], rows["CROP"]["missing"]), ("MISSING", ["tool:ffmpeg-skill/crop"]))
+            self.assertTrue(rep["ok"], rep["problems"])
             self.assertTrue(all(u["status"] == "NOT_IMPLEMENTED" for u in rep["unsupported"]))
         finally:
             shutil.rmtree(root, ignore_errors=True)
@@ -242,7 +247,7 @@ class Engine0xTests(LayoutCase):
         self.assertTrue(rep["ok"], rep["problems"])
         self.assertNotIn("FREEZE", rep["supported_operations"])
         self.assertIn("REVERSE", rep["supported_operations"])
-        self.assertEqual(rep["engine"]["tools_optional_missing"], ["freeze"])
+        self.assertEqual(rep["engine"]["tools_optional_missing"], ["freeze", "broll"])
         self.assertEqual(len(rep["notes"]), 1)
         self.assertIn("FREEZE", rep["summary"])
         rows = {c["check"]: c for c in rep["checks"]}
@@ -281,13 +286,13 @@ class Engine010Tests(LayoutCase):
         rows = {r["type"]: r for r in rep["operations"]}
         self.assertEqual(rows["ROTATE"]["status"], "MISSING")
         self.assertEqual(rows["ROTATE"]["missing"], ["flag:ffmpeg-skill/fit --rotate", "flag:ffmpeg-skill/fit --flip"])
-        # 0.10.0 ships none of freeze.py / reverse.py / insert.py: those types are MISSING by the absent tool, a note, not a problem
-        self.assertEqual((rows["FREEZE"]["missing"], rows["REVERSE"]["missing"], rows["IMAGE_INSERT"]["missing"]),
-                         (["tool:ffmpeg-skill/freeze"], ["tool:ffmpeg-skill/reverse"], ["tool:ffmpeg-skill/insert"]))
-        self.assertEqual(sorted(t for t, r in rows.items() if r["status"] == "AVAILABLE"), sorted(set(OPERATION_FLAGS) - {"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT"}))
+        # 0.10.0 ships none of freeze.py / reverse.py / insert.py / crop.py: those types are MISSING by the absent tool, a note, not a problem
+        self.assertEqual((rows["FREEZE"]["missing"], rows["REVERSE"]["missing"], rows["IMAGE_INSERT"]["missing"], rows["CROP"]["missing"]),
+                         (["tool:ffmpeg-skill/freeze"], ["tool:ffmpeg-skill/reverse"], ["tool:ffmpeg-skill/insert"], ["tool:ffmpeg-skill/crop"]))
+        self.assertEqual(sorted(t for t, r in rows.items() if r["status"] == "AVAILABLE"), sorted(set(OPERATION_FLAGS) - {"ROTATE", "FREEZE", "REVERSE", "IMAGE_INSERT", "CROP", "PUNCH_IN"}))
         self.assertTrue(any("ROTATE" in p for p in rep["problems"]))
-        self.assertFalse(any("FREEZE" in p or "REVERSE" in p or "IMAGE_INSERT" in p for p in rep["problems"]), rep["problems"])
-        self.assertEqual(sorted(n.split()[1] for n in rep["notes"]), ["FREEZE", "IMAGE_INSERT", "REVERSE"])
+        self.assertFalse(any("FREEZE" in p or "REVERSE" in p or "IMAGE_INSERT" in p or "CROP" in p or "PUNCH_IN" in p for p in rep["problems"]), rep["problems"])
+        self.assertEqual(sorted(n.split()[1] for n in rep["notes"]), ["CROP", "FREEZE", "IMAGE_INSERT", "PUNCH_IN", "REVERSE"])
 
     def test_image_insert_refused_up_front(self):
         """No insert.py in this checkout: IMAGE_INSERT is refused before anything runs (the floor is not raised for it)."""
@@ -300,6 +305,160 @@ class Engine010Tests(LayoutCase):
     def test_trim_still_runs(self):
         rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}])
         self.assertTrue(res["ok"], res)
+
+
+class Engine3xTests(LayoutCase):
+    """ffmpeg-skill 3.0: cut.py re-encodes an SDR HEVC source as HEVC by default; --no-keep-hevc restores H.264 (ADR-017)."""
+    layout = "3.x"
+    version = "3.0.0"
+
+    def setUp(self):
+        super().setUp()
+        write_fake_media(os.path.join(self.ws, "in", "sdrhevc.mp4"))
+
+    def test_detected_from_the_flag(self):
+        self.assertTrue(locate(self.root).cut_keeps_hevc_by_default())
+
+    def test_frame_trim_of_sdr_hevc_passes_no_keep_hevc(self):
+        for ops in ([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "frame"}}],
+                    [{"id": "t", "type": "CUT", "input": "A", "params": {"keep": [{"start": 0, "end": 1}], "precision": "frame"}}]):
+            rc, res = self.run_(ops, src="in/sdrhevc.mp4", options={"overwrite": True, "reuse": False})
+            self.assertTrue(res["ok"], res)
+            h = self.delivered_header()
+            self.assertIn("--no-keep-hevc", h["args"])
+            self.assertEqual(h["codec"], "h264")
+
+    def test_keyframe_trim_stream_copies_without_it(self):
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "keyframe"}}], src="in/sdrhevc.mp4")
+        self.assertTrue(res["ok"], res)
+        self.assertNotIn("--no-keep-hevc", self.delivered_header()["args"])
+
+    def test_only_cut_gets_it(self):
+        rc, res = self.run_([{"id": "f", "type": "FIT", "input": "A", "params": {"aspect": "1:1"}}], src="in/sdrhevc.mp4")
+        self.assertTrue(res["ok"], res)
+        self.assertNotIn("--no-keep-hevc", self.delivered_header()["args"])
+
+    def test_hdr_still_hevc(self):
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "frame"}}], src="in/bt2020.mp4")
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.delivered_header()["codec"], "hevc")
+
+    def test_plan_preview_carries_it(self):
+        doc = request([{"id": "A", "path": "in/sdrhevc.mp4"}], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}],
+                      [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        rc, res, err = cli(["plan", "-", "--json", "--workspace", self.ws], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertTrue(res["ok"], res)
+        self.assertTrue(all(s["preview"]["ok"] for s in res["plan"]["steps"]), res["plan"]["steps"])
+
+
+class Engine2xSdrHevcTests(LayoutCase):
+    """2.x cut.py already writes H.264 for SDR HEVC and has no --no-keep-hevc: it is not passed (the tool would refuse it)."""
+
+    def setUp(self):
+        super().setUp()
+        write_fake_media(os.path.join(self.ws, "in", "sdrhevc.mp4"))
+
+    def test_not_passed(self):
+        self.assertFalse(locate(self.root).cut_keeps_hevc_by_default())
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "frame"}}], src="in/sdrhevc.mp4")
+        self.assertTrue(res["ok"], res)
+        self.assertNotIn("--no-keep-hevc", self.delivered_header()["args"])
+        self.assertEqual(self.delivered_header()["codec"], "h264")
+
+
+class SmartCutTests(LayoutCase):
+    """ECOSYSTEM_ROADMAP step 9 (ADR-031): precision smart -> cut.py --smart where the checkout offers it (3.2.3+); the
+    engine's mode and smart document (parts, or the fallback's reason) are in the record."""
+    layout = "3.x"
+    version = "3.2.3"
+
+    def setUp(self):
+        super().setUp()
+        write_fake_media(os.path.join(self.ws, "in", "sdrhevc.mp4"))
+
+    def test_detected_from_the_flag(self):
+        self.assertTrue(locate(self.root).cut_has_smart())
+        rc, res, err = cli(["doctor", "--json"], env=self.env)
+        self.assertTrue(res["engine"]["compatibility"]["smart_cut"], res["engine"]["compatibility"])
+
+    def test_trim_passes_smart_and_reports_the_parts(self):
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0.5, "end": 1.5, "precision": "smart"}}])
+        self.assertTrue(res["ok"], res)
+        args = self.delivered_header()["args"]
+        self.assertIn("--smart", args)
+        self.assertNotIn("--accurate", args)
+        self.assertNotIn("--tolerance", args)
+        self.assertIn("--no-keep-hevc", args)   # an engine fallback on an SDR HEVC source writes H.264, as precision frame does
+        cuts = res["execution"]["operations"][0]["cuts"]
+        self.assertEqual((cuts["requested_precision"], cuts["mode"], cuts["provenance"]), ("smart", "smart", "OBSERVED"))
+        self.assertTrue(cuts["smart"]["applied"])
+        self.assertEqual([p["kind"] for p in cuts["smart"]["parts"]], ["reencode", "reencode"])
+        self.assertEqual(cuts["smart"]["source"], "ffmpeg-skill/cut@3.2.3")
+        self.assertEqual(cuts["fallbacks"], [])
+        self.assertEqual(res["warnings"], [])
+
+    def test_cut_with_whole_gops_copies_them(self):
+        rc, res = self.run_([{"id": "c", "type": "CUT", "input": "A", "params": {"keep": [{"start": 0.5, "end": 2}], "precision": "smart"}}])
+        self.assertTrue(res["ok"], res)
+        self.assertIn("--smart", self.delivered_header()["args"])
+        smart = res["execution"]["operations"][0]["cuts"]["smart"]
+        self.assertEqual([p["kind"] for p in smart["parts"]], ["reencode", "copy"])
+        self.assertGreater(smart["copied_frames"], 0)
+
+    def test_engine_fallback_is_reported(self):
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0.5, "end": 1.5, "precision": "smart"}}], src="in/sdrhevc.mp4")
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(self.delivered_header()["codec"], "h264")
+        cuts = res["execution"]["operations"][0]["cuts"]
+        self.assertEqual(cuts["mode"], "accurate")
+        self.assertEqual((cuts["smart"]["applied"], cuts["smart"]["reason_code"]), (False, "codec"))
+        self.assertIn("H.264", cuts["smart"]["reason"])
+        self.assertEqual([f["code"] for f in cuts["fallbacks"]], ["smart_fallback"])
+
+    def test_encoding_profile_refused(self):
+        rc, res = self.run_([{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0.5, "end": 1.5, "precision": "smart"}}], encoding={"crf": 20})
+        self.assertFalse(res["ok"])
+        self.assertEqual((res["error"]["code"], res["error"]["details"]["reason"]), ("INVALID_REQUEST", "encoding_needs_reencode"))
+
+    def test_plan_says_smart(self):
+        doc = request([{"id": "A", "path": "in/a.mp4"}], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0.5, "end": 1.5, "precision": "smart"}}],
+                      [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        rc, res, err = cli(["plan", "-", "--json", "--workspace", self.ws], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertTrue(res["ok"], res)
+        step = res["plan"]["steps"][0]
+        self.assertEqual(step["arguments"].get("smart"), True)
+        self.assertEqual(step["smart"], {"engine_flag": "--smart", "available": True, "reason_code": None, "reason": None})
+        self.assertEqual(step["normalized"]["encoding"], {"crf": 18, "preset": "medium"})
+
+
+class SmartCutWithoutEngineFlagTests(LayoutCase):
+    """A checkout whose cut.py has no --smart (2.x here; any release before 3.2.3): precision smart runs as precision frame
+    (--accurate), never passes --smart (the tool would refuse it), and says so in the record, the plan and a warning."""
+
+    def test_degrades_to_accurate(self):
+        self.assertFalse(locate(self.root).cut_has_smart())
+        rc, res = self.run_([{"id": "c", "type": "CUT", "input": "A", "params": {"keep": [{"start": 0.5, "end": 1.5}], "precision": "smart"}}])
+        self.assertTrue(res["ok"], res)
+        args = self.delivered_header()["args"]
+        self.assertIn("--accurate", args)
+        self.assertNotIn("--smart", args)
+        cuts = res["execution"]["operations"][0]["cuts"]
+        self.assertEqual(cuts["requested_precision"], "smart")
+        self.assertEqual((cuts["smart"]["applied"], cuts["smart"]["reason_code"]), (False, "engine_without_smart"))
+        self.assertTrue(cuts["smart"]["source"].startswith("video-editing@"))
+        self.assertTrue(any("precision smart" in w and "--smart" in w for w in res["warnings"]), res["warnings"])
+        rc, doc, err = cli(["doctor", "--json"], env=self.env)
+        self.assertFalse(doc["engine"]["compatibility"]["smart_cut"])
+
+    def test_plan_says_accurate(self):
+        doc = request([{"id": "A", "path": "in/a.mp4"}], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0.5, "end": 1.5, "precision": "smart"}}],
+                      [{"id": "o", "operation": "t", "path": "out/o.mp4"}])
+        rc, res, err = cli(["plan", "-", "--json", "--workspace", self.ws], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertTrue(res["ok"], res)
+        step = res["plan"]["steps"][0]
+        self.assertEqual((step["arguments"].get("accurate"), "smart" in step["arguments"]), (True, False))
+        self.assertEqual((step["smart"]["engine_flag"], step["smart"]["available"], step["smart"]["reason_code"]), ("--accurate", False, "engine_without_smart"))
+        self.assertTrue(step["preview"]["ok"], step["preview"])
 
 
 class EngineHelpOnlyTests(LayoutCase):
@@ -328,6 +487,14 @@ class VersionPolicyTests(unittest.TestCase):
         for v in ("0.16.10", "1.26.0", "2.10.3", "unknown"):
             self.assertTrue(FfmpegSkill("/x", v, []).fit_bounds_by_source(), v)
         self.assertNotIn("<", ffmpeg_skill_version_range())
+
+    def test_freeze_held_frame_by_version(self):
+        for v, at_t in (("2.24.1", False), ("3.0.0", False), ("3.1.5", False), ("3.1.6", True), ("4.0.0", True), ("unknown", True)):
+            self.assertEqual(FfmpegSkill("/x", v, []).freeze_holds_frame_at_t(), at_t, v)
+
+    def test_keep_hevc_default_by_version_when_flags_are_undetected(self):
+        for v, keeps in (("2.24.1", False), ("3.0.0", True), ("3.4.2", True), ("unknown", False)):
+            self.assertEqual(FfmpegSkill("/nonexistent", v, ["cut"]).cut_keeps_hevc_by_default(), keeps, v)
 
     def test_floor_refusal_names_the_reason(self):
         root = tempfile.mkdtemp(prefix="fake-old-")

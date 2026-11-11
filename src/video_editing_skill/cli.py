@@ -187,6 +187,24 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_propose(args: argparse.Namespace) -> int:
+    """Cut proposals with reasons (ADR-024): nothing is written or applied; the caller approves by id."""
+    from .proposals import PROPOSALS_SCHEMA, check_proposals_doc, propose
+    policy = _policy(args)
+    raw = _read_request(args.request)
+    skill = None
+    if isinstance(raw, dict) and ("silence" in raw or "static" in raw):
+        skill, _versions, _doctor = _engine(args)
+    body = propose(raw, policy, skill)
+    doc = {"ok": True, "schema": PROPOSALS_SCHEMA, "skill": {"id": SKILL_ID, "version": VERSION}, "command": "propose", "request_sha256": stable_hash(raw)}
+    doc.update(body)
+    problems = check_proposals_doc(doc)
+    if problems:
+        raise EditError("INTERNAL_ERROR", "response self-check failed: " + "; ".join(problems[:5]), {"problems": problems, "command": "propose"})
+    _print_json(doc)
+    return 0
+
+
 # ---------------------------------------------------------------- parser
 def _add_common(p: argparse.ArgumentParser, request: bool) -> None:
     if request:
@@ -218,6 +236,9 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(pl, request=True)
     pl.add_argument("--no-preview", action="store_true", help="skip ffmpeg-skill --dry-run command previews")
     pl.set_defaults(func=cmd_plan, json=True)
+    pr = sub.add_parser("propose", help="cut proposals with reasons (retakes); writes and applies nothing")
+    _add_common(pr, request=True)
+    pr.set_defaults(func=cmd_propose, json=True)
     r = sub.add_parser("run", help="execute the request")
     _add_common(r, request=True)
     r.set_defaults(func=cmd_run, json=True)

@@ -18,6 +18,7 @@ duration_known: false and downstream timeline ranges are omitted (never guessed)
 from fractions import Fraction
 from typing import Any, Dict, List, Optional
 
+from .operations import condense_pieces, condense_played
 from .project import EditOperation, EditProject
 from .timebase import Time
 
@@ -86,7 +87,7 @@ def build_timelines(project: EditProject, durations: Dict[str, Optional[Time]]) 
             d = op.params["duration"]
             clips[ref] = Clip(d, [Segment(op.inputs[0], ZERO, ZERO, ZERO, d, Fraction(0))])
             continue
-        clips[ref] = _apply(op, [clip_of(r) for r in op.inputs[: (len(op.inputs) - 1 if op.type == "OVERLAY" else None)]], durations)
+        clips[ref] = _apply(op, [clip_of(r) for r in op.video_inputs], durations)
     return clips
 
 
@@ -106,7 +107,7 @@ def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[
             segs.append(Segment(s.source, s.source_start, s.source_end, ts, te, s.speed * f))
         dur = src.duration.scale(1 / f) if src.duration is not None else None
         return Clip(dur, segs, list(src.overlays))
-    if op.type in ("FIT", "FILL", "RESIZE", "ROTATE"):
+    if op.type in ("FIT", "FILL", "RESIZE", "ROTATE", "CROP", "PUNCH_IN"):
         src = inputs[0]
         return Clip(src.duration, list(src.segments), list(src.overlays))
     if op.type == "OVERLAY":
@@ -117,11 +118,14 @@ def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[
         return Clip(src.duration, list(src.segments), list(src.overlays) + [ov])
     if op.type == "FREEZE":
         return _freeze(inputs[0], p.get("at"), p["hold"])
+    if op.type == "CONDENSE":
+        return _condense(inputs[0], p)
     if op.type == "REVERSE":
         return _reverse(inputs[0])
     if op.type == "CONCAT":
         tr = p.get("transition")
-        d = tr["duration"] if tr else ZERO
+        stinger = tr if tr and tr["type"] == "stinger" else None
+        d = tr["duration"] if tr and not stinger else ZERO
         segs = []
         overlays = []
         offset: Optional[Time] = ZERO
@@ -135,6 +139,14 @@ def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[
                 offset = None
             else:
                 offset = offset + c.duration - (d if i < len(inputs) - 1 else ZERO)
+            if stinger and i < len(inputs) - 1:   # the stinger over this join: it starts cut_point before the cut and covers the frame at it
+                sd = durations.get(stinger["stinger"])
+                cut = offset
+                sov: Dict[str, Any] = {"source": stinger["stinger"], "kind": "stinger", "cut_at": cut.to_dict() if cut is not None else None,
+                                      "timeline_range": None}
+                if cut is not None and sd is not None:
+                    sov["timeline_range"] = {"start": (cut - stinger["cut_point"]).to_dict(), "end": (cut - stinger["cut_point"] + sd).to_dict()}
+                overlays.append(sov)
         return Clip(offset, segs, overlays)
     raise AssertionError(op.type)
 
@@ -159,6 +171,22 @@ def _cut(src: Clip, ranges: List[tuple]) -> Clip:
             se = s.source_start + (hi - s.timeline_start).scale(s.speed)
             segs.append(Segment(s.source, ss, se, total + (lo - a), total + (hi - a), s.speed))
         total = total + length
+    return Clip(total, segs, [])
+
+
+def _condense(src: Clip, p: Dict[str, Any]) -> Clip:
+    """CONDENSE: the pieces kept (speed 1) or sped up (speed x factor), back to back; cut pieces leave the timeline."""
+    if src.duration is None:
+        return Clip(None, list(src.segments), [])
+    segs: List[Segment] = []
+    total = ZERO
+    for pc in condense_played(p, condense_pieces(p, src.duration)):
+        f = pc.get("factor", Fraction(1)) if pc["action"] == "speed" else Fraction(1)
+        for s in _cut(src, [(pc["start"], pc["end"])]).segments:
+            ts = total + s.timeline_start.scale(1 / f) if s.timeline_start is not None else None
+            te = total + s.timeline_end.scale(1 / f) if s.timeline_end is not None else None
+            segs.append(Segment(s.source, s.source_start, s.source_end, ts, te, s.speed * f))
+        total = total + (pc["end"] - pc["start"]).scale(1 / f)
     return Clip(total, segs, [])
 
 

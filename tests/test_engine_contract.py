@@ -483,3 +483,249 @@ class NormalizationEncodingAndPathsTests(FakeEngineHarness):
         rc, out = self.run_(doc, expect=0)
         self.assertFalse(os.path.exists(stale), "a partial of the same operation from another pid is removed before running")
         self.assertEqual(out["status"], "completed")
+
+
+class SegmentCacheTests(FakeEngineHarness):
+    """options.segment_cache (ADR-018): a frame-precision CUT is cut range by range into a content-keyed cache and joined by
+    stream copy; only parts whose key is new are encoded."""
+
+    KEEP = [{"start": 0, "end": 0.5}, {"start": 0.75, "end": 1.25}, {"start": 1.5, "end": 2}]
+
+    def doc(self, keep=None, **options):
+        return request(self.sources(), [{"id": "c", "type": "CUT", "input": "A", "params": {"keep": keep or self.KEEP}}],
+                       [{"id": "x", "operation": "c", "path": "out/c.mp4"}], options=dict({"segment_cache": True, "overwrite": True}, **options))
+
+    def work_files(self):
+        work = os.path.join(self.ws, ".video-editing", "work")
+        return {os.path.join(d, f): os.path.getmtime(os.path.join(d, f)) for d, _, fs in os.walk(work) for f in fs}
+
+    def test_segments_are_cut_alone_cached_and_joined_by_copy(self):
+        rc, out = self.run_(self.doc(), expect=0)
+        rec = out["execution"]["operations"][0]
+        seg = rec["segments"]
+        self.assertEqual((seg["mode"], seg["join"], seg["encoded"], seg["reused"]), ("segments", "stream_copy", 3, 0))
+        self.assertEqual([p["status"] for p in seg["parts"]], ["encoded"] * 3)
+        self.assertEqual(len({p["key"] for p in seg["parts"]}), 3)
+        with open(os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".mp4"), "rb") as fh:
+            header = json.loads(fh.read()[4:].decode())
+        self.assertEqual(header["tool"], "join")
+        self.assertIn("--copy", header["args"])
+        self.assertIn("none", header["args"])
+        self.assertAlmostEqual(header["duration"], 1.5)
+
+    def test_same_request_twice_writes_nothing_new(self):
+        self.run_(self.doc(), expect=0)
+        before = self.work_files()
+        rc, out = self.run_(self.doc(), expect=0)
+        self.assertEqual(out["status"], "reused")
+        self.assertEqual(self.work_files(), before, "a repeated request writes nothing in the work directory")
+
+    def test_one_changed_range_encodes_only_that_segment(self):
+        self.run_(self.doc(), expect=0)
+        keep = [dict(r) for r in self.KEEP]
+        keep[1] = {"start": 0.75, "end": 1.4}
+        rc, out = self.run_(self.doc(keep), expect=0)
+        seg = out["execution"]["operations"][0]["segments"]
+        self.assertEqual([p["status"] for p in seg["parts"]], ["reused", "encoded", "reused"])
+        self.assertEqual((seg["encoded"], seg["reused"]), (1, 2))
+        rc, plan = self.run_(self.doc(keep), "plan", expect=0)
+        self.assertEqual([p["cached"] for p in plan["plan"]["steps"][0]["segments"]], [True, True, True])
+
+    def test_reuse_false_encodes_every_segment_again(self):
+        self.run_(self.doc(), expect=0)
+        rc, out = self.run_(self.doc(reuse=False), expect=0)
+        self.assertEqual(out["execution"]["operations"][0]["segments"]["encoded"], 3)
+
+    def test_without_the_cache_nothing_changes(self):
+        doc = self.doc()
+        doc["options"] = {"overwrite": True}
+        rc, out = self.run_(doc, expect=0)
+        self.assertNotIn("segments", out["execution"]["operations"][0])
+        rc, plan = self.run_(doc, "plan", expect=0)
+        self.assertNotIn("segments", plan["plan"]["steps"][0])
+
+    def test_engine_without_join_copy_is_refused_before_execution(self):
+        root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-0x-")
+        try:
+            make_fake_skill(root, version="0.11.0", layout="0.x")
+            rc, out, err = cli(["run", "-", "--json", "--workspace", self.ws], stdin=json.dumps(self.doc()).encode(),
+                               env={"VIDEO_EDITING_FFMPEG_SKILL_DIR": root})
+            self.assertEqual(out["error"]["code"], "TOOL_ERROR", out)
+            self.assertIn("flag:ffmpeg-skill/join --copy", out["error"]["details"]["missing"])
+            self.assertEqual(self.calls(), [])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+class KeyframeAwareCutTests(FakeEngineHarness):
+    """precision auto (ADR-019): the engine's per-cut choice is reported; frame precision reports nothing new."""
+
+    def test_auto_reports_the_engines_choice_per_cut(self):
+        doc = request(self.sources(), [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1, "precision": "auto"}},
+                                       {"id": "c", "type": "CUT", "input": "A", "params": {"keep": [{"start": 0, "end": 1}, {"start": 1.5, "end": 2}], "precision": "auto"}},
+                                       {"id": "f", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}],
+                      [{"id": "x", "operation": "t", "path": "out/t.mp4"}, {"id": "y", "operation": "c", "path": "out/c.mp4"}, {"id": "z", "operation": "f", "path": "out/f.mp4"}])
+        rc, out = self.run_(doc, expect=0)
+        recs = {r["operation"]: r for r in out["execution"]["operations"]}
+        self.assertEqual(recs["t"]["cuts"]["requested_precision"], "auto")
+        self.assertEqual(recs["t"]["cuts"]["provenance"], "OBSERVED")
+        self.assertIsNone(recs["t"]["cuts"]["mode"], "the fake engine reports no mode: null, never guessed")
+        self.assertEqual(recs["c"]["cuts"]["ranges"], 2)
+        self.assertNotIn("cuts", recs["f"])
+        self.assertEqual(recs["t"]["parameters"]["tolerance"], "0.2")
+        self.assertNotIn("accurate", recs["t"]["parameters"])
+
+
+class PunchInTests(FakeEngineHarness):
+    """PUNCH_IN (ADR-020) through the fake engine: cut, crop, fit and join in turn; the window is reported."""
+
+    def doc(self, subject, scale=2, start=0.5, end=1.5):
+        return request(self.sources(), [{"id": "p", "type": "PUNCH_IN", "input": "A",
+                                         "params": {"start": start, "end": end, "scale": scale, "subject": subject}}],
+                       [{"id": "x", "operation": "p", "path": "out/p.mp4"}], options={"overwrite": True})
+
+    def test_runs_cut_crop_fit_join_and_reports_the_window(self):
+        rc, out = self.run_(self.doc({"x": 40, "y": 100, "width": 60, "height": 60}), expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual(rec["punch_in"]["window"], {"x": 0, "y": 40, "width": 320, "height": 180})
+        self.assertEqual(rec["punch_in"]["frame"], [640, 360])
+        with open(os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".mp4"), "rb") as fh:
+            header = json.loads(fh.read()[4:].decode())
+        self.assertEqual(header["tool"], "join")
+        self.assertEqual((header["width"], header["height"]), (640, 360))
+        self.assertAlmostEqual(header["duration"], 2.0)
+        work = os.path.join(self.ws, ".video-editing", "work")
+        self.assertFalse([f for f in os.listdir(work) if ".pin" in f], "the intermediate parts are removed")
+        rc, plan = self.run_(self.doc({"x": 40, "y": 100, "width": 60, "height": 60}), "plan", expect=0)
+        self.assertEqual(plan["plan"]["steps"][0]["punch_in"]["window"]["width"], 320)
+
+    def test_subject_too_large_is_refused_before_execution(self):
+        rc, out = self.run_(self.doc({"x": 0, "y": 0, "width": 400, "height": 60}), expect=EXIT_CODES["INVALID_REQUEST"])
+        self.assertEqual(out["error"]["details"]["reason"], "subject_larger_than_window")
+        self.assertEqual(self.calls(), [])
+
+
+class GeneratedSourceMarkTests(FakeEngineHarness):
+    """ADR-022: a declared AI-generated source marks every operation and output that contains it, and nothing else."""
+
+    def test_mark_reaches_downstream_only(self):
+        src = self.sources()
+        src[1] = dict(src[1], ai_generated={"generator": "gen-model 1", "licence": "proprietary, licensed for broadcast"})
+        doc = request(src, [{"id": "a", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}},
+                            {"id": "b", "type": "TRIM", "input": "B", "params": {"start": 0, "end": 1}},
+                            {"id": "c", "type": "CONCAT", "inputs": ["a", "b"]}],
+                      [{"id": "x", "operation": "a", "path": "out/a.mp4"}, {"id": "y", "operation": "c", "path": "out/c.mp4"}])
+        rc, out = self.run_(doc, expect=0)
+        recs = {r["operation"]: r for r in out["execution"]["operations"]}
+        self.assertNotIn("marks", recs["a"])
+        self.assertEqual(recs["b"]["marks"], ["AI_GENERATED"])
+        self.assertEqual(recs["c"]["ai_generated"], [{"source": "B", "generator": "gen-model 1", "licence": "proprietary, licensed for broadcast", "provenance": "DECLARED"}])
+        outs = {o["id"]: o for o in out["execution"]["outputs"]}
+        self.assertNotIn("marks", outs["x"])
+        self.assertEqual(outs["y"]["marks"], ["AI_GENERATED"])
+        # the declaration is not part of identity: the same bytes undeclared give the same operation ids
+        doc2 = request(self.sources(), doc["project"]["operations"], [{"id": "x", "operation": "a", "path": "out/a2.mp4"}, {"id": "y", "operation": "c", "path": "out/c2.mp4"}])
+        rc, out2 = self.run_(doc2, expect=0)
+        self.assertEqual(sorted(r["operation_id"] for r in out2["execution"]["operations"]), sorted(r["operation_id"] for r in out["execution"]["operations"]))
+        self.assertEqual(out2["status"], "reused")
+        self.assertNotIn("marks", {o["id"]: o for o in out2["execution"]["outputs"]}["y"])
+
+
+class StingerTransitionTests(FakeEngineHarness):
+    """CONCAT transition stinger (ADR-023) through the fake engine: the calls, the plan, and every refusal before execution."""
+
+    def setUp(self):
+        super().setUp()
+        write_fake_media(os.path.join(self.ws, "in", "stinger_alpha.mov"))
+        write_fake_media(os.path.join(self.ws, "in", "stinger_opaque.mov"))
+
+    def doc(self, stinger="ST", cut_point=0.5, cover=None, inputs=("A", "B")):
+        src = self.sources() + [{"id": "ST", "path": "in/stinger_alpha.mov"}, {"id": "OP", "path": "in/stinger_opaque.mov"}]
+        tr = {"type": "stinger", "stinger": stinger, "cut_point": cut_point, "cover": cover or {"start": 0.4, "end": 0.6}}
+        return request(src, [{"id": "c", "type": "CONCAT", "inputs": list(inputs), "params": {"transition": tr}}],
+                       [{"id": "x", "operation": "c", "path": "out/c.mp4"}], options={"overwrite": True})
+
+    def test_join_overlay_broll_audio_and_the_report(self):
+        rc, out = self.run_(self.doc(), expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([j["cut_at"]["rational"] for j in rec["stinger"]["joins"]], ["2/1"])
+        self.assertEqual(rec["stinger"]["joins"][0]["stinger_start"]["rational"], "3/2")
+        with open(os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".mp4"), "rb") as fh:
+            header = json.loads(fh.read()[4:].decode())
+        self.assertEqual(header["tool"], "audio", "with sound: the mixed track replaces the composite's")
+        self.assertAlmostEqual(header["duration"], 4.0)
+        self.assertEqual([i["ref"] for i in rec["inputs"]], ["A", "B", "ST"])
+        ov = out["execution"]["outputs"][0]["timeline"]["tracks"][1]["segments"]
+        self.assertEqual([(s["kind"], s["cut_at"]["rational"]) for s in ov], [("stinger", "2/1")])
+        rc, plan = self.run_(self.doc(inputs=("A", "B", "A")), "plan", expect=0)
+        self.assertEqual([j["cut_at"]["rational"] for j in plan["plan"]["steps"][0]["stinger"]["joins"]], ["2/1", "4/1"])
+
+    def test_inputs_are_joined_at_whole_frames(self):
+        """A stream-copied segment's length (its edit list) is rarely whole frames: joined as measured, the next clip started
+        between frames and the joined picture had a hole (frame rate measured 29.955, not 30). Such an input is cut
+        frame-accurately to its length in whole frames first, and the join is planned there (ADR-030)."""
+        with open(os.path.join(self.ws, "in", "copied.mp4"), "wb") as fh:
+            fh.write(b"FAKE" + json.dumps({"duration": 2.116992}).encode())
+        doc = self.doc()
+        doc["project"]["sources"].append({"id": "CP", "path": "in/copied.mp4"})
+        doc["project"]["operations"][0]["inputs"] = ["CP", "B"]
+        rc, plan = self.run_(doc, "plan", expect=0)
+        self.assertEqual([j["cut_at"]["rational"] for j in plan["plan"]["steps"][0]["stinger"]["joins"]], ["21/10"], "63 frames at 30 fps")
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([j["cut_at"]["rational"] for j in rec["stinger"]["joins"]], ["21/10"])
+        self.assertEqual(rec["stinger"]["joins"][0]["stinger_start"]["rational"], "8/5")
+        # one call more than the plain stinger (join, overlay, broll, audio): the cut, before the join
+        outs = [c.rsplit(".partial.", 1)[0].rsplit(".", 1)[-1] for c in rec["commands"]]
+        self.assertEqual(outs, ["stg0", "stg-join", "stg2", "stg3", "stg4"], rec["commands"])
+        # an input already whole frames long is joined as it is (the standard 2 s fixtures: no cut)
+        rc, out = self.run_(self.doc(), expect=0)
+        outs = [c.rsplit(".partial.", 1)[0].rsplit(".", 1)[-1] for c in out["execution"]["operations"][0]["commands"]]
+        self.assertEqual(outs, ["stg-join", "stg1", "stg2", "stg3"])
+
+    def test_refusals_before_execution(self):
+        cases = [(self.doc(cut_point=0.7), "stinger_not_covering"), (self.doc(stinger="OP"), "stinger_no_alpha"),
+                 (self.doc(cut_point=0.51, cover={"start": 0.5, "end": 0.6}), "cut_point_not_on_frame")]
+        for doc, reason in cases:
+            rc, out = self.run_(doc)
+            self.assertEqual(out["error"]["details"].get("reason"), reason, out["error"])
+        rc, out = self.run_(self.doc(cut_point={"frames": 75, "fps": 30}, cover={"start": 2, "end": 2.6}))
+        self.assertEqual(out["error"]["code"], "INVALID_TIME_RANGE", out["error"])
+        doc = self.doc()
+        doc["project"]["operations"].insert(0, {"id": "t", "type": "TRIM", "input": "ST", "params": {"start": 0, "end": 1}})
+        doc["project"]["operations"][1]["params"]["transition"]["stinger"] = "t"
+        rc, out = self.run_(doc)
+        self.assertEqual(out["error"]["details"].get("reason"), "kind_mismatch")
+        self.assertEqual(self.calls(), [])
+
+
+class CondenseFakeTests(FakeEngineHarness):
+    """CONDENSE through the fake engine: one cut per kept piece, fit for a sped one, a join; nothing kept is refused."""
+
+    def test_calls_and_plan(self):
+        doc = request(self.sources(), [{"id": "c", "type": "CONDENSE", "input": "A",
+                                        "params": {"segments": [{"start": 0.5, "end": 1, "label": "silence"}, {"start": 1.5, "end": 2, "label": "retake"}],
+                                                   "rules": {"silence": {"speed": 2}, "retake": "cut"}}}],
+                      [{"id": "x", "operation": "c", "path": "out/c.mp4"}], options={"overwrite": True})
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([p["action"] for p in rec["condense"]["pieces"]], ["keep", "speed", "keep", "cut"])
+        self.assertEqual(rec["condense"]["removed"]["rational"], "1/2")
+        with open(os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".mp4"), "rb") as fh:
+            header = json.loads(fh.read()[4:].decode())
+        self.assertEqual(header["tool"], "join")
+        self.assertAlmostEqual(header["duration"], 0.5 + 0.25 + 0.5)
+
+    def test_nothing_kept_is_refused(self):
+        doc = request(self.sources(), [{"id": "c", "type": "CONDENSE", "input": "A",
+                                        "params": {"segments": [{"start": 0, "end": 2, "label": "x"}], "rules": {"x": "cut"}}}],
+                      [{"id": "x", "operation": "c", "path": "out/c.mp4"}])
+        rc, out = self.run_(doc)
+        self.assertEqual(out["error"]["details"].get("reason"), "nothing_kept")
+
+    def test_review_with_nothing_cut_is_refused(self):
+        doc = request(self.sources(), [{"id": "c", "type": "CONDENSE", "input": "A",
+                                        "params": {"segments": [{"start": 0, "end": 1, "label": "x"}], "rules": {"x": {"speed": 2}}, "output": "removed"}}],
+                      [{"id": "x", "operation": "c", "path": "out/c.mp4"}])
+        rc, out = self.run_(doc)
+        self.assertEqual(out["error"]["details"].get("reason"), "nothing_removed")

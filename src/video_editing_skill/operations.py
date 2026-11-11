@@ -15,7 +15,8 @@ from .timebase import Time, fraction_text, parse_fraction
 TRANSITIONS = ("fade", "dissolve", "wipeleft", "wiperight", "wipeup", "wipedown", "slideleft", "slideright",
                "circleopen", "circleclose", "fadeblack", "fadewhite", "smoothleft", "smoothright", "radial")
 POSITIONS = ("top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right")
-PRECISIONS = ("frame", "keyframe")
+PRECISIONS = ("frame", "keyframe", "auto", "smart")
+AUTO_TOLERANCE = "0.2"   # precision auto: the most a stream copy may deviate from the asked range before that cut is re-encoded (ADR-019)
 ROTATIONS = (90, 180, 270)
 FLIPS = ("h", "v")
 SMOOTH_MODES = ("blend", "interpolate")
@@ -47,7 +48,7 @@ ENCODING = {
     "not_configurable": ["video codec choice", "bitrate / CBR / ABR modes", "pixel format / bit depth", "colour space tags", "audio codec, bitrate, sample rate, channel layout",
                          "keyframe interval / GOP", "two-pass encoding", "hardware encoders"],
     "refused": ["unknown keys (INVALID_REQUEST)", "crf or preset outside the vocabulary (INVALID_REQUEST)",
-                "a profile on an output produced by TRIM / CUT with precision keyframe: stream copy ignores it (INVALID_REQUEST)",
+                "a profile on an output produced by TRIM / CUT with precision keyframe, auto or smart: stream copy ignores it (INVALID_REQUEST)",
                 "two outputs of one operation with different profiles (DEPENDENCY_ERROR)"],
 }
 
@@ -67,11 +68,17 @@ FRAME_SEMANTICS = {
                "keeps": "every source pixel losslessly; no scaling, padding or cropping (like TRIM / CUT / SPEED / OVERLAY, unlike RESIZE / FIT / FILL)",
                "target": "width, height = source width, height (already measured as displayed); swapped when params.degrees is 90 or 270",
                "when": "a source was recorded or tagged with the wrong orientation, or needs mirroring, and no aspect or size change is wanted"},
+    "CROP": {"changes": "frame size, by cutting away everything outside one pixel rectangle",
+             "keeps": "the pixels inside the rectangle exactly (no scaling, padding or stretching); the aspect becomes the rectangle's",
+             "target": "width, height = params.width, params.height (even); x, y are offsets in the input frame as displayed, and the rectangle must lie inside it",
+             "when": "the caller already knows the exact region to keep (a measured letterbox, a saved crop, a region it chose); FILL when the goal is an aspect ratio"},
     "rules": ["a source whose rotation metadata is ±90 / 270 is measured with width and height swapped (as the engine does)",
               "even(n) = int(round(n)), +1 when odd (ffmpeg-skill fit.py)",
               "CONCAT (ffmpeg-skill join.py): params.width x params.height; only one given -> the other from the first input's aspect (round); none -> the first input's frame; then floored to even",
               "IMAGE_INSERT (ffmpeg-skill insert.py): params.width x params.height; only one given -> the other = even(given x the image aspect); none -> even(image width) x "
               "even(image height); the still is scaled to cover that frame and centre-cropped, never stretched",
+              "PUNCH_IN keeps the input frame: the window is floor_even(width / scale) x floor_even(height / scale), centred on the subject box, moved only as far "
+              "as needed to stay inside the frame (even offsets), cropped (crop.py) and scaled back to the input frame (fit.py --fit crop: never stretched)",
               "TRIM / CUT / SPEED / OVERLAY / ROTATE / FREEZE / REVERSE keep the input frame -- losslessly, no filter maths beyond a turn or a mirror for ROTATE, whose target "
               "frame is the source's width x height, swapped for a 90 / 270 degrees turn; an input with an odd width or height is refused before execution (INVALID_INPUT "
               "odd_frame) because the engine's encoders need even sizes",
@@ -89,16 +96,18 @@ MEDIA_POLICY = {
         "RESIZE / FIT / FILL / CONCAT / IMAGE_INSERT normalize to even)",
         "CONCAT of HDR and SDR inputs: INVALID_INPUT hdr_mismatch (the engine encodes from the first input's colour system)",
         "unsupported input extension / output container: UNSUPPORTED_FORMAT", "ranges beyond the input duration, transitions longer than half an input: INVALID_TIME_RANGE",
-        "engine tool / encoder / filter missing: TOOL_ERROR (not retryable); FREEZE / REVERSE / IMAGE_INSERT need ffmpeg-skill/freeze / reverse / insert, detected per checkout",
+        "CROP rectangle outside the input frame as displayed: INVALID_REQUEST crop_outside_frame",
+        "engine tool / encoder / filter missing: TOOL_ERROR (not retryable); FREEZE / REVERSE / IMAGE_INSERT / CROP need ffmpeg-skill/freeze / reverse / insert / crop, detected per checkout",
     ],
     "normalized_by_skill": [
-        "times in any accepted form -> exact rational seconds", "target frame of RESIZE / FIT / FILL / CONCAT (frame_semantics)",
+        "times in any accepted form -> exact rational seconds", "target frame of RESIZE / FIT / FILL / CONCAT / CROP (frame_semantics)",
         "target duration of SPEED (input duration / factor), FREEZE (input duration + hold) and IMAGE_INSERT (params.duration)", "encoding profile -> typed engine flags (crf, preset)", "audio expectation per operation (kept / added / none)",
     ],
     "delegated_to_engine": [
         "scaling, padding, cropping filters and their exact pixel maths", "constant-frame-rate conform of variable-frame-rate sources (a warning is reported)",
         "resampling, silence insertion and stereo layout in CONCAT (an IMAGE_INSERT clip has no audio)", "scaling / centre-cropping a still to its IMAGE_INSERT frame", "silence under a FREEZE hold; reversing the audio with the picture in REVERSE", "HDR sources encoded HEVC 10-bit (the output codec is hevc; a warning is reported)",
-        "audio codec / bitrate / sample rate (AAC 192 kb/s)", "keyframe snapping for precision keyframe TRIM / CUT",
+        "audio codec / bitrate / sample rate (AAC 192 kb/s)", "keyframe snapping for precision keyframe TRIM / CUT", "copy-or-re-encode per cut for precision auto TRIM / CUT (cut.py --tolerance 0.2; the engine's choice is reported per cut)",
+        "which GOPs a precision smart TRIM / CUT re-encodes and whether the result verifies against the source (cut.py --smart; a fallback to a whole re-encode is reported with its reason)",
     ],
     "by_stream": {
         "video_only": "all operations allowed, OVERLAY included (ffmpeg-skill >=0.10.0 bounds the looped-image overlay with an explicit -t instead of -shortest); the output has no audio stream (validated)",
@@ -120,6 +129,7 @@ MAX_HOLD = Fraction(600)
 MIN_STILL = Fraction(1, 100)     # IMAGE_INSERT.duration bounds (same as FREEZE.hold: a held picture)
 MAX_STILL = Fraction(600)
 STILL_FPS_DEFAULT = Fraction(30)   # insert.py's own default, always passed explicitly so the clip never depends on it
+MAX_PUNCH = Fraction(4)   # PUNCH_IN.scale: (1, 4]
 MAX_SPEED = Fraction(4)
 MIN_SPEED = Fraction(1, 4)
 MAX_DIMENSION = 8192
@@ -150,6 +160,14 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
                 "summary": "play the input backwards, picture and audio"},
     "IMAGE_INSERT": {"arity": "one", "tool": "ffmpeg-skill/insert", "capability": "video.image_insert",
                      "summary": "turn a still image (title card, end slate) into a silent video clip of a set duration that CONCAT and every other type can take"},
+    "CROP": {"arity": "one", "tool": "ffmpeg-skill/crop", "capability": "video.crop",
+             "summary": "keep exactly the pixel rectangle {x, y, width, height} the caller gives (no scaling, padding or aspect maths; FILL crops to an aspect ratio)"},
+    "CONDENSE": {"arity": "one", "tool": "ffmpeg-skill/cut", "capability": "video.condense",
+                 "summary": "apply a rule per labelled span (cut, keep, or speed by a factor) and keep everything else by params.default: approved "
+                            "proposals (retakes, silences, static spans) become segments here"},
+    "PUNCH_IN": {"arity": "one", "tool": "ffmpeg-skill/crop", "capability": "video.punch_in",
+                 "summary": "zoom in by a scale on a subject box the caller gives (e.g. detection-skill's face box) for a time range: a hard cut in and out, "
+                            "the window centred on the box and kept inside the frame, the frame size unchanged"},
 }
 
 # Media compatibility per operation: what every input must be, what the output keeps, and which mismatches are
@@ -166,7 +184,8 @@ MEDIA: Dict[str, Dict[str, Any]] = {
                "requires": {"video": True, "audio": False, "image": False},
                "output": {"frame_size": "params.width x params.height, else the first input", "fps": "params.fps, else the first input",
                           "audio": "stereo AAC when any input has audio (silence is inserted for inputs without); none when no input has audio"},
-               "refused_before_execution": ["source without a video stream or duration", "an input shorter than twice the transition"]},
+               "refused_before_execution": ["source without a video stream or duration", "an input shorter than twice the transition",
+                                            "transition stinger: see contract.stinger.refused"]},
     "SPEED": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
               "output": {"frame_size": "as input", "audio": "as input, pitch preserved (atempo)", "fps": "as input", "duration": "input duration / factor"},
               "refused_before_execution": ["source without a video stream or duration", "factor outside [1/4, 4]", "input frame with an odd width or height (odd_frame)"]},
@@ -202,6 +221,23 @@ MEDIA: Dict[str, Dict[str, Any]] = {
                                 "duration": "params.duration"},
                      "refused_before_execution": ["input that is not an image source (DEPENDENCY_ERROR kind_mismatch)", "image that does not decode",
                                                   "an ffmpeg-skill checkout without insert.py (TOOL_ERROR)"]},
+    "CONDENSE": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+                 "output": {"frame_size": "as input", "audio": "kept (stereo AAC: the pieces are joined by ffmpeg-skill/join); sped-up pieces keep their pitch (atempo)",
+                            "fps": "as input", "duration": "the kept time plus each sped span's length / its factor"},
+                 "refused_before_execution": ["source without a video stream or duration", "segments that overlap or run past the input duration",
+                                              "a label without a rule (INVALID_REQUEST missing_rule)", "an edit that keeps nothing (INVALID_REQUEST nothing_kept)",
+                                              "input frame with an odd width or height (odd_frame)"]},
+    "PUNCH_IN": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+                 "output": {"frame_size": "as input", "audio": "kept (stereo AAC: the parts are joined by ffmpeg-skill/join)", "fps": "as input", "duration": "as input"},
+                 "refused_before_execution": ["source without a video stream or duration", "start / end beyond the input duration",
+                                              "a subject box outside the input frame (INVALID_REQUEST subject_outside_frame)",
+                                              "a subject box larger than the zoomed window (INVALID_REQUEST subject_larger_than_window)",
+                                              "input frame with an odd width or height (odd_frame)", "an ffmpeg-skill checkout without crop.py (TOOL_ERROR)"]},
+    "CROP": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
+             "output": {"frame_size": "params.width x params.height (each even)", "audio": "as input", "fps": "as input", "duration": "as input"},
+             "refused_before_execution": ["source without a video stream or duration",
+                                          "a rectangle that does not lie inside the input frame as displayed (INVALID_REQUEST crop_outside_frame)",
+                                          "an ffmpeg-skill checkout without crop.py (TOOL_ERROR)"]},
 }
 
 # capabilities video editing normally has that this Skill does not map to a typed operation: declared as gaps, never as
@@ -209,9 +245,6 @@ MEDIA: Dict[str, Dict[str, Any]] = {
 # is detected from the installed checkout (doctor: unsupported[].engine_tool_status), not written into the contract
 # (ADR-014). `engine_tool` names the ffmpeg-skill tool that would execute the type, when there is one.
 UNSUPPORTED: Dict[str, Dict[str, Any]] = {
-    "CROP": {"capability": "video.crop", "engine_tool": "ffmpeg-skill/crop",
-             "reason": "not mapped to a typed operation here: whether this Skill or its caller owns pixel-rectangle crops is not decided yet (ADR-014); "
-                       "use FILL for crops to an aspect ratio"},
     "POSITION": {"capability": "video.position", "engine_tool": None,
                  "reason": "free placement of a video layer is not provided: OVERLAY composites still images only; a video layer would extend OVERLAY (ADR-002)"},
     "REORDER": {"capability": "video.reorder", "engine_tool": None,
@@ -326,6 +359,24 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
         if tr is not None:
             if not isinstance(tr, dict):
                 raise EditError("INVALID_REQUEST", f"{what}.transition: must be an object")
+        if isinstance(tr, dict) and tr.get("type") == "stinger":
+            # a graphic with alpha laid over each join; the clips switch at its cut point, where it covers the frame (ADR-023).
+            # Its length is the file's; the cut point and the covered window are data the stinger's maker states (stinger.json)
+            _keys(tr, what + ".transition", ("type", "stinger", "cut_point", "cover"), ("type", "stinger", "cut_point", "cover"))
+            if not isinstance(tr["stinger"], str) or not tr["stinger"]:
+                raise EditError("INVALID_REQUEST", f"{what}.transition.stinger: must reference a video source id")
+            cp = Time.parse(tr["cut_point"], what + ".transition.cut_point")
+            cover = tr["cover"]
+            if not isinstance(cover, dict):
+                raise EditError("INVALID_REQUEST", f"{what}.transition.cover: must be an object {{start, end}}: the window the graphic covers the whole frame")
+            cov = _range(cover, what + ".transition.cover")
+            if not (cov["start"].value <= cp.value < cov["end"].value):
+                raise EditError("INVALID_REQUEST", f"{what}.transition: cut_point {cp.text(3)}s is not inside the covered window "
+                                f"[{cov['start'].text(3)}, {cov['end'].text(3)})s: the switch must happen under full cover",
+                                {"reason": "stinger_not_covering"})
+            p["transition"] = {"type": "stinger", "stinger": tr["stinger"], "cut_point": cp, "cover": cov}
+            tr = None
+        if tr is not None:
             _keys(tr, what + ".transition", ("type", "duration"), ("type", "duration"))
             d = Time.parse(tr["duration"], what + ".transition.duration")
             if not (Fraction(1, 100) <= d.value <= Fraction(10)):
@@ -415,6 +466,64 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
             p["at"] = Time.parse(params["at"], what + ".at")
     elif op_type == "REVERSE":
         _keys(params, what, ())
+    elif op_type == "CROP":
+        # crop.py's own rules: x, y >= 0, width / height even (4:2:0); inside the frame is checked once the input frame is
+        # known (Executor._check_media), before anything runs. Never rounded: a given rectangle is kept exactly or refused.
+        _keys(params, what, ("x", "y", "width", "height"), ("x", "y", "width", "height"))
+        p["x"] = _int(params["x"], what + ".x", 0, MAX_DIMENSION)
+        p["y"] = _int(params["y"], what + ".y", 0, MAX_DIMENSION)
+        p["width"] = _even(params["width"], what + ".width")
+        p["height"] = _even(params["height"], what + ".height")
+    elif op_type == "CONDENSE":
+        _keys(params, what, ("segments", "rules", "default", "output"), ("segments", "rules"))
+        segs = params["segments"]
+        if not isinstance(segs, list) or not segs or len(segs) > 5000:
+            raise EditError("INVALID_REQUEST", f"{what}.segments: must be a non-empty list (max 5000) of {{start, end, label}}")
+        out_segs: List[Dict[str, Any]] = []
+        for i, sgm in enumerate(segs):
+            if not isinstance(sgm, dict):
+                raise EditError("INVALID_REQUEST", f"{what}.segments[{i}]: must be an object")
+            _keys(sgm, f"{what}.segments[{i}]", ("start", "end", "label"), ("start", "end", "label"))
+            r = _range({"start": sgm["start"], "end": sgm["end"]}, f"{what}.segments[{i}]")
+            lab = sgm["label"]
+            if not isinstance(lab, str) or not _LABEL.match(lab):
+                raise EditError("INVALID_REQUEST", f"{what}.segments[{i}].label: must match {_LABEL.pattern}")
+            out_segs.append({"start": r["start"], "end": r["end"], "label": lab})
+        out_segs.sort(key=lambda x: x["start"].value)
+        for a, b in zip(out_segs, out_segs[1:]):
+            if b["start"].value < a["end"].value:
+                raise EditError("INVALID_TIME_RANGE", f"{what}.segments: {a['label']} [{a['start'].text(3)}, {a['end'].text(3)}) overlaps "
+                                f"{b['label']} [{b['start'].text(3)}, {b['end'].text(3)})", {"reason": "overlap"})
+        p["segments"] = out_segs
+        rules = params["rules"]
+        if not isinstance(rules, dict) or not rules:
+            raise EditError("INVALID_REQUEST", f"{what}.rules: must map each label to cut | keep | {{speed: factor}}")
+        p["rules"] = {}
+        for lab, rule in sorted(rules.items(), key=lambda kv: str(kv[0])):
+            if not isinstance(lab, str) or not _LABEL.match(lab):
+                raise EditError("INVALID_REQUEST", f"{what}.rules: label {lab!r} must match {_LABEL.pattern}")
+            p["rules"][lab] = _span_rule(rule, f"{what}.rules.{lab}")
+        missing = sorted({x["label"] for x in out_segs} - set(p["rules"]))
+        if missing:
+            raise EditError("INVALID_REQUEST", f"{what}.rules: no rule for labels {missing}", {"reason": "missing_rule", "labels": missing})
+        p["default"] = _span_rule(params.get("default", "keep"), what + ".default")
+        # output removed (ADR-027): a review file of only the spans the rules cut, joined in order, to check before cutting
+        p["output"] = _enum(params.get("output", "result"), what + ".output", ("result", "removed"))
+    elif op_type == "PUNCH_IN":
+        # the subject box is the caller's (detection-skill's face box, ADR-001: no detection here); the window is computed
+        # once the input frame is measured (punch_window) and refused there if it cannot hold the box
+        _keys(params, what, ("start", "end", "scale", "subject"), ("start", "end", "scale", "subject"))
+        p.update(_range({"start": params["start"], "end": params["end"]}, what))
+        sc = parse_fraction(params["scale"], what + ".scale")
+        if not (1 < sc <= MAX_PUNCH):
+            raise EditError("INVALID_REQUEST", f"{what}.scale: must be above 1 and at most {fraction_text(MAX_PUNCH)}")
+        p["scale"] = sc
+        b = params["subject"]
+        if not isinstance(b, dict):
+            raise EditError("INVALID_REQUEST", f"{what}.subject: must be an object {{x, y, width, height}}")
+        _keys(b, what + ".subject", ("x", "y", "width", "height"), ("x", "y", "width", "height"))
+        p["subject"] = {"x": _int(b["x"], what + ".subject.x", 0, MAX_DIMENSION), "y": _int(b["y"], what + ".subject.y", 0, MAX_DIMENSION),
+                        "width": _int(b["width"], what + ".subject.width", 1, MAX_DIMENSION), "height": _int(b["height"], what + ".subject.height", 1, MAX_DIMENSION)}
     elif op_type == "IMAGE_INSERT":
         _keys(params, what, ("duration", "width", "height", "fps"), ("duration",))
         dur = Time.parse(params["duration"], what + ".duration")
@@ -427,6 +536,52 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
         _frame(params, what, p)
         p.setdefault("fps", STILL_FPS_DEFAULT)
     return p
+
+
+_LABEL = re.compile(r"^[a-z0-9][a-z0-9_+.-]{0,39}$")
+
+
+def _span_rule(rule: Any, what: str) -> Dict[str, Any]:
+    """CONDENSE rule: "cut" | "keep" | {"speed": factor in [1/4, 4], not 1} -> {"action", "factor"?}."""
+    if rule in ("cut", "keep"):
+        return {"action": rule}
+    if isinstance(rule, dict) and set(rule) == {"speed"}:
+        f = parse_fraction(rule["speed"], what + ".speed")
+        if not (MIN_SPEED <= f <= MAX_SPEED) or f == 1:
+            raise EditError("INVALID_REQUEST", f"{what}.speed: must be between {fraction_text(MIN_SPEED)} and {fraction_text(MAX_SPEED)}, not 1")
+        return {"action": "speed", "factor": f}
+    raise EditError("INVALID_REQUEST", f"{what}: must be cut | keep | {{speed: factor}}")
+
+
+def condense_played(params: Dict[str, Any], pieces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The pieces CONDENSE writes, in order: the kept and sped ones (output result), or only the cut ones at speed 1 (output removed)."""
+    if params.get("output") == "removed":
+        return [dict(pc, action="keep", reviewed=pc["action"]) for pc in pieces if pc["action"] == "cut"]
+    return [pc for pc in pieces if pc["action"] != "cut"]
+
+
+def condense_pieces(params: Dict[str, Any], duration: Time) -> List[Dict[str, Any]]:
+    """CONDENSE's plan over [0, duration): every labelled span and every gap between them (rule: params.default), each with its
+    rule, in order; neighbours with the same rule (and factor) are merged. Spans past the end are refused by the executor."""
+    pieces: List[Dict[str, Any]] = []
+    t = Time(Fraction(0))
+    for s in params["segments"]:
+        if t.value < s["start"].value:
+            pieces.append({"start": t, "end": s["start"], "label": None, **params["default"]})
+        end = s["end"] if s["end"].value <= duration.value else duration
+        if s["start"].value < end.value:
+            pieces.append({"start": s["start"], "end": end, "label": s["label"], **params["rules"][s["label"]]})
+        t = end
+    if t.value < duration.value:
+        pieces.append({"start": t, "end": duration, "label": None, **params["default"]})
+    merged: List[Dict[str, Any]] = []
+    for pc in pieces:
+        if merged and merged[-1]["action"] == pc["action"] and merged[-1].get("factor") == pc.get("factor") and merged[-1]["end"].value == pc["start"].value:
+            merged[-1] = dict(merged[-1], end=pc["end"], label=merged[-1]["label"] if merged[-1]["label"] == pc["label"] else "+".join(
+                x for x in (merged[-1]["label"], pc["label"]) if x) or None)
+            continue
+        merged.append(dict(pc))
+    return merged
 
 
 def validate_encoding(raw: Any, what: str) -> Dict[str, Any]:
@@ -442,6 +597,30 @@ def validate_encoding(raw: Any, what: str) -> Dict[str, Any]:
     if not out:
         raise EditError("INVALID_REQUEST", f"{what}: an empty profile changes nothing; drop it")
     return out
+
+
+def punch_window(frame_w: int, frame_h: int, scale: Fraction, subject: Dict[str, int]) -> Dict[str, int]:
+    """PUNCH_IN's crop window in the input frame (as displayed): floor_even(W / scale) x floor_even(H / scale), centred on the
+    subject box, then moved only as far as needed to stay inside the frame; offsets even where the box allows. Raises when
+    the box is outside the frame or larger than the window (it could not stay in view)."""
+    x, y, bw, bh = subject["x"], subject["y"], subject["width"], subject["height"]
+    if x + bw > frame_w or y + bh > frame_h:
+        raise EditError("INVALID_REQUEST", f"PUNCH_IN: subject box ({x},{y},{bw}x{bh}) is not inside the input frame {frame_w}x{frame_h}",
+                        {"reason": "subject_outside_frame", "frame": [frame_w, frame_h], "subject": dict(subject)})
+    w = int(Fraction(frame_w) / scale) // 2 * 2
+    h = int(Fraction(frame_h) / scale) // 2 * 2
+    if bw > w or bh > h:
+        raise EditError("INVALID_REQUEST", f"PUNCH_IN: subject box {bw}x{bh} does not fit the {w}x{h} window a {fraction_text(scale)}x zoom leaves; "
+                        "use a smaller scale", {"reason": "subject_larger_than_window", "window": [w, h], "subject": dict(subject)})
+
+    def place(pos: int, size: int, win: int, limit: int) -> int:
+        lo, hi = max(0, pos + size - win), min(pos, limit - win)   # every offset that keeps the box in the window and the window in the frame
+        want = min(max(int(round(pos + Fraction(size, 2) - Fraction(win, 2))), lo), hi)
+        for cand in (want - want % 2, want + want % 2):
+            if lo <= cand <= hi:
+                return cand
+        return want
+    return {"x": place(x, bw, w, frame_w), "y": place(y, bh, h, frame_h), "width": w, "height": h}
 
 
 def even(n: Any) -> int:

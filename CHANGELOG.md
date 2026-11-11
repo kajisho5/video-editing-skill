@@ -1,5 +1,89 @@
 # Changelog
 
+## v0.6.0 - 2026-11-07
+
+- Smart cut: precision smart re-encodes only the partial GOPs at each cut (roadmap step 9) (#43) (831a8dc)
+
+## v0.5.1 - 2026-11-07
+
+- fix(concat): join stinger clips at whole frames (#42) (1e57143)
+
+## v0.5.0 - 2026-11-06
+
+- fix(contract): contract_version 5.0 and version 0.5.0 for the shape 0.4.8-0.4.18 shipped (#41) (95e55e7)
+
+## v0.4.18 - 2026-11-06
+
+- Deliver an output under a target file size (roadmap step 18) (#40) (32f10bb)
+
+## v0.4.17 - 2026-11-06
+
+- Review file of the planned cuts: CONDENSE output removed (roadmap step 17) (#39) (5f62819)
+
+## v0.4.16 - 2026-11-06
+
+- CONDENSE: a rule per labelled span (roadmap step 16) (#38) (a3702f9)
+
+## v0.4.15 - 2026-11-06
+
+- Spans with no motion or no sound, combined by and / or (roadmap step 15) (#37) (5abaeb3)
+
+## v0.4.14 - 2026-11-06
+
+- Retake proposals from word timings; roadmap steps 14-18 (roadmap step 14) (#36) (ec51f7f)
+
+## v0.4.13 - 2026-11-06
+
+- Stinger transition for CONCAT (roadmap step 13) (#35) (182b833)
+
+## v0.4.12 - 2026-11-06
+
+- AI-generated sources: declared, conformed by CONCAT, marked downstream (roadmap step 12) (#34) (cf926d5)
+
+## v0.4.11 - 2026-11-06
+
+- One edit rendered in several aspects (roadmap step 11) (#33) (d96d46e)
+
+## v0.4.10 - 2026-11-06
+
+- PUNCH_IN: a hard-cut zoom on a subject box (roadmap step 10) (#32) (0403787)
+
+## v0.4.9 - 2026-11-06
+
+- Keyframe-aware TRIM / CUT: precision auto, reported per cut (roadmap step 9) (#31) (687b111)
+
+## v0.4.8 - 2026-11-06
+
+- Segment cache and partial re-render for CUT (roadmap step 8) (#30) (16e159a)
+
+## v0.4.7 - 2026-11-06
+
+- docs(roadmap): field review steps (2026-11-05) (#28) (cd06f2e)
+
+## v0.4.6 - 2026-11-06
+
+- test: FREEZE's held frame follows ffmpeg-skill 3.1.6 (the frame shown at T) (#29) (a732c7b)
+
+## v0.4.5 - 2026-11-05
+
+- docs(roadmap): bring status and wiring up to date (2026-11-05 review) (#27) (f27c0be)
+
+## v0.4.4 - 2026-11-05
+
+- Bump actions/setup-python from 5 to 7 (#24) (52c5fb0)
+
+## v0.4.3 - 2026-11-05
+
+- Bump actions/checkout from 4 to 7 (#23) (8795b27)
+
+## v0.4.2 - 2026-10-31
+
+- Support ffmpeg-skill 3.0.0: keep SDR HEVC TRIM/CUT re-encodes on H.264 (#26) (5f6e88d)
+
+## v0.4.1 - 2026-10-31
+
+- CROP via ffmpeg-skill crop.py: pixel-rectangle crops are owned here, not by the caller (roadmap step 5) (#25) (36f0092)
+
 ## v0.4.0 - 2026-10-31
 
 - IMAGE_INSERT via ffmpeg-skill/insert; CHANGELOG, release workflow, dependabot (roadmap 4, 6) (#21) (f6e13a9)
