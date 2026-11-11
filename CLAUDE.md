@@ -74,7 +74,9 @@ hand-applied `major`/`breaking` label — release-drafter's labels, `.github/rel
 yet) is `v<pyproject version>` unchanged**, and a breaking contract change is released by bumping `version` /
 `contract_version` by hand in its PR. Third-party actions are pinned by commit SHA (tag in a comment), copied from
 the sibling skills; dependabot (`github-actions`, `pip`) keeps them current. `tests/test_release_scripts.py` checks
-the version rule on throwaway git repos.
+the version rule on throwaway git repos. Dependabot labels a PR `major` when its *dependency* moved a major version,
+so before release-drafter runs, `.github/scripts/dependabot_release_labels.py` removes `major`/`breaking`/`minor`/
+`feature`/`enhancement` from Dependabot PRs unless a person applied the label (`tests/test_release_labels.py`).
 
 ## Ecosystem relationships (verify live, never assume — these repos evolve independently)
 
