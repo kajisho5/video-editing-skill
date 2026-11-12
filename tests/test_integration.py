@@ -35,8 +35,10 @@ ALL_OPERATIONS = ["CONCAT", "CONDENSE", "CROP", "CUT", "FILL", "FIT", "FREEZE", 
 AVAILABLE_OPERATIONS = [t for t in ALL_OPERATIONS if not ((t == "ROTATE" and not HAS_ROTATE) or (t == "FREEZE" and not HAS_FREEZE)
                                                           or (t == "REVERSE" and not HAS_REVERSE) or (t == "IMAGE_INSERT" and not HAS_INSERT)
                                                           or (t in ("CROP", "PUNCH_IN") and not HAS_CROP))]
-# stinger transition (ADR-023): overlay.py --video --place, and broll.py / audio.py --replace for its sound (2.x and later)
-HAS_STINGER = READY and all(t in FFMPEG_SKILL.tools for t in ("broll", "audio")) and FFMPEG_SKILL.missing_flags("overlay", ["--video", "--place"]) == []
+# stinger transition (ADR-023): overlay.py --video --place, and broll.py / audio.py --replace for its sound (2.x and later); look.py
+# writes the stinger's frame at the cut point with its alpha, so the cover there is measured (ADR-032)
+HAS_STINGER = (READY and all(t in FFMPEG_SKILL.tools for t in ("broll", "audio", "look")) and FFMPEG_SKILL.missing_flags("overlay", ["--video", "--place"]) == []
+               and FFMPEG_SKILL.missing_flags("look", ["--at", "--width", "--no-timecode"]) == [])
 HAS_SHOTS = READY and "scenes" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("scenes", ["--shots"]) == []   # static spans (ADR-025)
 HAS_EXPORT_SIZE = READY and "export" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("export", ["--max-mb", "--no-scale", "--allow-long"]) == []
 HAS_JOIN_COPY = READY and FFMPEG_SKILL.missing_flags("join", ["--copy"]) == []   # join.py --copy, from 2.24.0 (segment cache, ADR-018)
@@ -1169,6 +1171,10 @@ class StingerTests(unittest.TestCase):
         self.assertEqual(rec["stinger"]["joins"][0]["stinger_start"]["rational"], "3/2")
         ov = out["execution"]["outputs"][0]["timeline"]["tracks"][1]["segments"][0]
         self.assertEqual((ov["kind"], ov["cut_at"]["rational"]), ("stinger", "2/1"))
+        # the cover at the cut point was measured on the stinger's own frame 15 (ADR-032): no pixel shows through
+        m = rec["stinger"]["cover_measured"]
+        self.assertEqual((m["frame"], m["measured"], m["covered"], m["pixels"], m["pixels_below"], m["frame_size"]), (15, True, True, 320 * 180, 0, [320, 180]))
+        self.assertGreaterEqual(m["min_alpha"], 253)
         # the stinger's sound is mixed in under the join: louder there than in the clip alone
         def mean_db(ss):
             err = subprocess.run(["ffmpeg", "-hide_banner", "-ss", str(ss), "-t", "0.6", "-i", path, "-vn", "-af", "volumedetect", "-f", "null", "-"],
@@ -1213,6 +1219,22 @@ class StingerTests(unittest.TestCase):
         rc, out, path = self.run_cli(self.doc(cut_point=0.4))
         self.assertEqual((out["error"]["code"], out["error"]["details"].get("reason")), ("INVALID_REQUEST", "stinger_not_covering"))
         self.assertFalse(os.path.exists(path))
+
+    @unittest.skipUnless(HAS_STINGER, "needs look.py, overlay.py --place, broll.py and audio.py --replace (ffmpeg-skill 2.x+)")
+    def test_a_stinger_that_does_not_cover_the_cut_frame_is_refused(self):
+        """ADR-032: the declared cover [14/30, 16/30) contains the cut point 14/30, but the stinger covers only its left half at frame
+        14. The frame is measured before anything runs: refused, nothing joined, nothing written."""
+        f14 = {"frames": 14, "fps": 30}
+        rc, out, path = self.run_cli(self.doc(cut_point=f14, cover={"start": f14, "end": {"frames": 16, "fps": 30}}))
+        err = out["error"]
+        self.assertEqual((err["code"], err["details"].get("reason")), ("INVALID_INPUT", "stinger_not_covering"), err)
+        m = err["details"]["measured"]
+        self.assertEqual((m["frame"], m["covered"], m["pixels"]), (14, False, 320 * 180))
+        self.assertEqual(m["pixels_below"], 160 * 180, "the right half shows through")
+        self.assertEqual([r["status"] for r in out["execution"]["operations"]], ["skipped"])
+        self.assertFalse(os.path.exists(path))
+        work = os.path.join(os.path.dirname(os.path.dirname(path)), ".video-editing", "work")
+        self.assertEqual([f for f in os.listdir(work)] if os.path.isdir(work) else [], [], "the measured frame is not left behind")
 
 
 @unittest.skipUnless(READY, REASON)

@@ -362,7 +362,12 @@ def validate_params(op_type: str, params: Any, what: str) -> Dict[str, Any]:
         if isinstance(tr, dict) and tr.get("type") == "stinger":
             # a graphic with alpha laid over each join; the clips switch at its cut point, where it covers the frame (ADR-023).
             # Its length is the file's; the cut point and the covered window are data the stinger's maker states (stinger.json)
-            _keys(tr, what + ".transition", ("type", "stinger", "cut_point", "cover"), ("type", "stinger", "cut_point", "cover"))
+            _keys(tr, what + ".transition", ("type", "stinger", "cut_point", "cover"), ("type", "stinger"))
+            for key, reason, why in (("cut_point", "stinger_no_cut_point", "the frame the clips switch at"),
+                                     ("cover", "stinger_no_cover", "the window in which the graphic covers the whole frame")):
+                if tr.get(key) is None:   # stated by the stinger's maker (stinger.json); never guessed here
+                    raise EditError("INVALID_REQUEST", f"{what}.transition: a stinger needs its {key} ({why}), as its stinger.json states it",
+                                    {"reason": reason})
             if not isinstance(tr["stinger"], str) or not tr["stinger"]:
                 raise EditError("INVALID_REQUEST", f"{what}.transition.stinger: must reference a video source id")
             cp = Time.parse(tr["cut_point"], what + ".transition.cut_point")

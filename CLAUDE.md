@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-031). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-032). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -235,7 +235,7 @@ exception to ADR-001.
 - (ADR-022, step 12) — `sources[].ai_generated {generator, licence}` (declared): `marks: [AI_GENERATED]` on every record /
   output containing it; CONCAT conforms the clip. Engine finding: join.py writes 30000/1001 as 2997/100.
 - (ADR-023, step 13) — CONCAT `transition: stinger {stinger, cut_point, cover}`: join, overlay --video --place, broll mix +
-  audio --replace; switch on the cut frame. Cover is declared (not measured); qc-skill has no stinger check yet.
+  audio --replace; switch on the cut frame. Cover declared (ADR-023), measured since ADR-032 (below).
 - (ADR-024, step 14) — `video-editing propose` (retakes from word timings: repeat / restart / fragment / filler; en default,
   ja profile): proposals with reasons only, `applied: false`; approved ids become CONDENSE segments (step 16).
 - (ADR-025, step 15) — `propose` `static` (scenes --shots static shots) / `silence` (silence --list), `combine` and / or:
@@ -252,6 +252,11 @@ exception to ADR-001.
   each cut point re-encoded, the rest copied and checked by the engine; `cuts.mode` / `cuts.smart` (parts, or reason /
   reason_code) / `cuts.fallbacks`. Without `--smart` (detected) it runs as `frame` with `reason_code: engine_without_smart`.
   Opt-in (default stays `frame`; `auto` unchanged). `contract_version` "5.0" -> "6.0", `version` 0.6.0 by hand; `next` -> "0.7.0".
+- (ADR-032, step 13 ticked) — the stinger's frame at its cut point is measured before anything runs: ffmpeg-skill `look --at`
+  writes it as a PNG with its alpha, `alpha.alpha_coverage` reads every pixel (stdlib), covered = none under 253/255. Not
+  covered -> `INVALID_INPUT stinger_not_covering` (`details.measured`); unreadable -> `stinger_cover_unmeasured`; missing
+  cut_point / cover -> `stinger_no_cut_point` / `stinger_no_cover`. `look` is an optional engine tool (additive). qc-skill
+  still has no stinger check (handed over). Released as a minor version; `contract_version` stays "6.0".
 
 ## Picking the next task
 

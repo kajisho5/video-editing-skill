@@ -27,7 +27,7 @@ Media rules (`contract.media_compatibility`): every source is probed first; `OVE
 audio stream; `CONCAT` conforms sizes / rates and adds audio when any input has it. Engine gaps (a missing
 ffmpeg-skill tool, encoder or filter) are refused before execution as `TOOL_ERROR`.
 
-Operation types (the allowlist): `TRIM`, `CUT`, `CONCAT` (with `params.transition`: an xfade type, or `{type: stinger, stinger, cut_point, cover}` for a stinger with alpha, the switch under full cover at its cut point; read cut_point / cover from its stinger.json), `SPEED` (`factor`, optional
+Operation types (the allowlist): `TRIM`, `CUT`, `CONCAT` (with `params.transition`: an xfade type, or `{type: stinger, stinger, cut_point, cover}` for a stinger with alpha, the switch under full cover at its cut point; read cut_point / cover from its stinger.json; the cover at the cut point is measured and a stinger that does not cover it is refused), `SPEED` (`factor`, optional
 `smooth: blend | interpolate` for slow-motion), `FIT`, `FILL`, `RESIZE`, `OVERLAY`, `ROTATE` (turn 90/180/270
 clockwise and/or mirror `h`/`v`), `FREEZE` (`hold` seconds of one frame: at `at`, or the last frame when `at` is
 omitted), `REVERSE` (backwards, picture and audio), `IMAGE_INSERT` (one `kind: "image"` source → a silent clip of

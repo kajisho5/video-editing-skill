@@ -1,6 +1,6 @@
 """A fake ffmpeg-skill checkout for error-contract tests (no ffmpeg needed).
 
-It is a test double for the *engine boundary only*: scripts/probe.py, cut.py, join.py, fit.py, overlay.py, freeze.py, reverse.py, insert.py, crop.py that
+It is a test double for the *engine boundary only*: scripts/probe.py, cut.py, join.py, fit.py, overlay.py, freeze.py, reverse.py, insert.py, crop.py, look.py that
 speak ffmpeg-skill's --json protocol and behave according to a MODE file. It is never used to claim real
 integration; tests/test_integration.py runs the real ffmpeg-skill.
 
@@ -16,7 +16,8 @@ Modes (written to <root>/MODE):
   no_ffmpeg      doctor reports ffmpeg / ffprobe missing (tools never run)
   no_xfade       doctor reports filter:xfade / filter:acrossfade missing (CONCAT unavailable, the rest fine)
   stale_reuse    probe reports no video stream for a *finished* work-dir intermediate (a reuse candidate), never for a partial
-Probe facts: "alpha" in a video's name -> pix_fmt yuva444p10le (a stinger, ADR-023); a video whose name contains "noaudio" has no audio stream; an image whose bytes start with "corrupt" does
+Probe facts: "alpha" in a video's name -> pix_fmt yuva444p10le (a stinger, ADR-023); look.py writes a real RGBA PNG of that frame, opaque, or with its
+left half transparent when the name contains "holey" (ADR-032); a video whose name contains "noaudio" has no audio stream; an image whose bytes start with "corrupt" does
 not decode (no frame size); a video whose name contains "silent" is fine but has no audio (alias of noaudio); "hdr" in the
 name -> hdr: true (the fake encodes such sources as hevc, like the engine); "rot90" -> rotation: 90 (stored 640x360, shown
 360x640); "vfr" -> variable_frame_rate_suspected: true; "wide" -> 1280x720 @ 25 fps. Frame targets follow fit.py / join.py
@@ -160,6 +161,18 @@ SCRIPT = textwrap.dedent('''
         emit({"status": "failed", "error": {"kind": "ffmpeg", "message": "command failed (1): ffmpeg"}}); sys.exit(1)
     if dry:
         emit({"status": "completed", "output": out, "dry_run": True, "commands": ["ffmpeg -i x " + out]}); sys.exit(0)
+    if mode != "no_output" and name == "look":   # look.py --at: the frame as a PNG, alpha kept (ADR-032); a "holey" stinger shows through on its left half
+        import struct, zlib
+        src = [a for a in args[:args.index("-o")] if not a.startswith("--")][0]
+        w = int(flag("--width", "64")); h = max(1, w * 9 // 16)
+        holey = "holey" in os.path.basename(src)
+        def chunk(kind, body):
+            return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+        row = bytes([0]) + b"".join(bytes([0, 200, 0, 0 if (holey and x < w // 2) else 255]) for x in range(w))
+        with open(out, "wb") as fh:
+            fh.write(bytes([137, 80, 78, 71, 13, 10, 26, 10]) + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+                     + chunk(b"IDAT", zlib.compress(row * h)) + chunk(b"IEND", b""))
+        emit({"status": "completed", "output": out, "dry_run": False, "commands": ["ffmpeg -i " + src + " " + out], "outputs": [out]}); sys.exit(0)
     if mode != "no_output":
         inputs = [a for a in args[:args.index("-o")] if not a.startswith("--")]
         noaudio = all(("noaudio" in os.path.basename(p) or "silent" in os.path.basename(p) or (probe_doc(p).get("audio") is None)) for p in inputs if not p.endswith(".png")) if name != "join" else all(probe_doc(p).get("audio") is None for p in inputs)
@@ -279,7 +292,7 @@ _BASE_FLAGS = {"probe": [], "cut": ["--start", "--end", "--segments", "--accurat
                "silence": ["--list", "--threshold", "--min-silence"], "scenes": [], "export": ["--preset", "--no-scale", "--allow-long"],
                "freeze": ["--at", "--hold", "--mode"], "reverse": ["--no-audio"],
                "insert": ["--duration", "--width", "--height", "--fps", "--zoom", "--zoom-amount", "--pan"],
-               "crop": ["--x", "--y", "--width", "--height", "--fps"]}
+               "crop": ["--x", "--y", "--width", "--height", "--fps"], "look": ["--at", "--width", "--no-timecode"]}
 # tools a layout's checkout does not ship (ffmpeg-skill: reverse.py, insert.py and crop.py from 0.11.0, freeze.py from 0.16.0)
 # broll.py from 2.x (stinger sound, ADR-023); audio.py is in every release
 _LAYOUT_ABSENT = {"0.10": ("freeze", "reverse", "insert", "crop", "broll"), "0.x": ("freeze", "broll")}
@@ -315,7 +328,7 @@ def make_fake_skill(root: str, mode: str = "ok", version: str = "0.10.0", layout
     scripts = os.path.join(root, "scripts")
     os.makedirs(scripts, exist_ok=True)
     skip = _LAYOUT_ABSENT.get(layout, ()) if absent is None else tuple(absent)
-    for name in [t for t in ("probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop", "broll", "audio", "silence", "scenes", "export")
+    for name in [t for t in ("probe", "cut", "join", "fit", "overlay", "freeze", "reverse", "insert", "crop", "broll", "audio", "silence", "scenes", "export", "look")
                  if t not in skip] + list(extra):
         with open(os.path.join(scripts, name + ".py"), "w", encoding="utf-8") as fh:
             fh.write(SCRIPT)

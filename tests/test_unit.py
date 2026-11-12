@@ -413,7 +413,7 @@ class FreezeReverseParamTests(unittest.TestCase):
         self.assertEqual((c["operations"]["FREEZE"]["tool"], c["operations"]["REVERSE"]["tool"]), ("ffmpeg-skill/freeze", "ffmpeg-skill/reverse"))
         self.assertEqual(c["engine"]["tools_optional"], ["ffmpeg-skill/freeze", "ffmpeg-skill/reverse", "ffmpeg-skill/insert", "ffmpeg-skill/crop",
                                                          "ffmpeg-skill/broll", "ffmpeg-skill/audio", "ffmpeg-skill/silence", "ffmpeg-skill/scenes",
-                                                         "ffmpeg-skill/export"])
+                                                         "ffmpeg-skill/export", "ffmpeg-skill/look"])
         self.assertEqual((provided["video.crop"], c["operations"]["CROP"]["tool"]), ("video-editing/crop", "ffmpeg-skill/crop"))
         self.assertFalse(any("CROP" in n for n in c["versioning"]["next"]["0.7.0"]))
         self.assertFalse(any("FREEZE" in n or "REVERSE" in n for n in c["versioning"]["next"]["0.7.0"]))
@@ -1335,3 +1335,81 @@ class SizeLimitParamTests(unittest.TestCase):
         self.assertLess(Executor.next_size_target(2.0, 2_100_000, 2_000_000), 2.0 * 2_000_000 / 2_100_000)
         up = Executor.next_size_target(2.0, 1_600_000, 2_000_000)
         self.assertAlmostEqual(up, 2.0 * 0.95 * 2_000_000 / 1_600_000)
+
+
+class PngAlphaTests(unittest.TestCase):
+    """alpha.alpha_coverage (ADR-032): every pixel's alpha from a PNG, whatever filter each scanline uses; no alpha -> None."""
+
+    @staticmethod
+    def png(width, height, depth, colour, rows, filters=(0,), extra=b"", interlace=0):
+        import struct
+        import zlib
+
+        def chunk(kind, body):
+            return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF)
+        bpp = max(1, {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colour] * depth // 8)
+
+        def paeth(a, b, c):
+            p = a + b - c
+            pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            return a if pa <= pb and pa <= pc else (b if pb <= pc else c)
+        out, prev = b"", bytes(len(rows[0]))
+        for y, row in enumerate(rows):   # the encoder's side of each filter (PNG specification, section 9)
+            f = filters[y % len(filters)]
+            enc = bytearray()
+            for i, x in enumerate(row):
+                a = row[i - bpp] if i >= bpp else 0
+                b, c = prev[i], (prev[i - bpp] if i >= bpp else 0)
+                pred = {0: 0, 1: a, 2: b, 3: (a + b) >> 1, 4: paeth(a, b, c)}[f]
+                enc.append((x - pred) & 0xFF)
+            out += bytes([f]) + bytes(enc)
+            prev = row
+        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, depth, colour, 0, 0, interlace)) + extra
+                + chunk(b"IDAT", zlib.compress(out)) + chunk(b"IEND", b""))
+
+    def measure(self, data):
+        import tempfile
+        from video_editing_skill.alpha import alpha_coverage
+        fd, path = tempfile.mkstemp(suffix=".png")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            return alpha_coverage(path)
+        finally:
+            os.remove(path)
+
+    def test_rgba8_every_filter(self):
+        w, h = 7, 5
+        rows = [bytes(v for x in range(w) for v in ((x * 37 + y) % 256, (y * 11) % 256, x, 255 if (x, y) != (3, 2) else 120)) for y in range(h)]
+        for filters in ((0,), (1,), (2,), (3,), (4,), (0, 1, 2, 3, 4)):
+            m = self.measure(self.png(w, h, 8, 6, rows, filters))
+            self.assertEqual((m["pixels"], m["below"], m["min_alpha"]), (35, 1, 120.0), filters)
+
+    def test_rgba16_opaque_within_two_of_255(self):
+        # 65520 is how ffmpeg writes a 10-bit ProRes alpha of 1023 (254.94 of 255): opaque; 64764 (252.0) is not
+        def row(alphas):
+            return b"".join(bytes([0, 1, 0, 2, 0, 3]) + a.to_bytes(2, "big") for a in alphas)
+        rows = [row([65535, 65520, 65280]), row([65021, 65535, 65535])]
+        m = self.measure(self.png(3, 2, 16, 6, rows, (0, 4)))
+        self.assertEqual((m["below"], m["min_alpha"], m["threshold"]), (0, 253.0, 253))
+        m = self.measure(self.png(3, 2, 16, 6, [row([65535, 65535, 65535]), row([64764, 65535, 0])], (2,)))
+        self.assertEqual((m["below"], m["min_alpha"]), (2, 0.0))
+
+    def test_grey_alpha_and_palette(self):
+        m = self.measure(self.png(4, 1, 8, 4, [bytes([9, 255, 9, 255, 9, 0, 9, 253])]))
+        self.assertEqual((m["below"], m["min_alpha"]), (1, 0.0))
+        # a 2-bit palette: entry 1 is transparent (tRNS), entries without a tRNS value are opaque
+        import struct
+        import zlib
+        plte = struct.pack(">I", 12) + b"PLTE" + bytes(12) + struct.pack(">I", zlib.crc32(b"PLTE" + bytes(12)) & 0xFFFFFFFF)
+        trns = struct.pack(">I", 2) + b"tRNS" + bytes([255, 0]) + struct.pack(">I", zlib.crc32(b"tRNS" + bytes([255, 0])) & 0xFFFFFFFF)
+        m = self.measure(self.png(5, 1, 2, 3, [bytes([0b00011011, 0b00000000])], extra=plte + trns))   # indices 0, 1, 2, 3, 0
+        self.assertEqual((m["pixels"], m["below"]), (5, 1))
+        m = self.measure(self.png(5, 1, 2, 3, [bytes([0b00011011, 0b00000000])], extra=plte))
+        self.assertEqual(m["below"], 0, "no tRNS: every palette entry is opaque")
+
+    def test_no_alpha_to_read_is_none(self):
+        self.assertIsNone(self.measure(self.png(2, 1, 8, 2, [bytes(6)])), "RGB: the alpha was dropped")
+        self.assertIsNone(self.measure(self.png(2, 1, 8, 6, [bytes(8)], interlace=1)))
+        self.assertIsNone(self.measure(b"not a png"))
+        self.assertIsNone(self.measure(self.png(2, 2, 8, 6, [bytes(8), bytes(8)])[:-30]), "truncated")

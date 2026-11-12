@@ -24,6 +24,7 @@ ALLOWED_FLAGS: Dict[str, tuple] = {
     "broll": ("insert", "at", "duration", "audio"),   # stinger sound only (ADR-023): the stinger's audio mixed in under each join
     "audio": ("replace",),                            # stinger sound only: the mixed track onto the composited picture
     "export": ("preset", "no_scale", "allow_long", "max_mb"),   # outputs[].max_size only (ADR-028)
+    "look": ("at", "width", "no_timecode"),            # stinger only (ADR-032): its frame at the cut point, alpha kept, to measure the cover
     "freeze": ("at", "hold", "mode") + ENCODING_FLAGS,
     "reverse": ENCODING_FLAGS,
     "insert": ("duration", "width", "height", "fps") + ENCODING_FLAGS,

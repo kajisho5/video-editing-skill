@@ -906,7 +906,8 @@ the edit cuts underneath it. It is an editing transition here, not live switchin
   stinger_start, stinger_end}]}`. The output timeline gets an overlay-track segment `{kind: stinger, cut_at,
   timeline_range}` per join, so the timeline reports the cut at that frame.
 
-**Not done (left unchecked in the roadmap).**
+**Not done (left unchecked in the roadmap).** Superseded by ADR-032: the cover at the cut point is now measured on the stinger's
+own frame (ffmpeg-skill look.py writes it with its alpha), and the step is ticked.
 - **Full cover is declared, not measured.** No ffmpeg-skill tool reports a stinger's alpha at one frame. export.py's
   alpha statistics are internal to its own verification, and measuring here would mean running ffmpeg outside
   ffmpeg-skill. So "a stinger that does not cover the frame there is refused" holds only against the declared cover
@@ -1211,3 +1212,65 @@ and main), on an 8 s, 30 fps H.264 clip with a closed GOP of 30:
   `fallbacks`) and the output is H.264.
 Fake-engine tests (`tests/test_engine_compat.py`): argv, record, plan, the engine fallback, the degraded path on a
 checkout without `--smart`, and the refused encoding profile.
+
+## ADR-032 — Stinger cover measured at the cut point: the stinger's own frame, every pixel's alpha
+
+**Context.** ECOSYSTEM_ROADMAP step 13 says a stinger "that does not cover the frame there is refused". ADR-023 checked
+only the declared cover window against the cut point. It said no ffmpeg-skill tool reports a stinger's alpha at one
+frame, which is still true. But `look.py --at T` writes the frame at T as a PNG, and its alpha is kept: RGBA, or 16-bit
+RGBA for a ProRes 4444 stinger. That holds for every release that has `overlay.py --place` (the same `--at` code in
+2.24.1, 3.0.0 and main; run against main). So a stinger.json that names the wrong frame, or a graphic with a hole at the cut, was joined as if covered.
+
+**Decision.** Before anything runs, for each stinger CONCAT that will run:
+- **The frame.** The cut point at the stinger's rate gives frame n. `look.py <stinger> --at <(n - 1/4) / rate> --width
+  <stinger width> --no-timecode -o <work>/<op>.cover.partial.<pid>.png` writes that frame. A seek shows the first frame at
+  or after the time, and look.py rounds the time to milliseconds. A quarter frame before frame n lands on n either way,
+  up to 480 fps.
+- **The measurement.** `alpha.alpha_coverage` reads the PNG with the standard library (zlib, all five scanline filters).
+  It accepts RGBA and grey + alpha at 8 / 16 bits, and a palette with tRNS. A pixel covers when its alpha is at least
+  253 of 255. That is ffmpeg-skill's own alpha tolerance (2 of 255). A 16-bit alpha is compared on the same scale (257
+  per step), since ffmpeg writes ProRes's opaque 10-bit alpha as 65520 (254.94). Nothing here runs ffmpeg or decodes
+  video. The engine writes the frame, and this Skill only reads the image file.
+- **Refused before anything runs.**
+  - A pixel under the threshold is refused as `INVALID_INPUT stinger_not_covering`, with `details.measured` (frame,
+    pixels, pixels_below, min_alpha, ...).
+  - A frame whose alpha cannot be read (a PNG without an alpha channel, an interlaced one, no file) is refused as
+    `INVALID_INPUT stinger_cover_unmeasured`. An alpha that was not read is never taken as opaque.
+  - A missing `cut_point` or `cover` now has its own reason, `stinger_no_cut_point` / `stinger_no_cover`
+    (`INVALID_REQUEST`). It used to be refused only by the generic missing-parameter check.
+  - The declared check (cut point inside the cover window, `INVALID_REQUEST stinger_not_covering`) is unchanged.
+- **Once per stinger and cut point** in a request. A CONCAT whose result is reused was measured when it was made. A
+  reuse candidate that no longer validates is measured before its join.
+- **Report.** `stinger.cover_measured` in the record and the plan: `{tool, frame, at, measured, covered, pixels,
+  pixels_below, min_alpha, threshold, opaque_within, frame_size, provenance: OBSERVED, commands}`. A plan says
+  `measured: false` (a plan writes no media). `stinger.cover_check` (a description) now says "declared and measured". The
+  PNG is removed in every case.
+- **Engine.** `look` joins `OPTIONAL_TOOLS` (`engine.tools_used` / `tools_optional`, non-pinned).
+  `compiler.ALLOWED_FLAGS["look"] = (at, width, no_timecode)`. A stinger CONCAT on a checkout without `look.py --at /
+  --width / --no-timecode` is refused before execution (`TOOL_ERROR`), as one without `overlay.py --place` already was.
+
+**What is not measured.** Only the cut frame is measured, not the whole declared cover window. That frame is where the
+clips switch. A window that is generous at its edges does not change the cut.
+
+**qc-skill.** qc-skill (1.1.0) still has no stinger cut-point check. The measurement that matters for the switch is now
+made here, on the input before the join. On the result, `StingerTests` checks the decoded frames around the cut. qc-skill's
+own check of a delivered file belongs to qc-skill (handed over), and the roadmap step is ticked on that understanding.
+
+**Versioning.** Additive only (`contract --check`: `engine` and `stinger` are non-pinned blocks, and new `details.reason`
+values). `contract_version` stays "6.0". The release is a minor one, as a new refusal is new behaviour. Through
+video-production-agent the request is the same, and the agent can map the new reasons.
+
+**Verified.**
+- `tests/test_integration.py::StingerTests` against ffmpeg-skill main (3.5.0, FFmpeg 6.1).
+  - The fixture's frame 15 (the cut point 0.5 s) measures 57600 pixels, none below. The switch test also asserts
+    `cover_measured`.
+  - A request whose declared cover [14/30, 16/30) contains the cut point 14/30 is refused, because frame 14 is covered
+    only on its left half. It reports 28800 pixels below, and nothing is joined or left in the work directory.
+- `tests/test_engine_contract.py::StingerTransitionTests` (fake look.py writing a real PNG) covers:
+  - the record and the plan;
+  - a stinger with a hole, refused with no other engine call;
+  - an unreadable alpha;
+  - missing `cut_point` / `cover`;
+  - a checkout without look.py.
+- `tests/test_unit.py::PngAlphaTests` checks every filter type, 8 / 16 bits, grey + alpha, a palette with and without
+  tRNS, and the files that give None.
