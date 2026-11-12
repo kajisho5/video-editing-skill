@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "fixtures"))
 from generate import build_all  # noqa: E402
 
 from video_editing_skill.canonical import sha256_file  # noqa: E402
+from video_editing_skill.ffmpeg_skill import parse_version  # noqa: E402
 
 READY = HAVE_FFMPEG and FFMPEG_SKILL is not None and FFMPEG_SKILL.version_supported() and not FFMPEG_SKILL.missing_tools()
 REASON = "needs ffmpeg/ffprobe on PATH and a supported ffmpeg-skill checkout (VIDEO_EDITING_FFMPEG_SKILL_DIR)"
@@ -42,6 +43,9 @@ HAS_STINGER = (READY and all(t in FFMPEG_SKILL.tools for t in ("broll", "audio",
 HAS_SHOTS = READY and "scenes" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("scenes", ["--shots"]) == []   # static spans (ADR-025)
 HAS_EXPORT_SIZE = READY and "export" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("export", ["--max-mb", "--no-scale", "--allow-long"]) == []
 HAS_JOIN_COPY = READY and FFMPEG_SKILL.missing_flags("join", ["--copy"]) == []   # join.py --copy, from 2.24.0 (segment cache, ADR-018)
+# join.py holds each clip's picture and sound to one length only from 2.4.1 (behaviour, no flag): before it, a clip's AAC tail starts the
+# next clip late, by a frame at 60 fps (ADR-033). The whole-frame CONCAT timeline is exact from there.
+JOIN_HOLDS_CLIPS = READY and (parse_version(FFMPEG_SKILL.version) or (0, 0, 0)) >= (2, 4, 1)
 # fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
 # exceed the source": the exact frame each rule must deliver, written out (old, bounded).
 BOUNDED = READY and FFMPEG_SKILL.fit_bounds_by_source()
@@ -1085,8 +1089,13 @@ class GeneratedClipTests(unittest.TestCase):
         frame = 1001 / 30000
         self.assertAlmostEqual(float(info["format"]["duration"]), expected, delta=frame + 0.03)
         self.assertAlmostEqual(int(v["nb_frames"]) * frame, expected, delta=frame + 0.001)
-        segs = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
-        self.assertAlmostEqual(float(segs[2]["timeline_range"]["start"]["seconds"]), duration(self.edit) + duration(self.gen), delta=0.001)
+        # the timeline places the third clip on a frame of the edit (ADR-033: each clip is joined at whole frames of 29.97 fps),
+        # within one frame of the inputs' measured lengths
+        segs = [g for g in out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"] if g["source"] == "E"]
+        third = Fraction(segs[1]["timeline_range"]["start"]["rational"])
+        self.assertEqual((third * Fraction(30000, 1001)).denominator, 1, "the join is on a frame")
+        self.assertAlmostEqual(float(third), duration(self.edit) + duration(self.gen), delta=frame)
+        self.assertAlmostEqual(float(out["execution"]["outputs"][0]["timeline"]["duration"]["seconds"]), int(v["nb_frames"]) * frame, delta=0.002)
         o = out["execution"]["outputs"][0]
         self.assertEqual(o["marks"], ["AI_GENERATED"])
         self.assertEqual(o["ai_generated"], [{"source": "G", "generator": "example-video-model 2.1", "licence": "CC-BY-4.0", "provenance": "DECLARED"}])
@@ -1235,6 +1244,115 @@ class StingerTests(unittest.TestCase):
         self.assertFalse(os.path.exists(path))
         work = os.path.join(os.path.dirname(os.path.dirname(path)), ".video-editing", "work")
         self.assertEqual([f for f in os.listdir(work)] if os.path.isdir(work) else [], [], "the measured frame is not left behind")
+
+
+@unittest.skipUnless(READY, REASON)
+@unittest.skipUnless(JOIN_HOLDS_CLIPS, "join.py holds a clip's sound to its picture only from ffmpeg-skill 2.4.1 (ADR-033)")
+class ConcatFrameRateTests(unittest.TestCase):
+    """ADR-033 (regression): a plain CONCAT of clips at 23.976, 25, 29.97, 30 and 60 fps and a variable-rate one. join.py trims
+    every clip to its own length and starts the next one after it, so a clip whose length is not whole frames of the output rate
+    (any clip at another rate: 48 frames at 23.976 fps are 2.002 s, 60.06 frames at 30 fps) moved every later clip off the frame
+    grid. At 30 fps the picture got a one-frame hole once the remainders reached half a frame (avg_frame_rate 39600/1321, not
+    the 30/1 the contract promises; with fps: 30 the request failed, VALIDATION_ERROR fps), and at 23.976 fps every 30 fps clip
+    came out a frame long, so the reported timeline fell 2 ms behind the file per clip. Each clip now reaches join.py at whole
+    frames of the edit's rate, and the timeline is built from those lengths.
+
+    Every clip is a flat colour with a 0.1 s beep at its start, so each join is found in the picture (the first frame of the
+    next colour) and in the sound (where the beep starts), and compared with the timeline."""
+
+    RATES = {"r23976": "24000/1001", "r25": "25", "r2997": "30000/1001", "r30": "30", "r60": "60", "vfr": "30"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-fps-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.paths = {}
+        for name, rate in cls.RATES.items():
+            for col in ("red", "blue"):
+                path = os.path.join(cls.media, f"{name}_{col}.mp4")
+                vf = ["-vf", "select='lt(n,10)+not(eq(mod(n,5),2))'", "-fps_mode", "vfr"] if name == "vfr" else []   # every 5th frame dropped
+                subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c={col}:s=160x90:r={rate}",
+                                "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=0.1,apad", "-t", "2"] + vf
+                               + ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", path], check=True)
+                cls.paths[(name, col)] = path
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def join(self, clips, fps=None):
+        """clips: [(rate name, colour)], each colour different from the one before; returns (response, output path)."""
+        ids = {c: f"{c[0]}_{c[1]}" for c in clips}
+        sources = [{"id": i, "path": self.paths[c]} for c, i in sorted(ids.items())]
+        doc = request(sources, [{"id": "c", "type": "CONCAT", "inputs": [ids[c] for c in clips], "params": {"fps": fps} if fps else {}}],
+                      [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        self.assertEqual(rc, 0, json.dumps(out.get("error")) + err)
+        return out, os.path.join(ws, "out", "o.mp4")
+
+    def check(self, out, path, promised, clips):
+        """`promised`: the rate the contract promises (params.fps, else the first input's)."""
+        v = next(s for s in probe(path)["streams"] if s["codec_type"] == "video")
+        a = next(s for s in probe(path)["streams"] if s["codec_type"] == "audio")
+        rate = Fraction(v["r_frame_rate"])   # join.py writes 24000/1001 as 2997/125 (fps={fps:g}; ADR-022's engine finding)
+        edit = Fraction(out["execution"]["operations"][0]["whole_frames"]["rate"]["rational"])
+        frame = 1 / rate
+        self.assertAlmostEqual(float(rate), float(promised), delta=0.001)
+        self.assertAlmostEqual(float(edit), float(promised), delta=0.001)
+        # the rate the contract promises, constant: every frame one frame after the last, no hole
+        lines = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time", "-of", "csv=p=0", path],
+                               capture_output=True, text=True, check=True).stdout.split()
+        pts = [float(x.split(",")[0]) for x in lines if x.split(",")[0]]
+        gaps = [b - p for p, b in zip(pts, pts[1:])]
+        self.assertLess(max(gaps), 1.5 * float(frame), f"a hole in the picture at {pts[gaps.index(max(gaps))]:.3f}s")
+        self.assertEqual(Fraction(v["avg_frame_rate"]), rate, "avg_frame_rate: the picture is constant-rate")
+        # no duration drift: the timeline lasts what the file does, the sound as long as the picture
+        tl = out["execution"]["outputs"][0]["timeline"]
+        self.assertAlmostEqual(float(tl["duration"]["seconds"]), len(pts) * float(frame), delta=0.002)
+        self.assertAlmostEqual(float(a["duration"]), len(pts) * float(frame), delta=float(frame))
+        # every join the timeline reports is on a frame, where the picture switches colour, and where the next beep starts
+        segs = [g for g in tl["tracks"][0]["segments"] if g["speed"] != "0/1"]
+        joins = [Fraction(g["timeline_range"]["start"]["rational"]) for g in segs[1:]]
+        self.assertEqual(len(joins), len(clips) - 1)
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vf", "scale=1:1:flags=area,format=rgb24", "-fps_mode", "passthrough", "-f", "rawvideo", "-"],
+                             capture_output=True, check=True).stdout
+        reds = [raw[i] > raw[i + 2] for i in range(0, len(raw), 3)]
+        switches = [n for n in range(1, len(reds)) if reds[n] != reds[n - 1]]
+        for j in joins:
+            self.assertEqual((j * edit).denominator, 1, f"join at {float(j):.6f}s is between frames")
+        self.assertEqual(switches, [round(j * rate) for j in joins], "the picture switches on the frames the timeline reports")
+        err = subprocess.run(["ffmpeg", "-hide_banner", "-i", path, "-vn", "-af", "silencedetect=noise=-40dB:d=0.05", "-f", "null", "-"],
+                             capture_output=True, text=True).stderr
+        beeps = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", err)][:len(joins)]
+        self.assertEqual(len(beeps), len(joins), err[-2000:])
+        for j, b in zip(joins, beeps):
+            self.assertAlmostEqual(b, float(j), delta=float(frame), msg="the sound of each clip starts with its picture")
+
+    def test_23976_clips_in_a_30_fps_edit_leave_no_hole(self):
+        clips = [("r30", "red")] + [("r23976", "blue" if i % 2 == 0 else "red") for i in range(10)] + [("r30", "blue")]
+        out, path = self.join(clips)
+        self.check(out, path, 30, clips)
+        rows = out["execution"]["operations"][0]["whole_frames"]["inputs"]
+        self.assertEqual([r["action"] for r in rows], ["none"] + ["conform"] * 10 + ["none"])
+        # and the same edit asking for 30 fps is no longer refused for its own hole
+        out, path = self.join(clips, fps=30)
+        self.check(out, path, 30, clips)
+
+    def test_30_fps_clips_in_a_23976_edit_stay_on_the_timeline(self):
+        clips = [("r23976", "red")] + [("r30", "blue" if i % 2 == 0 else "red") for i in range(10)]
+        out, path = self.join(clips)
+        self.check(out, path, Fraction(24000, 1001), clips)
+
+    def test_every_rate_and_a_variable_rate_clip_in_one_edit(self):
+        clips = [("r2997", "red"), ("r25", "blue"), ("r60", "red"), ("vfr", "blue"), ("r23976", "red"), ("r30", "blue")]
+        out, path = self.join(clips, fps=30)
+        self.check(out, path, 30, clips)
+        out, path = self.join([("r60", "red"), ("r30", "blue"), ("r25", "red"), ("r2997", "blue")])
+        self.check(out, path, 60, [None] * 4)
 
 
 @unittest.skipUnless(READY, REASON)

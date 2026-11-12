@@ -16,7 +16,7 @@ Durations of untrimmed sources come from a probe when one is available; otherwis
 duration_known: false and downstream timeline ranges are omitted (never guessed).
 """
 from fractions import Fraction
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .operations import condense_pieces, condense_played
 from .project import EditOperation, EditProject
@@ -68,8 +68,13 @@ def _shift(segs: List[Segment], offset: Time) -> List[Segment]:
     return out
 
 
-def build_timelines(project: EditProject, durations: Dict[str, Optional[Time]]) -> Dict[str, Clip]:
-    """Clip per operation ref. `durations` maps source ref -> probed duration (or None when unknown)."""
+JoinedLength = Callable[[str, str, Optional[Time]], Optional[Time]]
+
+
+def build_timelines(project: EditProject, durations: Dict[str, Optional[Time]], joined_length: Optional[JoinedLength] = None) -> Dict[str, Clip]:
+    """Clip per operation ref. `durations` maps source ref -> probed duration (or None when unknown). `joined_length(concat ref,
+    input ref, planned length)` gives the length an input takes in a CONCAT that joins at whole frames (the executor's rule,
+    ADR-030 / ADR-033); without it every input keeps its planned length."""
     clips: Dict[str, Clip] = {}
 
     def clip_of(ref: str) -> Clip:
@@ -87,8 +92,27 @@ def build_timelines(project: EditProject, durations: Dict[str, Optional[Time]]) 
             d = op.params["duration"]
             clips[ref] = Clip(d, [Segment(op.inputs[0], ZERO, ZERO, ZERO, d, Fraction(0))])
             continue
-        clips[ref] = _apply(op, [clip_of(r) for r in op.video_inputs], durations)
+        inputs = [clip_of(r) for r in op.video_inputs]
+        if op.type == "CONCAT" and joined_length is not None:
+            inputs = [_held_to(c, joined_length(ref, r, c.duration)) for r, c in zip(op.video_inputs, inputs)]
+        clips[ref] = _apply(op, inputs, durations)
     return clips
+
+
+def _held_to(c: Clip, length: Optional[Time]) -> Clip:
+    """An input clip as a CONCAT joins it, `length` long (whole frames of the edit's rate). Shorter: its first `length`, segments
+    and overlays kept up to there. Longer (a clip at another rate rounded up to the nearest frame, by under half a frame): its
+    last instant held for the rest, a segment of speed 0 as FREEZE reports one."""
+    if length is None or c.duration is None or length.value == c.duration.value:
+        return c
+    if length.value < c.duration.value:
+        held = _cut(c, [(ZERO, length)])
+        return Clip(length, held.segments, list(c.overlays))
+    last = c.segments[-1] if c.segments else None
+    if last is None or last.timeline_end is None or last.timeline_end.value != c.duration.value:
+        return Clip(length, list(c.segments), list(c.overlays))
+    at = _source_at(last, last.timeline_end)
+    return Clip(length, list(c.segments) + [Segment(last.source, at, at, c.duration, length, Fraction(0))], list(c.overlays))
 
 
 def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[Time]]) -> Clip:
