@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.3 - 2026-11-12
+
+- docs(roadmap): overlay boundary and propose ownership from the 2026-11-12 decisions (#48) (bfa950d)
+
 ## v0.7.2 - 2026-11-12
 
 - Fix xfade CONCAT of mixed or non-whole-frame inputs: join at whole frames (#47) (53c4032)
