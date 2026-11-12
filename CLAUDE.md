@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-033). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-034). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -263,6 +263,14 @@ exception to ADR-001.
   against the first input's without `fps`. Reproduced first: 23.976 clips in a 30 fps edit left a one-frame hole (avg 29.977),
   30 fps clips in a 23.976 edit drifted 2 ms/clip from the timeline. Residual engine defect (join.py's millisecond lengths,
   35-50 round-up clips can still hole) documented, not worked around. Additive; a patch release.
+- (ADR-034) — an xfade CONCAT takes the same whole-frame path (`joins_whole_frames` is every CONCAT), and its transition is
+  rounded to the nearest frame of the edit's rate (`whole_frames.transition`, passed as the join's `--duration`); the timeline
+  overlaps the clips by it. Reproduced first: xfade starts a transition only on a frame, so an offset between frames (0.5 s is
+  14.985 frames at 29.97 fps; 23.976 clips in a 30 fps edit) started the next clip's picture up to a frame after its sound and
+  the timeline (every join of six 29.97 fps clips, 32-34 ms; the file a frame past the timeline). Residual engine defect:
+  join.py writes xfade offsets to the millisecond, and one that rounds up past its frame (1 in 3 at 30 fps, ~1 in 2 at 29.97,
+  none at 25) starts that transition exactly one frame late; documented, proposed to ffmpeg-skill, not worked around. Additive;
+  a patch release.
 
 ## Picking the next task
 

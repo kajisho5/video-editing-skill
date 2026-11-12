@@ -240,6 +240,15 @@ What remains is the engine's: join.py writes each length to the millisecond, so 
 can still leave a hole (`contract.whole_frames.engine_note`; output validation refuses it when it moves the measured rate
 by more than 0.02).
 
+With an xfade transition, join.py starts each transition at the clips' lengths before it less the transitions, and xfade
+starts one only on a frame (the first at or after the offset), while the sound crossfades at the offset itself. An input
+or a transition that is not whole frames of the output rate (0.5 s is 14.985 frames at 29.97 fps) therefore started the
+next clip's picture up to a frame after its sound and after the timeline: every join of six 29.97 fps clips with a 0.5 s
+dissolve, 32 to 34 ms. Since ADR-034 an xfade CONCAT takes the same whole-frame path, and its transition is rounded to the
+nearest frame (`whole_frames.transition`, the join's `--duration`). What remains is again the engine's millisecond: an
+offset that rounds up past its frame (at 30 fps one in three, at 29.97 fps about one in two, at 25 fps none) starts that
+transition exactly one frame late, never more, and never adding up.
+
 The HDR fixture in `tests/test_integration.py` is an SDR test pattern **flagged** as HDR (BT.2020 primaries, PQ
 transfer tags): it exercises the engine's HDR detection and HEVC path and this Skill's codec / mixing rules, not
 real HDR10 / HLG content or tone mapping. The rotation fixture carries a real display matrix (`-display_rotation`);

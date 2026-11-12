@@ -15,7 +15,7 @@ v0.4.4, Python 3.9+ stdlib. TRIM, CUT, CONCAT (+transition), SPEED, FIT, FILL, R
 |---|---|---|
 | カット・連結 | done |  |
 | 尺・画角合わせ | done | pixel-rectangle CROP included ([#25](https://github.com/kajisho5/video-editing-skill/pull/25), ADR-016) |
-| トランジション | done | CONCAT transition |
+| トランジション | done | CONCAT transition (xfade family, stinger); every input and the xfade duration at whole frames of the edit's rate ([#47](https://github.com/kajisho5/video-editing-skill/pull/47), ADR-034); join.py's millisecond xfade offsets (one frame late where one rounds up) proposed to ffmpeg-skill |
 | 静止画オーバーレイ | done |  |
 
 ## Wiring

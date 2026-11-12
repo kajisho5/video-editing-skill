@@ -1356,6 +1356,144 @@ class ConcatFrameRateTests(unittest.TestCase):
 
 
 @unittest.skipUnless(READY, REASON)
+@unittest.skipUnless(JOIN_HOLDS_CLIPS, "join.py holds a clip's sound to its picture only from ffmpeg-skill 2.4.1 (ADR-033)")
+class ConcatXfadeFrameRateTests(unittest.TestCase):
+    """ADR-034 (regression): a CONCAT with an xfade transition over clips at 23.976, 25, 29.97, 30 and 60 fps and a variable-rate
+    one. join.py starts each transition at the clips' lengths less the transitions before it, and xfade starts one only on a
+    frame: an input or a transition that is not whole frames of the output rate put the offset between frames, so the next clip's
+    picture started on the frame after it, up to a frame after its sound and after the reported timeline (every join of six 29.97
+    fps clips with a 0.5 s fade, whose 14.985 frames are not whole), and the file ran a frame past the timeline. Every input and
+    the transition now reach join.py at whole frames of the edit's rate, and the timeline is built from those lengths.
+
+    Every clip is a flat colour, with a white flash over its lower half and a beep both at 1.0 s for 0.1 s, so each clip is found
+    in the picture (its first flash frame) and in the sound (its beep), and compared with the timeline."""
+
+    RATES = {"r23976": "24000/1001", "r25": "25", "r2997": "30000/1001", "r30": "30", "r60": "60", "vfr": "30"}
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tempfile.mkdtemp(prefix="ves-xfade-")
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.paths = {}
+        flash = "drawbox=x=0:y=ih/2:w=iw:h=ih/2:color=white:t=fill:enable='gte(t,1)*lt(t,1.1)'"
+        for name, rate in cls.RATES.items():
+            for col in ("red", "blue"):
+                path = os.path.join(cls.media, f"{name}_{col}.mp4")
+                vf = ["-vf", "select='lt(n,10)+not(eq(mod(n,5),2))'," + flash, "-fps_mode", "vfr"] if name == "vfr" else ["-vf", flash]   # every 5th frame dropped
+                subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c={col}:s=160x90:r={rate}",
+                                "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000:duration=0.1,adelay=1000,apad", "-t", "2"] + vf
+                               + ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", path], check=True)
+                cls.paths[(name, col)] = path
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def join(self, clips, transition, fps=None):
+        """clips: [(rate name, colour)], each colour different from the one before; returns (response, output path)."""
+        ids = [f"{c[0]}_{c[1]}" for c in clips]
+        sources = [{"id": i, "path": self.paths[c]} for i, c in sorted(set(zip(ids, clips)))]
+        params = dict({"transition": transition}, **({"fps": fps} if fps else {}))
+        doc = request(sources, [{"id": "c", "type": "CONCAT", "inputs": ids, "params": params}], [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        rc, out, err = cli(["run", "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        self.assertEqual(rc, 0, json.dumps(out.get("error")) + err)
+        return out, os.path.join(ws, "out", "o.mp4")
+
+    def check(self, out, path, promised, n, late_by_engine=False):
+        """`promised`: the rate the contract promises (params.fps, else the first input's). `late_by_engine`: the edit has joins whose
+        offset join.py writes rounded up past the frame (its millisecond offsets, ADR-034), so those start a frame late; elsewhere,
+        and everywhere without it, every clip is exactly where the timeline puts it. The file and the timeline are measured first,
+        the whole_frames report last."""
+        v = next(s for s in probe(path)["streams"] if s["codec_type"] == "video")
+        a = next(s for s in probe(path)["streams"] if s["codec_type"] == "audio")
+        rate = Fraction(v["r_frame_rate"])   # join.py writes 30000/1001 as 2997/100 (fps={fps:g}; ADR-022's engine finding)
+        frame = float(1 / rate)
+        self.assertAlmostEqual(float(rate), float(promised), delta=0.001)
+        # constant at the promised rate: every frame one frame after the last
+        lines = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time", "-of", "csv=p=0", path],
+                               capture_output=True, text=True, check=True).stdout.split()
+        pts = [float(x.split(",")[0]) for x in lines if x.split(",")[0]]
+        gaps = [b - p for p, b in zip(pts, pts[1:])]
+        self.assertLess(max(gaps), 1.5 * frame, f"a hole in the picture at {pts[gaps.index(max(gaps))]:.3f}s")
+        self.assertGreater(min(gaps), 0.5 * frame, "a duplicated frame")
+        self.assertEqual(Fraction(v["avg_frame_rate"]), rate, "avg_frame_rate: the picture is constant-rate")
+        # every clip the timeline reports starts on a frame, and the file lasts what the timeline says, its sound as its picture
+        tl = out["execution"]["outputs"][0]["timeline"]
+        starts = [Fraction(g["timeline_range"]["start"]["rational"]) for g in tl["tracks"][0]["segments"] if g["speed"] != "0/1"]
+        self.assertEqual(len(starts), n)
+        for t in starts:
+            self.assertAlmostEqual(float(t * rate), round(t * rate), delta=0.01, msg=f"a clip starts at {float(t):.6f}s, between frames")
+        total = Fraction(tl["duration"]["rational"])
+        self.assertAlmostEqual(float(total * rate), round(total * rate), delta=0.01, msg=f"the timeline lasts {float(total):.6f}s, not whole frames")
+        self.assertLessEqual(abs(len(pts) - round(total * rate)), 1 if late_by_engine else 0,
+                             f"{len(pts)} frames in the file, {float(total * rate):.3f} on the timeline")
+        self.assertAlmostEqual(float(a["duration"]), float(total), delta=frame)
+        # each clip's flash on the frame the timeline puts 1.0 s into it, its beep there, and the two together
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vf", "scale=1:2:flags=area,format=rgb24", "-fps_mode", "passthrough", "-f", "rawvideo", "-"],
+                             capture_output=True, check=True).stdout
+        lit = [raw[i + 4] > 128 for i in range(0, len(raw), 6)]   # the lower half's green: white in the flash, 0 in red or blue
+        flashes = [k for k in range(len(lit)) if lit[k] and (k == 0 or not lit[k - 1])]
+        self.assertEqual(len(flashes), n)
+        late = [f - round((t + 1) * rate) for f, t in zip(flashes, starts)]
+        self.assertTrue(all(x in ((0, 1) if late_by_engine else (0,)) for x in late), f"each clip's picture, in frames after its timeline place: {late}")
+        err = subprocess.run(["ffmpeg", "-hide_banner", "-i", path, "-vn", "-af", "silencedetect=noise=-40dB:d=0.05", "-f", "null", "-"],
+                             capture_output=True, text=True).stderr
+        beeps = [float(x) for x in re.findall(r"silence_end: ([\d.]+)", err)][:n]
+        self.assertEqual(len(beeps), n, err[-2000:])
+        for t, b in zip(starts, beeps):
+            self.assertAlmostEqual(b, float(t + 1), delta=0.002, msg="each clip's sound where the timeline puts it")
+        for f, b, x in zip(flashes, beeps, late):
+            if x == 0:
+                self.assertAlmostEqual(f / float(rate), b, delta=0.25 * frame, msg="picture and sound together")
+        # the report: the rate, the transition at whole frames, and the timeline built from the joined lengths
+        wf = out["execution"]["operations"][0]["whole_frames"]
+        edit = Fraction(wf["rate"]["rational"])
+        self.assertAlmostEqual(float(edit), float(promised), delta=0.001)
+        overlap = Fraction(wf["transition"]["joined_duration"]["rational"])
+        self.assertEqual(overlap * edit, wf["transition"]["frames"], "the transition is whole frames")
+        lengths = [Fraction(r["joined_length"]["rational"]) for r in wf["inputs"]]
+        self.assertEqual(starts, [sum(lengths[:k]) - k * overlap for k in range(n)])
+        return late
+
+    def test_every_rate_and_a_variable_rate_clip_in_a_25_fps_edit(self):
+        """A 25 fps edit: whole frames are whole milliseconds, so join.py's offsets are exact and every clip is on its frame. 0.5 s
+        is 12.5 frames, joined as 13."""
+        clips = [("r25", "red"), ("r2997", "blue"), ("r23976", "red"), ("vfr", "blue"), ("r60", "red"), ("r30", "blue")]
+        out, path = self.join(clips, {"type": "wipeleft", "duration": 0.5}, fps=25)
+        self.check(out, path, 25, len(clips))
+        wf = out["execution"]["operations"][0]["whole_frames"]
+        self.assertEqual(wf["transition"]["frames"], 13)
+        self.assertEqual([r["action"] for r in wf["inputs"]], ["none", "conform", "conform", "conform", "conform", "conform"])
+
+    def test_23976_clips_in_a_30_fps_edit(self):
+        clips = [("r30", "red")] + [("r23976", "blue" if i % 2 == 0 else "red") for i in range(4)] + [("r30", "red")]
+        out, path = self.join(clips, {"type": "fade", "duration": 0.5})
+        self.check(out, path, 30, len(clips))
+
+    def test_2997_clips_with_a_transition_that_is_not_whole_frames(self):
+        """No other rate at all: six 29.97 fps clips, and a 0.5 s dissolve, which is 14.985 frames. Every join used to start a frame
+        late; the transition is now joined as 15 frames (0.5005 s)."""
+        clips = [("r2997", "red" if i % 2 == 0 else "blue") for i in range(6)]
+        out, path = self.join(clips, {"type": "dissolve", "duration": 0.5})
+        self.check(out, path, Fraction(30000, 1001), len(clips))
+        wf = out["execution"]["operations"][0]["whole_frames"]
+        self.assertEqual(([r["action"] for r in wf["inputs"]], wf["transition"]["frames"]), (["none"] * 6, 15))
+
+    def test_offsets_join_py_rounds_up_are_at_most_a_frame_late(self):
+        """The engine's remainder (ADR-034, contract.whole_frames.engine_note): six 30 fps clips with a 0.25 s fade (8 frames) put
+        the 3rd and 6th clips at 104 and 260 frames, 3.466667 s and 8.666667 s, which join.py writes as offset=3.467 and 8.667: xfade
+        starts those transitions on the next frame. The timeline is still on frames; the picture there is one frame late, never more."""
+        clips = [("r30", "red" if i % 2 == 0 else "blue") for i in range(6)]
+        out, path = self.join(clips, {"type": "fade", "duration": 0.25})
+        late = self.check(out, path, 30, len(clips), late_by_engine=True)
+        self.assertEqual(late[:2], [0, 0], "offsets join.py writes rounded down (1.733) are exact")
+
+
+@unittest.skipUnless(READY, REASON)
 class MotionSpanTests(unittest.TestCase):
     """ECOSYSTEM_ROADMAP step 15 (ADR-025): 2 s of motion, 3 s of a still picture, 2 s of motion; the sound is silent from
     2.5 s to 4.5 s. The still span is found to within one frame, and combined with the silence by and / or."""
@@ -1706,12 +1844,13 @@ class MediaMatrixE2ETests(unittest.TestCase):
 
     # D / E ---------------------------------------------------------------------
     def test_D_different_resolutions_conform_to_the_first_input(self):
-        for order, frame in ((["A", "B"], (640, 360)), (["B", "A"], (1280, 720))):
+        # the 0.5 s fade at whole frames of the first input's rate (ADR-034): 15 frames at 30 fps, 12.5 -> 13 frames (0.52 s) at 25 fps
+        for order, frame, expected in ((["A", "B"], (640, 360), 10.5), (["B", "A"], (1280, 720), 10.48)):
             self.setUp()
             doc = request([self.src("a", "A"), self.src("b", "B")], [{"id": "c", "type": "CONCAT", "inputs": order, "params": {"transition": {"type": "fade", "duration": 0.5}}}],
                           [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
             out = self.run_cli("run", doc)
-            self.facts(out, "o", 10.5, frame, audio=True, tol=0.6)
+            self.facts(out, "o", expected, frame, audio=True, tol=0.6)
 
     def test_E_different_frame_rates(self):
         doc = request([self.src("a", "A"), self.src("b", "B")], [{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}], [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
