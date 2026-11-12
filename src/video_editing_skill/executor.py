@@ -437,6 +437,8 @@ class Executor:
                 key["encoding"] = dict(op.encoding)
             if self.segmented(ref):   # a segment render is other bytes than the single-pass one: never reused for it
                 key["render"] = "segments"
+            if op.stinger is not None:   # made only after its cover was measured (ADR-032): a result made without that never matches
+                key["stinger_cover"] = f"measured, opaque within {OPAQUE_WITHIN}/255"
             self.keys[ref] = stable_hash(key)
 
     # ------------------------------------------------------------ segment cache (ADR-018)
@@ -907,7 +909,8 @@ class Executor:
                 "note": "measured before execution, on the stinger's frame at cut_point"}
 
     def _measure_stinger_covers(self) -> None:
-        """Measure the cover of every stinger CONCAT that will run (one whose result is reused was measured when it was made)."""
+        """Measure the cover of every stinger CONCAT that will run. One whose result is reused was measured when it was made: its
+        idempotency key carries the measurement rule (_compute_keys), so a result made before the cover was measured never matches."""
         for ref in self.project.order:
             if self.project.operations[ref].stinger is not None and ref not in self.stinger_cover and self._reusable(ref) is None:
                 self._measure_stinger_cover(ref)

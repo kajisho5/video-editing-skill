@@ -696,6 +696,23 @@ class StingerTransitionTests(FakeEngineHarness):
         self.assertEqual(m["at"]["rational"], "1/2")
         self.assertNotIn(".png", " ".join(self.calls()), "the measured frame is not left behind")
 
+    def test_a_reused_result_was_measured_when_it_was_made(self):
+        """A repeated request reuses the stinger CONCAT without measuring again; a result recorded under a key without the cover rule
+        (made before ADR-032) is not reused: it is measured and made again."""
+        rc, out = self.run_(self.doc(), expect=0)
+        rec = out["execution"]["operations"][0]
+        rc, again = self.run_(self.doc(), expect=0)
+        self.assertEqual(again["status"], "reused")
+        record = os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".json")
+        with open(record, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        saved["idempotency_key"] = "made-before-the-cover-was-measured"
+        with open(record, "w", encoding="utf-8") as fh:
+            json.dump(saved, fh)
+        rc, third = self.run_(self.doc(), expect=0)
+        self.assertEqual(third["execution"]["operations"][0]["status"], "completed")
+        self.assertTrue(third["execution"]["operations"][0]["stinger"]["cover_measured"]["measured"])
+
     def test_a_stinger_that_does_not_cover_its_cut_frame_is_refused_before_anything_runs(self):
         """The declared cover contains the cut point, but the stinger's own frame there shows the picture through on its left half."""
         write_fake_media(os.path.join(self.ws, "in", "stinger_alpha_holey.mov"))
