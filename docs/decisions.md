@@ -1437,7 +1437,10 @@ ADR-033): `Executor.joins_whole_frames` is now every CONCAT. The rules:
 - **Report.** `whole_frames.transition: {type, duration, joined_duration, frames}` in the plan and the record, beside the
   inputs.
 - **Validation and reuse.** The output rate is validated against the first input's without `fps` (ADR-033), and the
-  idempotency key carries the rule, so an xfade result joined before this change is not reused.
+  idempotency key carries the rule, so an xfade result joined before this change is not reused. Every idempotency key
+  now also carries the keys of the operations it takes. A rule that changes how an upstream result is made changes its key
+  but not its `operation_id`, and the results made from it were reused before: a RESIZE of a CUT switched to
+  `segment_cache` was (`SegmentCacheTests`).
 
 **Cost.** The same as ADR-033: one extra encode per input at another rate, or with a length that is not whole frames.
 Rounding the transition moves each overlap by under half a frame (at most 17 ms at 30 fps), so the edit is that much

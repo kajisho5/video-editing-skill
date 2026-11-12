@@ -458,6 +458,11 @@ class Executor:
                 key["stinger_cover"] = f"measured, opaque within {OPAQUE_WITHIN}/255"
             if self.joins_whole_frames(ref):   # every input joined at whole frames (ADR-033, ADR-034): a result joined without that never matches
                 key["joins"] = "whole frames of the edit's rate"
+            # the keys of the operations it takes: a rule that changes how an upstream result is made (its key, not its
+            # operation_id) invalidates every result made from it too, not only its own (project.order is upstream first)
+            upstream = [self.keys[r] for r in op.inputs if r in self.keys]
+            if upstream:
+                key["upstream"] = upstream
             self.keys[ref] = stable_hash(key)
 
     # ------------------------------------------------------------ segment cache (ADR-018)

@@ -513,6 +513,18 @@ class SegmentCacheTests(FakeEngineHarness):
         self.assertIn("none", header["args"])
         self.assertAlmostEqual(header["duration"], 1.5)
 
+    def test_an_upstream_key_change_invalidates_what_is_made_from_it(self):
+        """segment_cache changes how the CUT is made (its idempotency key), not any operation_id: the RESIZE made from it is not
+        reused either, though its own key fields are the same (each key carries the keys of the operations it takes)."""
+        ops = [{"id": "c", "type": "CUT", "input": "A", "params": {"keep": self.KEEP}}, {"id": "r", "type": "RESIZE", "input": "c", "params": {"width": 320}}]
+        outs = [{"id": "x", "operation": "r", "path": "out/r.mp4"}]
+        rc, first = self.run_(request(self.sources(), ops, outs, options={"overwrite": True}), expect=0)
+        rc, again = self.run_(request(self.sources(), ops, outs, options={"overwrite": True}), expect=0)
+        self.assertEqual([r["status"] for r in again["execution"]["operations"]], ["reused", "reused"])
+        rc, out = self.run_(request(self.sources(), ops, outs, options={"overwrite": True, "segment_cache": True}), expect=0)
+        self.assertEqual([r["operation_id"] for r in out["execution"]["operations"]], [r["operation_id"] for r in first["execution"]["operations"]])
+        self.assertEqual([r["status"] for r in out["execution"]["operations"]], ["completed", "completed"])
+
     def test_same_request_twice_writes_nothing_new(self):
         self.run_(self.doc(), expect=0)
         before = self.work_files()
