@@ -425,6 +425,14 @@ class Executor:
                     raise EditError("INVALID_TIME_RANGE", f"operation {ref!r}: end {b.text(3)}s is beyond the input duration {limit.text(3)}s")
                 if b.value > limit.value:
                     self.project.warnings.append(f"operation {ref!r}: end {b.text(3)}s clamped to the input duration {limit.text(3)}s")
+            if self.joins_whole_frames(ref):   # an input with no whole frame of the edit's rate would join as nothing (ADR-033)
+                for i in op.video_inputs:
+                    d = self._planned_length(i)
+                    j = self._joined_length(ref, i, d)
+                    if d is not None and j is not None and j.value <= 0:
+                        rate = self._edit_rate(ref)
+                        raise EditError("INVALID_TIME_RANGE", f"operation {ref!r}: input {i!r} ({d.text(6)}s) is shorter than one frame of the edit's "
+                                        f"{float(rate or 0):g} fps, so it would be joined as nothing", {"operation": ref, "input": i, "reason": "shorter_than_a_frame"})
             if op.type == "CONCAT" and op.stinger is not None:
                 self._check_stinger_ranges(ref)
             elif op.type == "CONCAT" and op.params.get("transition"):
@@ -1033,7 +1041,8 @@ class Executor:
             return d
         rate = self._edit_rate(ref)
         assert rate is not None
-        frames = math.floor(d.value * rate + Fraction(1, 2)) if kind == "rate" else math.floor(d.value * rate + Fraction(1, 1000))
+        # at the edit's rate a length within 1 ms of the next whole frame keeps that frame (the same 1 ms as the measured-length check)
+        frames = math.floor(d.value * rate + Fraction(1, 2)) if kind == "rate" else math.floor((d.value + Fraction(1, 1000)) * rate)
         return Time(Fraction(frames) / rate)
 
     def whole_frames_plan(self, ref: str) -> Dict[str, Any]:

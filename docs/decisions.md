@@ -1303,8 +1303,10 @@ first input's rate when `fps` is not given, and that rate was not validated.
 **Decision.** A CONCAT without a transition joins every input at whole frames of its rate, exactly like a stinger
 CONCAT. Both now share one path (`Executor._whole_frame_inputs`). The rate is `params.fps`, else the first input's. The
 rules:
-- An input at that rate keeps ADR-030's rule. Its planned length is rounded down to whole frames. It is cut to that length
-  (`cut --start 0 --end <length> --accurate`) only when its measured length differs. Otherwise it is joined as it is.
+- An input at that rate keeps ADR-030's rule. Its planned length is rounded down to whole frames. A length within 1 ms of
+  the next frame keeps that frame: the allowance is 1 ms in seconds, the same as the measured-length check. ADR-030 had
+  0.001 of a frame. It is cut to that length (`cut --start 0 --end <length> --accurate`) only when its measured length
+  differs by more than 1 ms. Otherwise it is joined as it is.
 - **New:** an input at another rate, or one flagged variable-rate, is conformed first: `fit --fps <rate> --duration <length>
   --method trim`. The length is rounded to the nearest frame, which is what the engine's fps conversion does itself, so no
   content is lost for it. fit.py cuts at `-t` to the millisecond, so the duration passed is the last whole millisecond at
@@ -1317,7 +1319,8 @@ rules:
   and the plan. In a plan, `action` is `none`, `cut_if_needed` or `conform`. There is a new additive contract block,
   `whole_frames`.
 - **Validation.** The output must also run at the first input's rate when `fps` is not given (`VALIDATION_ERROR fps`), as
-  the contract promised.
+  the contract promised. An input whose whole-frame length is no frame at all (shorter than half a frame at another rate,
+  or than one frame at the rate) is refused before anything runs (`INVALID_TIME_RANGE shorter_than_a_frame`).
 - **Unchanged.** A CONCAT with an xfade transition (its inputs overlap), and inputs already whole frames of the rate (no
   extra encode, the same join argv).
 

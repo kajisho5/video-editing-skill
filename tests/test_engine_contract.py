@@ -834,6 +834,20 @@ class ConcatWholeFramesTests(FakeEngineHarness):
         self.assertEqual(self.tools(rec), ["wf0", "join"])
         self.assertEqual(out["execution"]["outputs"][0]["timeline"]["duration"]["rational"], "41/10")
 
+    def test_a_length_within_a_millisecond_of_a_frame_keeps_that_frame(self):
+        # 1.9999 s at 30 fps is 59.997 frames: 0.1 ms short of the 60th, which is kept (the same 1 ms as the measured-length check)
+        doc = self.concat(["N", "B"], [{"id": "N", "path": self.fake("nearly.mp4", duration=1.9999)}])
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([r["joined_length"]["rational"] for r in rec["whole_frames"]["inputs"]], ["2/1", "2/1"])
+        self.assertEqual(self.tools(rec), ["join"], "measured within 1 ms of its whole-frame length: joined as it is")
+
+    def test_an_input_shorter_than_a_frame_is_refused(self):
+        doc = self.concat(["A", "T"], [{"id": "T", "path": self.fake("tiny25.mp4", duration=0.01, fps=25.0)}])
+        rc, out = self.run_(doc, expect=EXIT_CODES["INVALID_TIME_RANGE"])
+        self.assertEqual((out["error"]["details"]["reason"], out["error"]["details"]["input"]), ("shorter_than_a_frame", "T"), out["error"])
+        self.assertEqual(self.calls(), [])
+
     def test_inputs_already_whole_frames_are_joined_as_before(self):
         rc, out = self.run_(self.concat(["A", "B"], []), expect=0)
         rec = out["execution"]["operations"][0]

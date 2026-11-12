@@ -112,7 +112,7 @@ WHOLE_FRAMES: Dict[str, Any] = {
     "applies_to": "CONCAT without a transition, and CONCAT with a stinger (contract.stinger): the inputs are butt-joined",
     "rate": "params.fps, else the first input's frame rate (as join.py chooses it); the output is constant at that rate",
     "rule": ["every input is joined at whole frames of the rate, and the timeline places every clip at that length",
-             "an input at the rate: its planned length rounded down to whole frames; cut to it (ffmpeg-skill/cut --start 0 --end <length> "
+             "an input at the rate: its planned length rounded down to whole frames (one within 1 ms of the next frame keeps it); cut to it (ffmpeg-skill/cut --start 0 --end <length> "
              "--accurate) only when its measured length differs (a stream-copied segment, a cut that kept a part frame), else joined as it is",
              "an input at another rate, or variable-rate: its planned length rounded to the nearest frame of the rate, conformed to the rate and "
              "that length first (ffmpeg-skill/fit --fps <rate> --duration <length> --method trim); a clip rounded up holds its last instant for "
@@ -123,6 +123,7 @@ WHOLE_FRAMES: Dict[str, Any] = {
     "report": "execution.operations[].whole_frames and plan.steps[].whole_frames: {rate: {fps, rational}, inputs: [{input, fps, length, "
               "joined_length, action: none | cut | conform (a plan: cut_if_needed | conform | none), measured_length}]}",
     "validation": "the output's frame rate is the rate within 0.02, also when params.fps is not given (VALIDATION_ERROR fps)",
+    "refused": ["an input whose whole-frame length is no frame at all (INVALID_TIME_RANGE shorter_than_a_frame), before anything runs"],
     "not_applied": ["a CONCAT with an xfade transition (its inputs overlap; joined as before)"],
     "engine_note": "join.py writes each clip's length to the millisecond and starts the next clip after the longer of its picture and its "
                    "sound: a clip of whole frames whose length rounds up (at 30 fps a frame count 2 more than a multiple of 3, up by 1/3 ms; at "
