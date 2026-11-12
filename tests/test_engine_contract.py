@@ -856,9 +856,62 @@ class ConcatWholeFramesTests(FakeEngineHarness):
         work = os.path.join(self.ws, ".video-editing", "work")
         self.assertEqual(sorted(f for f in os.listdir(work) if ".partial." in f), [])
 
-    def test_a_transition_concat_is_unchanged(self):
+    @staticmethod
+    def join_duration(header):
+        args = header["args"]
+        return args[args.index("--duration") + 1]
+
+    def joined_header(self, rec):
+        with open(os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".mp4"), "rb") as fh:
+            return json.loads(fh.read()[4:].decode())
+
+    def test_an_xfade_concat_joins_its_inputs_and_its_transition_at_whole_frames(self):
+        """ADR-034 (regression): an xfade CONCAT took its inputs and its transition as they were, so join.py's offsets (the clips'
+        lengths less the transitions before) fell between frames. Now W (2.03 s at 25 fps) is conformed to 61 frames at 30 fps as
+        in a plain CONCAT, and the 0.25 s transition (7.5 frames) is joined as 8 frames: the timeline overlaps the clips by 4/15 s,
+        so every clip starts on a frame."""
+        doc = self.concat(["A", "W", "B"], [{"id": "W", "path": self.fake("w25.mp4", duration=2.03, fps=25.0)}],
+                          {"transition": {"type": "fade", "duration": 0.25}})
+        rc, plan = self.run_(doc, "plan", expect=0)
+        step = plan["plan"]["steps"][0]
+        wf = step["whole_frames"]
+        self.assertEqual(wf["rate"]["rational"], "30/1")
+        self.assertEqual([(r["input"], r["action"], r["joined_length"]["rational"]) for r in wf["inputs"]],
+                         [("A", "cut_if_needed", "2/1"), ("W", "conform", "61/30"), ("B", "cut_if_needed", "2/1")])
+        self.assertEqual((wf["transition"]["type"], wf["transition"]["duration"]["rational"], wf["transition"]["joined_duration"]["rational"],
+                          wf["transition"]["frames"]), ("fade", "1/4", "4/15", 8))
+        self.assertEqual(step["arguments"]["duration"], "0.266667", "the planned join is given the whole-frame transition")
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([r["action"] for r in rec["whole_frames"]["inputs"]], ["none", "conform", "none"])
+        self.assertEqual(rec["whole_frames"]["transition"]["frames"], 8)
+        self.assertEqual(self.tools(rec), ["wf0", "join"], "one fit for W, then the join")
+        header = self.joined_header(rec)
+        self.assertEqual(header["tool"], "join")
+        self.assertTrue(any(".wf0.partial." in a for a in header["args"]), "W reaches join.py as the conformed file")
+        self.assertEqual(self.join_duration(header), "0.266667")
+        tl = out["execution"]["outputs"][0]["timeline"]
+        segs = tl["tracks"][0]["segments"]
+        self.assertEqual([(g["source"], g["speed"], g["timeline_range"]["start"]["rational"]) for g in segs],
+                         [("A", "1/1", "0/1"), ("W", "1/1", "26/15"), ("W", "0/1", "1129/300"), ("B", "1/1", "7/2")])
+        self.assertEqual(tl["duration"]["rational"], "11/2", "60 + 61 + 60 frames less two transitions of 8: 165 frames")
+
+    def test_an_xfade_concat_already_at_whole_frames_is_joined_as_before(self):
         rc, out = self.run_(self.concat(["A", "B"], [], {"transition": {"type": "fade", "duration": 0.5}}), expect=0)
-        self.assertNotIn("whole_frames", out["execution"]["operations"][0])
+        rec = out["execution"]["operations"][0]
+        self.assertEqual(self.tools(rec), ["join"], "no extra encode")
+        self.assertEqual([r["action"] for r in rec["whole_frames"]["inputs"]], ["none", "none"])
+        self.assertEqual((rec["whole_frames"]["transition"]["joined_duration"]["rational"], rec["whole_frames"]["transition"]["frames"]), ("1/2", 15))
+        self.assertEqual(self.join_duration(self.joined_header(rec)), "0.500000", "the same join argv as before")
+        self.assertEqual(out["execution"]["outputs"][0]["timeline"]["duration"]["rational"], "7/2")
+
+    def test_a_transition_too_long_for_an_input_at_whole_frames_is_refused(self):
+        """1.01 s at 30 fps is joined as 30 frames (1.0 s), which a 0.5 s transition at each end leaves nothing of: join.py refuses a
+        clip no longer than twice the transition, so this is refused before anything runs, on the lengths join.py would be given."""
+        doc = self.concat(["S", "B"], [{"id": "S", "path": self.fake("short.mp4", duration=1.01)}], {"transition": {"type": "fade", "duration": 0.5}})
+        rc, out = self.run_(doc, expect=EXIT_CODES["INVALID_TIME_RANGE"])
+        self.assertIn("too short for a 0.5s transition", out["error"]["message"])
+        self.assertEqual(self.calls(), [])
 
     def test_the_first_inputs_rate_is_validated_without_fps(self):
         """The contract promises the first input's rate when params.fps is absent: an output at another rate is refused (the fake

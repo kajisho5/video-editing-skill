@@ -1322,7 +1322,8 @@ rules:
   the contract promised. An input whose whole-frame length is no frame at all (shorter than half a frame at another rate,
   or than one frame at the rate) is refused before anything runs (`INVALID_TIME_RANGE shorter_than_a_frame`).
 - **Unchanged.** A CONCAT with an xfade transition (its inputs overlap), and inputs already whole frames of the rate (no
-  extra encode, the same join argv).
+  extra encode, the same join argv). (Extended by ADR-034: an xfade CONCAT takes the same path, its transition held to
+  whole frames too.)
 
 **Cost.** One extra encode per input at another rate, and per same-rate input whose length is not whole frames. The latter
 includes a frame-precision cut that kept a partial last frame: cut.py keeps every frame that starts before the end, so
@@ -1382,3 +1383,118 @@ runs there (2.24.1, 3.0.0 and main in CI) and is skipped on 0.11.0. The contract
   - the rate validated without `fps`.
 - `GeneratedClipTests` now expects the third clip on a frame of the 29.97 fps edit: its 3 s at 24 fps is joined as 90
   frames, not 3.0 s.
+
+
+## ADR-034 — CONCAT with an xfade transition at whole frames: every input and the transition on the edit's frame grid
+
+**Context.** ADR-033 left a CONCAT with an xfade transition as it was ("its inputs overlap"). That case was reproduced
+with the same kind of tiny generated sources: 2 s each at 23.976, 25, 29.97, 30 and 60 fps, plus a variable-rate one (every
+fifth frame dropped). Each clip is a flat colour with a white flash over its lower half and a beep, both at 1.0 s for 0.1 s.
+So each clip is found in the picture (its first flash frame) and in the sound (its beep), and compared with the timeline.
+They were joined with `fade`, `dissolve` and `wipeleft` of 0.25 s and 0.5 s. The runs used ffmpeg-skill main (3.6.0) and
+FFmpeg 6.1.1.
+
+join.py conforms each clip to the output rate and trims its picture and sound to the clip's length (to the millisecond).
+It starts the transition after clip k at the lengths before it less the transitions, also written to the millisecond
+(`xfade=...:offset=`), and crossfades the sound over exactly those lengths (`acrossfade`). xfade starts a transition on the
+first frame at or after its offset and takes the next clip from its first frame there. An offset between frames therefore
+starts the next clip's picture on the frame after it, while its sound starts at the offset itself. The picture is late by the
+remainder, up to a frame, against its sound and against the timeline, which placed the clip at the offset. The clip's last
+frame goes into the next transition. The file runs past the timeline when the last offset is late. An offset falls between
+frames whenever an input's length is not whole frames of the output rate (any clip at another rate; 60 frames at 29.97 fps
+last 2.002 s), or the transition is not (0.5 s is 14.985 frames at 29.97 fps, 11.988 at 23.976 and 12.5 at 25; 0.25 s is 7.5
+frames at 30).
+
+Measured before this change (the clips after the first: frames late against the timeline, and picture after sound):
+
+| Edit | Late joins | Frames late | Picture after sound | Frames in file / timeline |
+|---|---|---|---|---|
+| six 29.97 fps clips, dissolve 0.5 | 5 of 5 | 0.96 to 1.02 | 32 to 34 ms | 286 / 285.075 |
+| six 23.976 fps clips, fade 0.5 | 5 of 5 | 0.96 to 1.01 | 40 to 42 ms | 229 / 228.06 |
+| 30 fps edit: 30, four 23.976, 30, fade 0.5 | 4 of 5 | 0.76 to 0.94 | 25 to 31 ms | 286 / 285.24 |
+| 29.97, 25, 60, variable-rate, 23.976, 30 with `fps: 30`, wipeleft 0.5 | 5 of 5 | 0.88 to 0.94 | 29 to 31 ms | 286 / 285.12 |
+| 25, 29.97, 23.976, variable-rate, 60, 30 with `fps: 25`, wipeleft 0.5 | 5 of 5 | 0.4 to 0.95 | 16 to 38 ms | 238 / 237.6 |
+| six 30 fps clips, fade 0.25 | 3 of 5 | 0.5 | 17 ms | 323 / 322.5 |
+| 23.976 fps edit: 23.976, six 30, dissolve 0.5 | 1 of 6, then a drift | 1.01, then 0.05 to 0.19 | 42 ms, then 2 to 8 ms | 264 / 263.784 |
+| 60 fps edit: 60, 30, 25, 29.97, fade 0.5 | 0 of 3 | 0 | 0 | 390 / 390.12 |
+
+The video stream outlasted the sound by up to a frame (9.543 s against 9.512 s for the six 29.97 fps clips), and the timeline
+placed clips between frames (1.502 s at 29.97 fps). There were no holes and no duplicated timestamps: xfade writes every frame
+on the output grid, and `avg_frame_rate` equalled `r_frame_rate` in every case. The defect was where the picture of each clip
+lands, against its sound and the timeline.
+
+**Decision.** A CONCAT with an xfade transition joins on the same whole-frame path as a plain or stinger CONCAT (ADR-030,
+ADR-033): `Executor.joins_whole_frames` is now every CONCAT. The rules:
+- **Inputs.** Unchanged from ADR-033. An input at the rate is rounded down to whole frames and cut only when its measured
+  length differs. One at another rate, or variable-rate, is conformed (`fit --fps --duration --method trim`, nearest frame).
+- **Transition.** **New:** its duration is rounded to the nearest frame of the rate (a half rounds up, at least one frame).
+  It is joined at that length (`join --duration`), so every offset is whole frames. The compiled join step carries it, so the
+  plan's `arguments`, the preview and the run agree. A transition already whole frames gives the same join argv as before.
+- **Timeline.** It overlaps the clips by that duration (`build_timelines(..., joined_transition=...)`), so every clip starts
+  on a frame, where the file shows it.
+- **Range check.** "Too short for the transition" is checked on the joined lengths and the joined duration, the values
+  join.py is given. A clip at most twice the transition is refused before anything runs instead of failing in the engine.
+- **Report.** `whole_frames.transition: {type, duration, joined_duration, frames}` in the plan and the record, beside the
+  inputs.
+- **Validation and reuse.** The output rate is validated against the first input's without `fps` (ADR-033), and the
+  idempotency key carries the rule, so an xfade result joined before this change is not reused.
+
+**Cost.** The same as ADR-033: one extra encode per input at another rate, or with a length that is not whole frames.
+Rounding the transition moves each overlap by under half a frame (at most 17 ms at 30 fps), so the edit is that much
+longer or shorter per transition than the request's seconds imply. The joined duration is reported.
+
+Measured after this change, on the same edits: 0 frames late at every join. Picture and sound are together (within 1 ms:
+the 29.97 and 23.976 fps sources' flash frame lies at 1.001 s). The file has exactly the timeline's frames, and its picture,
+sound and timeline last the same, for the first five edits in the table and the 60 fps one. The six 29.97 fps clips are
+285 frames, 9.5095 s of picture, 9.509 s of sound and a timeline of 9.5095 s. The six 23.976 fps ones are 228 frames, the
+mixed 30 fps and 25 fps edits 285 and 235 frames. The two other edits are the engine's remainder (below).
+
+**Not fixed: the engine's millisecond offsets.** At whole frames an offset is a frame time, but join.py writes it to the
+millisecond, and that can round up past its frame. 104 frames at 30 fps (3.466667 s) is written `offset=3.467`, and xfade
+starts that transition on frame 105. At 30, 24 and 60 fps one whole-frame time in three rounds up; at 29.97, 23.976 and
+59.94 fps about one in two; at 25 and 50 fps none. Such a transition starts exactly one frame late, and with it the next
+clip's picture, against its sound and the timeline. The clip loses its last frame into the next transition, and the file is
+one frame longer when it is the last join. It is never more than a frame and never adds up, because every offset is counted
+from the start of the join. Measured after this change:
+- six 30 fps clips with a 0.25 s fade (8 frames): the 3rd and 6th clips are one frame late (33 ms), at offsets 3.467 and
+  8.667; the file has 321 frames for a timeline of 320;
+- a 23.976 fps edit of six 30 fps clips with a 0.5 s dissolve (12 frames): the 4th and 6th clips are one frame late (43 ms),
+  at offsets 4.505 and 7.508. Before this change that edit had one join a frame late and the rest drifting by 2 to 8 ms.
+
+This Skill cannot place a transition more precisely than the offset join.py writes. Two workarounds were considered and not
+taken. Nudging the transition's duration so that every offset rounds down ties this Skill to the engine's number formatting
+and shifts the sound by that nudge at every join. Joining each transition alone (the outgoing clip's last frames and the
+incoming clip's first frames, at offset 0) and butt-joining the rest adds two encodes per clip and many more joins, each with
+ADR-033's own remainder. It is a proposal to ffmpeg-skill: place xfade offsets in frames of the output rate (or write them
+to the microsecond, rounded down to the frame), as ADR-033 proposed for clip lengths. It is documented in
+`contract.whole_frames.engine_note`. ffmpeg-skill 2.21.0 and 3.6.0 write the offset the same way.
+
+**Versioning.** Additive (`contract --check`):
+- the `whole_frames` block (`applies_to`, `rule`, `why`, `report`, `refused`, `not_applied` now empty, `engine_note`);
+- the `media_compatibility` / `tools[].media` CONCAT texts;
+- `plan.steps[].whole_frames.transition` and `execution.operations[].whole_frames.transition`.
+
+`contract_version` stays "6.0". A bug fix, so the release is a patch.
+
+**Verified.**
+- `tests/test_integration.py::ConcatXfadeFrameRateTests` against ffmpeg-skill main (2.4.1 and later, as
+  `ConcatFrameRateTests`). It uses the flash-and-beep clips above, in four tests:
+  - every rate and the variable-rate clip with `fps: 25` and a 0.5 s wipeleft (13 frames), exact;
+  - 30 fps clips around four 23.976 fps ones, fade 0.5, exact;
+  - six 29.97 fps clips with a 0.5 s dissolve, which is not whole frames, exact;
+  - six 30 fps clips with a 0.25 s fade, where join.py rounds two offsets up: at most one frame late there.
+- What each test checks:
+  - no frame interval over 1.5 frames or under 0.5, and `avg_frame_rate` equal to `r_frame_rate` at the promised rate;
+  - every clip the timeline reports starts on a frame, and the timeline is whole frames;
+  - the file has the timeline's frames (one more only where the engine's last offset rounds up), and its sound lasts as long
+    within a frame;
+  - each clip's flash is on the frame the timeline puts 1.0 s into it, its beep is there within 2 ms, and picture and sound
+    are together within a quarter frame;
+  - the report: the transition's frames and the timeline built from the joined lengths.
+- On the code before this change, all four fail on the timeline: clips at 1.5 s (37.5 frames at 25 fps), 3.002 s at 30 fps,
+  1.502 s at 29.97 fps and 1.75 s at 30 fps.
+- `tests/test_engine_contract.py::ConcatWholeFramesTests` (fake engine), which before this change expected an xfade CONCAT to
+  be left unchanged, now covers:
+  - a 25 fps input conformed and a 0.25 s transition joined as 8 frames, in the plan, the join's argv and the timeline;
+  - whole-frame inputs and transition joined as before, with no extra call and the same `--duration`;
+  - an input too short for the transition at its whole-frame length, refused before anything runs.

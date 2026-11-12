@@ -54,8 +54,8 @@ Provided (capabilities are declared only where an implementation exists):
 |---|---|---|
 | `video.trim` | `TRIM` keep `[start, end)` of one input | `ffmpeg-skill/cut` |
 | `video.cut` | `CUT` keep several ranges, joined in the order given | `ffmpeg-skill/cut` |
-| `video.concat` | `CONCAT` join ≥ 2 inputs in order, conform size / fps (every input at whole frames of the edit's rate, ADR-033) | `ffmpeg-skill/join` |
-| `video.transition` | `CONCAT` with `params.transition` (xfade family) | `ffmpeg-skill/join` |
+| `video.concat` | `CONCAT` join ≥ 2 inputs in order, conform size / fps (every input at whole frames of the edit's rate, ADR-033 / ADR-034) | `ffmpeg-skill/join` |
+| `video.transition` | `CONCAT` with `params.transition` (xfade family; its duration rounded to the nearest frame of the edit's rate, ADR-034) | `ffmpeg-skill/join` |
 | `video.reorder` | order of `CONCAT.inputs` / `CUT.keep` | — |
 | `video.speed` | `SPEED` constant factor 1/4 … 4, pitch-preserved audio, optional slow-motion `smooth` (blend / interpolate) | `ffmpeg-skill/fit` |
 | `video.fit` | `FIT` change the aspect, keep every pixel (letterbox / pillarbox with `pad_color`) | `ffmpeg-skill/fit` |

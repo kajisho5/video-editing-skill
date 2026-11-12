@@ -109,26 +109,39 @@ STINGER: Dict[str, Any] = {
 }
 
 WHOLE_FRAMES: Dict[str, Any] = {
-    "applies_to": "CONCAT without a transition, and CONCAT with a stinger (contract.stinger): the inputs are butt-joined",
+    "applies_to": "every CONCAT: without a transition and with a stinger (contract.stinger) the inputs are butt-joined; with an xfade "
+                  "transition they overlap by its duration, held to whole frames too",
     "rate": "params.fps, else the first input's frame rate (as join.py chooses it); the output is constant at that rate",
     "rule": ["every input is joined at whole frames of the rate, and the timeline places every clip at that length",
              "an input at the rate: its planned length rounded down to whole frames (one within 1 ms of the next frame keeps it); cut to it (ffmpeg-skill/cut --start 0 --end <length> "
              "--accurate) only when its measured length differs (a stream-copied segment, a cut that kept a part frame), else joined as it is",
              "an input at another rate, or variable-rate: its planned length rounded to the nearest frame of the rate, conformed to the rate and "
              "that length first (ffmpeg-skill/fit --fps <rate> --duration <length> --method trim); a clip rounded up holds its last instant for "
-             "the rest of its last frame (a timeline segment of speed 0)"],
+             "the rest of its last frame (a timeline segment of speed 0)",
+             "an xfade transition: its duration rounded to the nearest frame of the rate (a half up, at least one frame) and joined at that length "
+             "(ffmpeg-skill/join --duration); the timeline overlaps the clips by it, so every clip starts on a frame"],
     "why": "join.py trims each clip to its own length and starts the next after it: a length that is not whole frames of the output rate moved "
            "every later clip off the frame grid (a one-frame hole in the picture once the remainders reached half a frame, and a timeline that "
-           "drifted from the file by the remainder of every clip)",
+           "drifted from the file by the remainder of every clip). With an xfade, join.py starts each transition at the lengths before it less "
+           "the transitions, and xfade starts one only on a frame: an offset between frames started the next clip's picture on the frame after "
+           "it, up to a frame after its sound and its timeline place",
     "report": "execution.operations[].whole_frames and plan.steps[].whole_frames: {rate: {fps, rational}, inputs: [{input, fps, length, "
-              "joined_length, action: none | cut | conform (a plan: cut_if_needed | conform | none), measured_length}]}",
+              "joined_length, action: none | cut | conform (a plan: cut_if_needed | conform | none), measured_length}], and with an xfade "
+              "transition: {type, duration, joined_duration, frames}}; the join's own arguments (plan.steps[].arguments.duration) carry "
+              "the joined duration",
     "validation": "the output's frame rate is the rate within 0.02, also when params.fps is not given (VALIDATION_ERROR fps)",
-    "refused": ["an input whose whole-frame length is no frame at all (INVALID_TIME_RANGE shorter_than_a_frame), before anything runs"],
-    "not_applied": ["a CONCAT with an xfade transition (its inputs overlap; joined as before)"],
+    "refused": ["an input whose whole-frame length is no frame at all (INVALID_TIME_RANGE shorter_than_a_frame), before anything runs",
+                "with an xfade transition, an input whose whole-frame length is not longer than twice the joined transition (INVALID_TIME_RANGE), "
+                "before anything runs"],
+    "not_applied": [],
     "engine_note": "join.py writes each clip's length to the millisecond and starts the next clip after the longer of its picture and its "
                    "sound: a clip of whole frames whose length rounds up (at 30 fps a frame count 2 more than a multiple of 3, up by 1/3 ms; at "
                    "29.97 fps up to 0.5 ms) still starts the next one that much late, so some 35 to 50 such clips in one edit can still leave a "
-                   "one-frame hole; that remainder is the engine's (a proposal to ffmpeg-skill), not worked around here. Before ffmpeg-skill 2.4.1 "
+                   "one-frame hole; that remainder is the engine's (a proposal to ffmpeg-skill), not worked around here. With an xfade, join.py "
+                   "writes each transition's offset to the millisecond too, and xfade starts it on the first frame at or after that time: a "
+                   "whole-frame offset that rounds up (at 30, 24 or 60 fps one offset in three, at 29.97, 23.976 or 59.94 fps about one in two; never at "
+                   "25 or 50 fps) starts that transition, and the next clip's picture, one frame late, against its sound and the timeline (not "
+                   "worked around here either). Before ffmpeg-skill 2.4.1 "
                    "join.py does not trim a clip's sound to its picture, so an AAC tail can still start the next clip up to a frame late",
 }
 
@@ -393,7 +406,7 @@ def skill_contract() -> Dict[str, Any]:
         "proposals": proposals_block(),
         # ---- stinger transition (docs/decisions.md ADR-023)
         "stinger": STINGER,
-        # ---- butt joins at whole frames (docs/decisions.md ADR-030, ADR-033)
+        # ---- every CONCAT input (and an xfade transition) at whole frames (docs/decisions.md ADR-030, ADR-033, ADR-034)
         "whole_frames": WHOLE_FRAMES,
         # ---- AI-generated sources (docs/decisions.md ADR-022)
         "ai_generated": AI_GENERATED,

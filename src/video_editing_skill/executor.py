@@ -96,7 +96,7 @@ class Executor:
         self.request_sha256: Optional[str] = None   # sha256 of the canonical request document (set by the CLI)
         self.smart_unavailable: Dict[str, str] = {}  # op ref -> why a precision smart TRIM / CUT runs as --accurate (ADR-031)
         self.stinger_cover: Dict[str, Dict[str, Any]] = {}  # stinger CONCAT ref -> the cover measured at its cut point (ADR-032)
-        self.whole_frames: Dict[str, Dict[str, Any]] = {}   # plain / stinger CONCAT ref -> how each input was joined at whole frames (ADR-033)
+        self.whole_frames: Dict[str, Dict[str, Any]] = {}   # CONCAT ref -> how each input (and an xfade) was joined at whole frames (ADR-033, ADR-034)
 
     # ------------------------------------------------------------ preparation
     def probe_sources(self) -> None:
@@ -119,7 +119,8 @@ class Executor:
                                 {"source": ref, "reason": "no_duration"})
             self.source_probes[ref] = doc
             self.durations[ref] = Time.from_float(float(d))
-        self.clips = build_timelines(self.project, self.durations, joined_length=self._joined_length)
+        self.clips = build_timelines(self.project, self.durations, joined_length=self._joined_length, joined_transition=self._joined_transition)
+        self._hold_transitions()
         self._check_engine()
         self._check_size_outputs()
         self._check_ranges()
@@ -149,7 +150,7 @@ class Executor:
                         gaps.append(f"tool:ffmpeg-skill/{tool}")
                     else:
                         gaps += [f"flag:ffmpeg-skill/{tool} {f}" for f in self.skill.missing_flags(tool, flags)]
-            if self.joins_whole_frames(ref):   # an input not whole frames of the edit's rate is cut, one at another rate conformed (ADR-030, ADR-033)
+            if self.joins_whole_frames(ref):   # an input not whole frames of the edit's rate is cut, one at another rate conformed (ADR-030, ADR-033, ADR-034)
                 needs = [("cut", ["--start", "--end", "--accurate"])]
                 if any(self._input_conform(ref, r) == "rate" for r in op.video_inputs):
                     needs.append(("fit", ["--fps", "--duration", "--method"]))
@@ -436,12 +437,13 @@ class Executor:
             if op.type == "CONCAT" and op.stinger is not None:
                 self._check_stinger_ranges(ref)
             elif op.type == "CONCAT" and op.params.get("transition"):
-                d = op.params["transition"]["duration"].value
+                # what join.py is given (ADR-034): every input and the transition at whole frames of the edit's rate
+                jt = self._joined_transition(ref)
+                overlap = (jt if jt is not None else op.params["transition"]["duration"]).value
                 for i in op.inputs:
-                    c = self.clips.get(i)
-                    dur = c.duration if c else self.durations.get(i)
-                    if dur is not None and dur.value <= d * 2:
-                        raise EditError("INVALID_TIME_RANGE", f"operation {ref!r}: input {i!r} ({dur.text(3)}s) is too short for a {float(d):g}s transition")
+                    dur = self._joined_length(ref, i, self._planned_length(i))
+                    if dur is not None and dur.value <= overlap * 2:
+                        raise EditError("INVALID_TIME_RANGE", f"operation {ref!r}: input {i!r} ({dur.text(3)}s) is too short for a {float(overlap):g}s transition")
 
     def _compute_keys(self) -> None:
         for ref in self.project.order:
@@ -454,7 +456,7 @@ class Executor:
                 key["render"] = "segments"
             if op.stinger is not None:   # made only after its cover was measured (ADR-032): a result made without that never matches
                 key["stinger_cover"] = f"measured, opaque within {OPAQUE_WITHIN}/255"
-            if self.joins_whole_frames(ref):   # every input joined at whole frames (ADR-033): a result joined without that never matches
+            if self.joins_whole_frames(ref):   # every input joined at whole frames (ADR-033, ADR-034): a result joined without that never matches
                 key["joins"] = "whole frames of the edit's rate"
             self.keys[ref] = stable_hash(key)
 
@@ -999,12 +1001,36 @@ class Executor:
         self.stinger_cover[ref] = m
         return m
 
-    # ------------------------------------------------------------ CONCAT at whole frames (ADR-030, ADR-033)
+    # ------------------------------------------------------------ CONCAT at whole frames (ADR-030, ADR-033, ADR-034)
     def joins_whole_frames(self, ref: str) -> bool:
-        """A plain (no transition) or stinger CONCAT: its inputs are butt-joined, so each must be whole frames of the edit's rate."""
+        """Every CONCAT: plain or stinger (butt-joined) and xfade (overlapped by its transition) alike, each input is joined at whole
+        frames of the edit's rate (ADR-030, ADR-033, ADR-034)."""
+        return self.project.operations[ref].type == "CONCAT"
+
+    def _xfade(self, ref: str) -> Optional[Dict[str, Any]]:
         op = self.project.operations[ref]
         tr = op.params.get("transition") if op.type == "CONCAT" else None
-        return op.type == "CONCAT" and (tr is None or tr["type"] == "stinger")
+        return tr if tr and tr["type"] != "stinger" else None
+
+    def _joined_transition(self, ref: str) -> Optional[Time]:
+        """An xfade CONCAT's transition duration at whole frames of the edit's rate: the nearest frame (a half rounds up), at least
+        one. join.py starts each transition at the clips' lengths less the transitions before it, and xfade can start one only on a
+        frame: a duration that is not whole frames (0.5 s at 29.97 or 23.976 fps is 14.985 or 11.988 frames) put every offset after
+        the first between frames, so the picture of the next clip started a frame after its sound and after the timeline (ADR-034).
+        None when there is no xfade transition or the rate is not known (the requested duration is joined)."""
+        tr = self._xfade(ref)
+        rate = self._edit_rate(ref) if tr else None
+        if tr is None or rate is None:
+            return None
+        frames = max(1, math.floor(tr["duration"].value * rate + Fraction(1, 2)))
+        return Time(Fraction(frames) / rate)
+
+    def _hold_transitions(self) -> None:
+        """The compiled join step of an xfade CONCAT is given its transition at whole frames (plan, preview and run alike)."""
+        for ref in self.project.order:
+            jt = self._joined_transition(ref)
+            if jt is not None:
+                self.steps[ref].args["duration"] = jt.tool_arg()
 
     def _edit_rate(self, ref: str) -> Optional[Fraction]:
         """The CONCAT's frame rate: params.fps, else its first input's (as join.py chooses it)."""
@@ -1047,7 +1073,8 @@ class Executor:
 
     def whole_frames_plan(self, ref: str) -> Dict[str, Any]:
         """The edit's rate and, per input, its planned length, the whole-frame length it is joined at and what is done to reach it
-        (none | cut | conform; a cut is decided on the measured length, so a plan says cut_if_needed)."""
+        (none | cut | conform; a cut is decided on the measured length, so a plan says cut_if_needed); for an xfade CONCAT also its
+        transition, requested and at whole frames."""
         op = self.project.operations[ref]
         rate = self._edit_rate(ref)
         rows = []
@@ -1058,7 +1085,13 @@ class Executor:
             rows.append({"input": r, "fps": self.profile(r).get("fps"), "length": d.to_dict() if d is not None else None,
                          "joined_length": j.to_dict() if j is not None else None,
                          "action": {"rate": "conform", "length": "cut_if_needed"}.get(kind or "", "none")})
-        return {"rate": {"fps": float(rate), "rational": f"{rate.numerator}/{rate.denominator}"} if rate else None, "inputs": rows}
+        out: Dict[str, Any] = {"rate": {"fps": float(rate), "rational": f"{rate.numerator}/{rate.denominator}"} if rate else None, "inputs": rows}
+        tr = self._xfade(ref)
+        if tr is not None:
+            jt = self._joined_transition(ref)
+            out["transition"] = {"type": tr["type"], "duration": tr["duration"].to_dict(), "joined_duration": jt.to_dict() if jt is not None else None,
+                                 "frames": int(jt.value * rate) if jt is not None and rate is not None else None}
+        return out
 
     def _whole_frame_inputs(self, ref: str, call, enc: List[str]) -> List[str]:
         """The paths join.py gets: each input held to its whole-frame length. One at another rate (or variable-rate) is conformed to
@@ -1141,8 +1174,8 @@ class Executor:
         return enc
 
     def _run_concat(self, ref: str, partial: str, t0: str) -> tuple:
-        """A plain CONCAT: every input held to whole frames of the edit's rate (_whole_frame_inputs), then one join.py call, as the
-        compiled step describes it, on those files."""
+        """A plain or xfade CONCAT: every input held to whole frames of the edit's rate (_whole_frame_inputs), then one join.py call,
+        as the compiled step describes it (an xfade's duration at whole frames too: _hold_transitions), on those files."""
         op = self.project.operations[ref]
         st = self.steps[ref]
         temps: List[str] = []

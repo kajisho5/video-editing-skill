@@ -69,12 +69,16 @@ def _shift(segs: List[Segment], offset: Time) -> List[Segment]:
 
 
 JoinedLength = Callable[[str, str, Optional[Time]], Optional[Time]]
+JoinedTransition = Callable[[str], Optional[Time]]
 
 
-def build_timelines(project: EditProject, durations: Dict[str, Optional[Time]], joined_length: Optional[JoinedLength] = None) -> Dict[str, Clip]:
+def build_timelines(project: EditProject, durations: Dict[str, Optional[Time]], joined_length: Optional[JoinedLength] = None,
+                    joined_transition: Optional[JoinedTransition] = None) -> Dict[str, Clip]:
     """Clip per operation ref. `durations` maps source ref -> probed duration (or None when unknown). `joined_length(concat ref,
     input ref, planned length)` gives the length an input takes in a CONCAT that joins at whole frames (the executor's rule,
-    ADR-030 / ADR-033); without it every input keeps its planned length."""
+    ADR-030 / ADR-033); without it every input keeps its planned length. `joined_transition(concat ref)` gives the length an
+    xfade transition overlaps its neighbours by, at whole frames of the edit's rate (ADR-034); without it, or when it gives
+    None, the requested duration."""
     clips: Dict[str, Clip] = {}
 
     def clip_of(ref: str) -> Clip:
@@ -95,7 +99,8 @@ def build_timelines(project: EditProject, durations: Dict[str, Optional[Time]], 
         inputs = [clip_of(r) for r in op.video_inputs]
         if op.type == "CONCAT" and joined_length is not None:
             inputs = [_held_to(c, joined_length(ref, r, c.duration)) for r, c in zip(op.video_inputs, inputs)]
-        clips[ref] = _apply(op, inputs, durations)
+        overlap = joined_transition(ref) if op.type == "CONCAT" and joined_transition is not None else None
+        clips[ref] = _apply(op, inputs, durations, overlap)
     return clips
 
 
@@ -115,7 +120,9 @@ def _held_to(c: Clip, length: Optional[Time]) -> Clip:
     return Clip(length, list(c.segments) + [Segment(last.source, at, at, c.duration, length, Fraction(0))], list(c.overlays))
 
 
-def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[Time]]) -> Clip:
+def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[Time]], overlap: Optional[Time] = None) -> Clip:
+    """`overlap`: for a CONCAT with an xfade transition, the length each join overlaps the clips by (its duration at whole frames);
+    None: the requested duration."""
     p = op.params
     if op.type == "TRIM":
         return _cut(inputs[0], [(p["start"], p["end"])])
@@ -149,7 +156,7 @@ def _apply(op: EditOperation, inputs: List[Clip], durations: Dict[str, Optional[
     if op.type == "CONCAT":
         tr = p.get("transition")
         stinger = tr if tr and tr["type"] == "stinger" else None
-        d = tr["duration"] if tr and not stinger else ZERO
+        d = (overlap if overlap is not None else tr["duration"]) if tr and not stinger else ZERO
         segs = []
         overlays = []
         offset: Optional[Time] = ZERO
