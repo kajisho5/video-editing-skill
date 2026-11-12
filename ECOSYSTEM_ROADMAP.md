@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-v0.4.4, Python 3.9+ stdlib. TRIM, CUT, CONCAT (+transition), SPEED, FIT, FILL, RESIZE, OVERLAY, ROTATE, FREEZE, REVERSE, IMAGE_INSERT, CROP. 171 tests, CI on 3 OSes x py3.9/3.11 against ffmpeg-skill pinned + main. Best OS-schema fit of all skills (contract_version 4.0, dependencies declared).
+v0.7.2, Python 3.9+ stdlib. TRIM, CUT (frame / auto / smart precision), CONCAT (+transition, stinger), SPEED, FIT, FILL, RESIZE, OVERLAY (still images), ROTATE, FREEZE, REVERSE, IMAGE_INSERT, CROP, PUNCH_IN, CONDENSE, size-capped export, and `propose` (retake / motion / silence candidates, steps 14-15). CI on 3 OSes x py3.9/3.11 against ffmpeg-skill pinned + main. Best OS-schema fit of all skills (contract_version 4.0, dependencies declared).
 
 ## What this repository owns
 
@@ -16,11 +16,12 @@ v0.4.4, Python 3.9+ stdlib. TRIM, CUT, CONCAT (+transition), SPEED, FIT, FILL, R
 | カット・連結 | done |  |
 | 尺・画角合わせ | done | pixel-rectangle CROP included ([#25](https://github.com/kajisho5/video-editing-skill/pull/25), ADR-016) |
 | トランジション | done | CONCAT transition (xfade family, stinger); every input and the xfade duration at whole frames of the edit's rate ([#47](https://github.com/kajisho5/video-editing-skill/pull/47), ADR-034); join.py's millisecond xfade offsets (one frame late where one rounds up) proposed to ffmpeg-skill |
-| 静止画オーバーレイ | done |  |
+| 静止画オーバーレイ | done | plain still compositing (png / jpg, named position, time range) as part of an edit only, confirmed by the [Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/pull/156) (O10). Logos and images as graphics, PiP, chroma key and moving graphics are motion-graphics-skill's `ロゴ・PiP・クロマキー合成` / `動くグラフィックの配置`; step 19 |
+| 言い直し・重複の候補計算 | done | added by the same decisions (O15): `propose` computes the candidates (step 14, ADR-024); the agent presents them and records the approval (its `言い直し・重複の候補の提示と承認`); step 20 |
 
 ## Wiring
 
-Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim and rotate (video-production-agent#80), image_insert (video-production-agent#86) and crop (video-production-agent#94); FREEZE / REVERSE are lowered but not planned (agent step 17). Pinned at 0.4.2. Delegates to ffmpeg-skill probe, cut, join, fit, overlay.
+Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim and rotate (video-production-agent#80), image_insert (video-production-agent#86) and crop (video-production-agent#94); FREEZE / REVERSE are lowered but not planned (agent step 17). Pinned at 0.7.0 today (first at 0.4.2). Delegates to ffmpeg-skill probe, cut, join, fit, overlay.
 
 ## Steps
 
@@ -86,10 +87,16 @@ Agent wires cut (2nd candidate), concat, speed, resize, fit, fill, overlay, trim
   - Why: deliveries with a size cap (mail, chat, upload limits) are met on the first try（なぜ要るか：サイズ上限のある納品を一度で満たす）
   - Done when: on two or three fixtures the output is at or under the limit and at least 90 % of it
   - Done (ADR-028): `outputs[].max_size: {mb: 25}` (bytes / kb / mb / gb, kib / mib / gib) delivers through ffmpeg-skill `export --max-mb` (two-pass x264; the video bitrate from the duration after the audio), measured and retried (over: smaller target; under 90 %: larger) up to 5 times. `SizeLimitTests` (3.2.0): three fixtures (640x360 20 s with sound at 2 MB, 1280x720 8 s at 3 MB, 320x180 60 s with sound at 4 MB) each land in [90 %, 100 %]; 60 s in 300 kB fails with the engine's reason (under 100 kb/s is not watchable) and delivers nothing. A picture that needs fewer bits than the limit is delivered under it with `under_floor: true`, never padded. No automatic downscale. Needs ffmpeg-skill 2.x+ (`export --max-mb`), refused before execution on 0.11.0
+- [ ] **19. Write down the overlay boundary** — record what the [Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/pull/156) (O10) settled: `OVERLAY` stays plain still compositing as part of an edit (one png / jpg at a named position for a time range, alpha respected); a video layer, PiP, chroma key, a logo or image treated as a graphic (fade, theme, safe zones) and any moving graphic go to motion-graphics-skill; ffmpeg-skill is the engine under both. The PiP / chroma-key request for `OVERLAY` is answered by this, not implemented here. In docs/decisions.md and SKILL.md, and in the contract: `OVERLAY`'s description and its refusal of a video source name motion-graphics-skill as the place for it. No new operation
+  - Why: the agent and a person choosing between `edit.overlay` and `motion.image` read one rule, and a video given to OVERLAY gets an answer, not a bare refusal（なぜ要るか：静止画の重ね方の使い分けを一か所に書き、動画を渡したときの行き先を示す）
+  - Done when: the ADR is merged with the decision linked; a request giving OVERLAY a video source is refused with `INVALID_INPUT` whose message names motion-graphics-skill `video_overlay`; the still path is unchanged (existing tests)
+- [ ] **20. `propose` as the owner of retake / duplicate candidates** — under the [Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/pull/156) (O15) the candidate computation is this skill's and the agent only presents and approves. Today `propose` is in the contract (`propose` invocation and schemas) but not in `provides`, which is derived from OPERATIONS only, so a registry cannot resolve its owner. Publish it: a Capability id for the candidate computation in `provides` with `tool_id` `video-editing/propose`, marked as producing proposals, not media (`writes_media: false`, `applied: false` in every result as today); record in docs/decisions.md that approval and presentation stay with the agent and that nothing in `propose` ever applies a cut
+  - Why: the job the ecosystem gives this skill is visible in its contract, so the agent's registry and Velisa's collision check see one owner（なぜ要るか：言い直し候補の担当を契約に出し、登録表で一意に引けるようにする）
+  - Done when: `contract --json` lists the propose capability in `provides`; a test checks it resolves to `video-editing/propose` and that no other provides entry shares its id; the propose tests are unchanged
 
 ## Boundaries
 
-Still-image overlay also exists in motion-graphics `image_overlay`; ecosystem.json gives it to video-editing.
+Under the [Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/pull/156) (O10): plain still compositing in an edit is here (`静止画オーバーレイ`); motion-graphics-skill `image_overlay` / `logo` / `video_overlay` / `rendered_layer` cover graphics, PiP, chroma key and moving graphics. A stinger between two clips is cut here (CONCAT `transition: stinger`), from hyperframes-skill material and its `stinger.json` (O4). Retake / duplicate candidates are computed here; presenting them and taking the approval is the agent's (O15).
 
 ---
 Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (3.x, 42 tools, contract_version 2.0; treated as complete, proposals go to Velisa's ROADMAP). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).
