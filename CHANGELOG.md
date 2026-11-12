@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.0 - 2026-11-12
+
+- Measure a stinger's cover at its cut point (roadmap step 13) (#45) (086242f)
+
 ## v0.6.2 - 2026-11-11
 
 - fix(release): Dependabot labels cannot raise the release level (#44) (9496468)
