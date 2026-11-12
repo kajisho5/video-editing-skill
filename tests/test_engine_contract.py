@@ -683,6 +683,67 @@ class StingerTransitionTests(FakeEngineHarness):
         outs = [c.rsplit(".partial.", 1)[0].rsplit(".", 1)[-1] for c in out["execution"]["operations"][0]["commands"]]
         self.assertEqual(outs, ["stg-join", "stg1", "stg2", "stg3"])
 
+    def test_the_cover_at_the_cut_point_is_measured(self):
+        """ADR-032: look.py writes the stinger's frame at the cut point with its alpha; every pixel is read. The record and the plan
+        say what was measured (the plan before it is measured)."""
+        rc, plan = self.run_(self.doc(), "plan", expect=0)
+        pending = plan["plan"]["steps"][0]["stinger"]["cover_measured"]
+        self.assertEqual((pending["tool"], pending["frame"], pending["measured"], pending["covered"]), ("ffmpeg-skill/look", 15, False, None))
+        rc, out = self.run_(self.doc(), expect=0)
+        m = out["execution"]["operations"][0]["stinger"]["cover_measured"]
+        self.assertEqual((m["frame"], m["measured"], m["covered"], m["pixels"], m["pixels_below"], m["min_alpha"]), (15, True, True, 640 * 360, 0, 255.0))
+        self.assertEqual((m["frame_size"], m["threshold"], m["provenance"]), ([640, 360], 253, "OBSERVED"))
+        self.assertEqual(m["at"]["rational"], "1/2")
+        self.assertNotIn(".png", " ".join(self.calls()), "the measured frame is not left behind")
+
+    def test_a_reused_result_was_measured_when_it_was_made(self):
+        """A repeated request reuses the stinger CONCAT without measuring again; a result recorded under a key without the cover rule
+        (made before ADR-032) is not reused: it is measured and made again."""
+        rc, out = self.run_(self.doc(), expect=0)
+        rec = out["execution"]["operations"][0]
+        rc, again = self.run_(self.doc(), expect=0)
+        self.assertEqual(again["status"], "reused")
+        record = os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".json")
+        with open(record, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        saved["idempotency_key"] = "made-before-the-cover-was-measured"
+        with open(record, "w", encoding="utf-8") as fh:
+            json.dump(saved, fh)
+        rc, third = self.run_(self.doc(), expect=0)
+        self.assertEqual(third["execution"]["operations"][0]["status"], "completed")
+        self.assertTrue(third["execution"]["operations"][0]["stinger"]["cover_measured"]["measured"])
+
+    def test_a_stinger_that_does_not_cover_its_cut_frame_is_refused_before_anything_runs(self):
+        """The declared cover contains the cut point, but the stinger's own frame there shows the picture through on its left half."""
+        write_fake_media(os.path.join(self.ws, "in", "stinger_alpha_holey.mov"))
+        doc = self.doc()
+        doc["project"]["sources"].append({"id": "HO", "path": "in/stinger_alpha_holey.mov"})
+        doc["project"]["operations"][0]["params"]["transition"]["stinger"] = "HO"
+        rc, out = self.run_(doc, expect=EXIT_CODES["INVALID_INPUT"])
+        err = out["error"]
+        self.assertEqual((err["code"], err["details"]["reason"]), ("INVALID_INPUT", "stinger_not_covering"), err)
+        m = err["details"]["measured"]
+        self.assertEqual((m["frame"], m["covered"], m["pixels_below"], m["pixels"]), (15, False, 320 * 360, 640 * 360))
+        self.assertEqual(m["min_alpha"], 0.0)
+        self.assertEqual([r["status"] for r in out["execution"]["operations"]], ["skipped"])
+        self.assertEqual(self.calls(), [], "nothing ran: no join, no overlay, and the measured frame is removed")
+
+    def test_alpha_that_cannot_be_read_is_not_taken_as_opaque(self):
+        set_mode(self.root, "no_output")   # look.py exits 0 and writes nothing
+        rc, out = self.run_(self.doc(), expect=EXIT_CODES["INVALID_INPUT"])
+        self.assertEqual(out["error"]["details"]["reason"], "stinger_cover_unmeasured", out["error"])
+
+    def test_no_stated_cut_point_or_cover_is_refused(self):
+        for key, reason in (("cut_point", "stinger_no_cut_point"), ("cover", "stinger_no_cover")):
+            doc = self.doc()
+            del doc["project"]["operations"][0]["params"]["transition"][key]
+            rc, out = self.run_(doc, expect=EXIT_CODES["INVALID_REQUEST"])
+            self.assertEqual(out["error"]["details"].get("reason"), reason, out["error"])
+            doc["project"]["operations"][0]["params"]["transition"][key] = None
+            rc, out = self.run_(doc, expect=EXIT_CODES["INVALID_REQUEST"])
+            self.assertEqual(out["error"]["details"].get("reason"), reason, out["error"])
+        self.assertEqual(self.calls(), [])
+
     def test_refusals_before_execution(self):
         cases = [(self.doc(cut_point=0.7), "stinger_not_covering"), (self.doc(stinger="OP"), "stinger_no_alpha"),
                  (self.doc(cut_point=0.51, cover={"start": 0.5, "end": 0.6}), "cut_point_not_on_frame")]
@@ -697,6 +758,20 @@ class StingerTransitionTests(FakeEngineHarness):
         rc, out = self.run_(doc)
         self.assertEqual(out["error"]["details"].get("reason"), "kind_mismatch")
         self.assertEqual(self.calls(), [])
+
+    def test_refused_without_look(self):
+        """look.py measures the cover (ADR-032): a checkout without it cannot run a stinger CONCAT (TOOL_ERROR before execution)."""
+        root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-nolook-")
+        try:
+            make_fake_skill(root, absent=("look",))
+            from video_editing_skill.response import check_response
+            rc, out, err = cli(["run", "-", "--json", "--workspace", self.ws], stdin=json.dumps(self.doc()).encode(), env={"VIDEO_EDITING_FFMPEG_SKILL_DIR": root})
+            self.assertEqual(check_response(out, "run"), [], out)
+            self.assertEqual(out["error"]["code"], "TOOL_ERROR", out)
+            self.assertIn("tool:ffmpeg-skill/look", out["error"]["details"]["missing"])
+            self.assertEqual(self.calls(), [])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 class CondenseFakeTests(FakeEngineHarness):

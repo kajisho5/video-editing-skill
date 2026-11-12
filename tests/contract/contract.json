@@ -1095,7 +1095,8 @@
       "ffmpeg-skill/audio",
       "ffmpeg-skill/silence",
       "ffmpeg-skill/scenes",
-      "ffmpeg-skill/export"
+      "ffmpeg-skill/export",
+      "ffmpeg-skill/look"
     ],
     "tools_optional": [
       "ffmpeg-skill/freeze",
@@ -1106,7 +1107,8 @@
       "ffmpeg-skill/audio",
       "ffmpeg-skill/silence",
       "ffmpeg-skill/scenes",
-      "ffmpeg-skill/export"
+      "ffmpeg-skill/export",
+      "ffmpeg-skill/look"
     ],
     "location": "VIDEO_EDITING_FFMPEG_SKILL_DIR | --ffmpeg-skill-dir | ~/.claude/skills/ffmpeg-skill | ./vendor/ffmpeg-skill | ../ffmpeg-skill",
     "invocation": "[python, <ffmpeg-skill>/scripts/<tool>.py, typed argv, --json]; process group; scrubbed env; timeout",
@@ -1971,21 +1973,24 @@
     "file": "a video source with an alpha plane (ProRes 4444, QuickTime Animation, PNG in MOV, ...), the edit's aspect and frame rate; its length is the file's; its sound, if any, is mixed in. hyperframes-skill / remotion-ffmpeg-skill / blender-skill write one with its stinger.json: cut_point and cover come from it (the caller reads it and passes them)",
     "placement": "the clips are butt-joined; at each join the cut is the first frame of the next clip, and the stinger starts cut_point before it, so its frame at cut_point lies on the cut frame; a clip at the edit's frame rate takes its length rounded down to whole frames, so every cut is on a frame",
     "engine_calls": [
+      "ffmpeg-skill/look <stinger> --at <a quarter frame before cut_point> --width <its width> --no-timecode -o <png>, once before anything runs: the stinger's frame at cut_point, written with its alpha (cover_check)",
       "ffmpeg-skill/cut --start 0 --end <whole frames> --accurate, only for a clip whose measured length is not that (a stream-copied segment, as a rule)",
       "ffmpeg-skill/join (no transition, the CONCAT's size / rate / mode)",
       "ffmpeg-skill/overlay --video <stinger> --place 0-<length>@<start> per join (alpha respected)",
       "with sound: ffmpeg-skill/broll --insert <stinger> --at <start> --duration <length> --audio mix per join, then ffmpeg-skill/audio --replace (that mix onto the composite)"
     ],
     "refused": [
-      "no cut_point or no cover, or cut_point outside cover (INVALID_REQUEST stinger_not_covering)",
+      "no cut_point (INVALID_REQUEST stinger_no_cut_point) or no cover (INVALID_REQUEST stinger_no_cover)",
+      "cut_point outside cover (INVALID_REQUEST stinger_not_covering)",
       "cut_point not on a frame of the stinger (INVALID_REQUEST cut_point_not_on_frame)",
+      "a stinger whose frame at cut_point is not opaque in every pixel, measured (INVALID_INPUT stinger_not_covering, details.measured), or whose alpha there cannot be read (INVALID_INPUT stinger_cover_unmeasured); before anything runs",
       "a stinger without an alpha plane (INVALID_INPUT stinger_no_alpha), of another aspect (stinger_aspect) or frame rate (stinger_fps)",
       "an input shorter than the stinger's lead-in (before the join) or tail (after it) (INVALID_TIME_RANGE)",
       "a stinger that is an operation, not a source (DEPENDENCY_ERROR kind_mismatch)",
-      "an ffmpeg-skill without overlay.py --place, or (stinger with sound) broll.py / audio.py --replace (TOOL_ERROR)"
+      "an ffmpeg-skill without look.py --at / --no-timecode or overlay.py --place, or (stinger with sound) broll.py / audio.py --replace (TOOL_ERROR)"
     ],
-    "report": "execution.operations[].stinger and plan.steps[].stinger: {source, cut_point, cover, duration, audio, joins: [{cut_at, stinger_start, stinger_end}]}; the output timeline's overlay track has a {kind: stinger, cut_at, timeline_range} segment per join",
-    "cover_check": "declared: the cover window is the stinger maker's statement and is checked against cut_point; the pixels are not measured here (qc-skill's stinger cut-point check is the measurement)"
+    "report": "execution.operations[].stinger and plan.steps[].stinger: {source, cut_point, cover, duration, audio, joins: [{cut_at, stinger_start, stinger_end}], cover_check, cover_measured: {tool, frame, at, measured, covered, pixels, pixels_below, min_alpha, threshold, opaque_within, frame_size, provenance: OBSERVED} (in a plan: measured false, measured when the request runs)}; the output timeline's overlay track has a {kind: stinger, cut_at, timeline_range} segment per join",
+    "cover_check": "declared and measured: the cover window (the stinger maker's statement) must contain cut_point, and the stinger's own frame at cut_point is measured before anything runs: ffmpeg-skill/look writes it as a PNG with its alpha, this Skill reads every pixel's alpha, and the frame covers when none is under 253 of 255 (ffmpeg-skill's alpha tolerance, 2 of 255); the same stinger and cut point are measured once per request"
   },
   "ai_generated": {
     "request_field": "project.sources[].ai_generated: {generator: text, licence: text} (each 1..200 printable characters)",

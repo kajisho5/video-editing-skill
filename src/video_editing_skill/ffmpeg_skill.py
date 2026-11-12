@@ -40,8 +40,8 @@ REQUIRED_TOOLS = ("probe", "cut", "join", "fit", "overlay")
 # This is the capability gate for a type newer than MIN_VERSION: the floor itself is not raised for it. CROP -> crop.py
 # (from 0.11.0, ADR-016) is optional the same way.
 # broll / audio: a stinger's sound (ADR-023); silence / scenes: measured spans for `propose` (ADR-025)
-# export: outputs[].max_size (ADR-028)
-OPTIONAL_TOOLS = ("freeze", "reverse", "insert", "crop", "broll", "audio", "silence", "scenes", "export")
+# export: outputs[].max_size (ADR-028); look: a stinger's frame at its cut point, written with its alpha so the cover is measured (ADR-032)
+OPTIONAL_TOOLS = ("freeze", "reverse", "insert", "crop", "broll", "audio", "silence", "scenes", "export", "look")
 ENGINE_TOOLS = REQUIRED_TOOLS + OPTIONAL_TOOLS
 # A typed flag whose CLI spelling changed between releases, with the spellings in order of preference: ffmpeg-skill
 # 1.10 added --quality (same CRF scale and default) and 2.0 removed --crf from every re-encoding tool that takes it.

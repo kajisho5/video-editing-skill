@@ -373,7 +373,10 @@ values are reported under `project`, never as observations.
   alpha>", "cut_point": 0.5, "cover": {"start": 0.5, "end": 0.5333}}` (cut point and cover from the stinger's
   stinger.json). The clips are butt-joined, and the stinger is laid over each join so that its cut-point frame is the
   cut frame. Every clip is joined at whole frames of the edit's rate: a clip whose length is not (a stream-copied
-  segment, as a rule) is first cut frame-accurately to it (ADR-030). Its sound is mixed in. Needs ffmpeg-skill 2.x+ (overlay `--place`, broll, audio `--replace`).
+  segment, as a rule) is first cut frame-accurately to it (ADR-030). Its sound is mixed in. Before anything runs, the
+  stinger's own frame at the cut point is measured (ffmpeg-skill `look --at` writes it with its alpha; every pixel must be
+  opaque within 2 of 255): a stinger that does not cover it is refused (`INVALID_INPUT stinger_not_covering`, ADR-032),
+  as is one without a stated `cut_point` / `cover`. Needs ffmpeg-skill 2.x+ (look, overlay `--place`, broll, audio `--replace`).
 - **AI-generated sources** (ADR-022): `sources[].ai_generated: {"generator": "…", "licence": "…"}` declares a source
   generated; every operation record and output that contains it carries `marks: ["AI_GENERATED"]` and the declaration
   (`provenance: "DECLARED"`). Join it with `CONCAT` and give `width` / `height` / `fps`: the engine conforms size, rate,

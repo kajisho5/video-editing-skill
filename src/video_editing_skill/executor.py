@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from . import SKILL_ID, VERSION
+from .alpha import OPAQUE_WITHIN, alpha_coverage
 from .canonical import sha256_file, stable_hash
 from fractions import Fraction
 
@@ -94,6 +95,7 @@ class Executor:
         self.keys: Dict[str, str] = {}              # op ref -> idempotency key
         self.request_sha256: Optional[str] = None   # sha256 of the canonical request document (set by the CLI)
         self.smart_unavailable: Dict[str, str] = {}  # op ref -> why a precision smart TRIM / CUT runs as --accurate (ADR-031)
+        self.stinger_cover: Dict[str, Dict[str, Any]] = {}  # stinger CONCAT ref -> the cover measured at its cut point (ADR-032)
 
     # ------------------------------------------------------------ preparation
     def probe_sources(self) -> None:
@@ -137,7 +139,8 @@ class Executor:
             gaps = missing_capabilities(self.engine_doctor, TOOL_REQUIREMENTS[op.tool]) if self.engine_doctor else []
             gaps += [f"flag:{f}" for f in self.skill.missing_flags(script, self.steps[ref].flags())]   # detected, not version-guessed
             if op.stinger is not None:   # butt join, then the stinger over each join, then (with sound) its audio mixed in (ADR-023)
-                needs = [("overlay", ["--video", "--place", "--position", "--margin", "--scale"])]
+                # look.py writes the stinger's frame at the cut point with its alpha: the cover there is measured (ADR-032)
+                needs = [("look", ["--at", "--width", "--no-timecode"]), ("overlay", ["--video", "--place", "--position", "--margin", "--scale"])]
                 if self.profile(op.stinger).get("audio"):
                     needs += [("broll", ["--insert", "--at", "--duration", "--audio"]), ("audio", ["--replace"])]
                 for tool, flags in needs:
@@ -434,6 +437,8 @@ class Executor:
                 key["encoding"] = dict(op.encoding)
             if self.segmented(ref):   # a segment render is other bytes than the single-pass one: never reused for it
                 key["render"] = "segments"
+            if op.stinger is not None:   # made only after its cover was measured (ADR-032): a result made without that never matches
+                key["stinger_cover"] = f"measured, opaque within {OPAQUE_WITHIN}/255"
             self.keys[ref] = stable_hash(key)
 
     # ------------------------------------------------------------ segment cache (ADR-018)
@@ -571,6 +576,7 @@ class Executor:
         done: List[str] = []
         try:
             self.work = self.project.policy.work_dir(create=True)
+            self._measure_stinger_covers()   # a stinger that does not cover its cut frame is refused before anything runs (ADR-032)
             for ref in self.project.order:
                 if cancelled():
                     raise EditError("CANCELLED", "interrupted before operation " + ref)
@@ -879,7 +885,89 @@ class Executor:
         prof = self.profile(op.stinger) if op.stinger else {}
         return {"source": op.stinger, "cut_point": tr["cut_point"].to_dict(), "cover": {k: tr["cover"][k].to_dict() for k in ("start", "end")},
                 "duration": sd.to_dict() if sd is not None else None, "audio": prof.get("audio"), "joins": joins if known else None,
-                "cover_check": "declared: the caller's covered window (stinger.json); not measured on the pixels here"}
+                "cover_check": "declared and measured: the caller's covered window (stinger.json) must contain cut_point, and the stinger's own frame "
+                               "at cut_point must be opaque in every pixel (cover_measured)",
+                "cover_measured": self.stinger_cover.get(ref) or self._cover_pending(ref)}
+
+    def _cover_frame(self, ref: str) -> tuple:
+        """The stinger frame at the cut point (its index at the stinger's rate) and the time look.py is asked for: a quarter frame
+        before that frame, so that the seek (which shows the first frame at or after the time) lands on it whatever look.py rounds
+        the time to (milliseconds)."""
+        op = self.project.operations[ref]
+        cp = op.params["transition"]["cut_point"]
+        fps = self.profile(op.stinger).get("fps") if op.stinger else None
+        if not fps:
+            return None, cp
+        rate = Fraction(fps).limit_denominator(1001)
+        n = int(round(cp.value * rate))
+        at = max(Fraction(0), (Fraction(n) - Fraction(1, 4)) / rate)
+        return n, Time(at)
+
+    def _cover_pending(self, ref: str) -> Dict[str, Any]:
+        n, _at = self._cover_frame(ref)
+        return {"tool": "ffmpeg-skill/look", "frame": n, "measured": False, "covered": None,
+                "note": "measured before execution, on the stinger's frame at cut_point"}
+
+    def _measure_stinger_covers(self) -> None:
+        """Measure the cover of every stinger CONCAT that will run. One whose result is reused was measured when it was made: its
+        idempotency key carries the measurement rule (_compute_keys), so a result made before the cover was measured never matches."""
+        for ref in self.project.order:
+            if self.project.operations[ref].stinger is not None and ref not in self.stinger_cover and self._reusable(ref) is None:
+                self._measure_stinger_cover(ref)
+
+    def _measure_stinger_cover(self, ref: str) -> Dict[str, Any]:
+        """ffmpeg-skill look.py writes the stinger's frame at the cut point as a PNG, alpha kept (at the stinger's own width), and
+        every pixel's alpha is read from it (alpha.alpha_coverage). Covered: no pixel below 253 of 255 (ffmpeg-skill's alpha
+        tolerance). A stinger that does not cover its cut frame, or whose alpha there cannot be read, is refused: INVALID_INPUT
+        stinger_not_covering / stinger_cover_unmeasured."""
+        op = self.project.operations[ref]
+        st = op.stinger
+        assert st is not None
+        for other, m in self.stinger_cover.items():   # the same stinger cut at the same point is measured once
+            o = self.project.operations[other]
+            if o.stinger == st and o.params["transition"]["cut_point"].value == op.params["transition"]["cut_point"].value:
+                self.stinger_cover[ref] = m
+                return m
+        what = f"operation {ref!r} (CONCAT stinger {st!r})"
+        n, at = self._cover_frame(ref)
+        width = self.profile(st).get("width")
+        png = os.path.join(self.work, f"{op.operation_id}.cover.partial.{os.getpid()}.png")
+        _remove(png)
+        argv = [self._path_of(st, False)]
+        for flag, val in (("--at", at.tool_arg()), ("--width", str(width) if width else None), ("--no-timecode", None)):
+            if flag[2:].replace("-", "_") not in ALLOWED_FLAGS["look"]:
+                raise EditError("INTERNAL_ERROR", f"flag {flag} is not allowed for ffmpeg-skill/look")
+            if flag == "--width" and val is None:
+                continue
+            spelled = self.skill.resolve_flag("look", flag)
+            if spelled is None:
+                raise EditError("TOOL_ERROR", f"ffmpeg-skill/look has no {flag} flag", {"tool": "ffmpeg-skill/look", "missing": [f"flag:{flag}"]}, retryable=False)
+            argv += [spelled] if val is None else [spelled, val]
+        argv += ["-o", png]
+        self.log(f"measure {ref}: ffmpeg-skill/look (stinger frame {n} at its cut point)")
+        try:
+            run = run_tool(self.skill, "look", argv, timeout=min(600.0, float(self.project.options.timeout_seconds)))
+            if not run.ok:
+                raise tool_error(run, f"{what}: measuring the cover at the cut point (ffmpeg-skill/look)")
+            cov = alpha_coverage(png) if os.path.isfile(png) else None
+        finally:
+            _remove(png)
+        cp = op.params["transition"]["cut_point"]
+        if cov is None:
+            raise EditError("INVALID_INPUT", f"{what}: the alpha of the stinger's frame at its cut point ({cp.text(3)}s, frame {n}) could not be read from "
+                            "the frame ffmpeg-skill look.py wrote, so the cover there cannot be shown; it is not taken as opaque",
+                            {"operation": ref, "input": st, "reason": "stinger_cover_unmeasured"})
+        m = {"tool": "ffmpeg-skill/look", "frame": n, "at": cp.to_dict(), "measured": True, "covered": cov["below"] == 0,
+             "pixels": cov["pixels"], "pixels_below": cov["below"], "min_alpha": cov["min_alpha"], "threshold": cov["threshold"],
+             "opaque_within": OPAQUE_WITHIN, "frame_size": [cov["width"], cov["height"]], "provenance": "OBSERVED", "commands": list(run.commands)}
+        if not m["covered"]:
+            share = cov["below"] / cov["pixels"]
+            raise EditError("INVALID_INPUT", f"{what}: at its cut point ({cp.text(3)}s, frame {n}) the stinger does not cover the whole picture: "
+                            f"{cov['below']} of {cov['pixels']} pixels ({share:.1%}) have an alpha under {cov['threshold']} of 255 (lowest "
+                            f"{cov['min_alpha']:g}), so the clips would switch where the picture shows through; give the cut point of a frame the "
+                            "graphic covers completely", {"operation": ref, "input": st, "reason": "stinger_not_covering", "measured": m})
+        self.stinger_cover[ref] = m
+        return m
 
     def _stinger_rate(self, ref: str, r: str) -> Optional[Fraction]:
         """The edit's frame rate, when input `r` runs at it (then its length can be held to whole frames of it); else None."""
@@ -958,6 +1046,8 @@ class Executor:
         that track replaces the composite's (audio.py --replace). Every call is an ffmpeg-skill tool."""
         op = self.project.operations[ref]
         st = self.steps[ref]
+        if ref not in self.stinger_cover:   # a reuse candidate that no longer validated: measured now, before the join
+            self._measure_stinger_cover(ref)
         plan = self.stinger_plan(ref)
         if not plan["joins"] or plan["duration"] is None:
             raise EditError("INVALID_INPUT", f"operation {ref!r}: the join times or the stinger's length are not known", {"operation": ref})
