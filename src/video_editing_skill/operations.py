@@ -182,7 +182,10 @@ MEDIA: Dict[str, Dict[str, Any]] = {
             "refused_before_execution": ["source without a video stream or duration", "range beyond the input duration", "input frame with an odd width or height (odd_frame)"]},
     "CONCAT": {"inputs": "two or more videos (any sizes / frame rates; conformed by params.mode to params.width/height/fps or the first input)",
                "requires": {"video": True, "audio": False, "image": False},
-               "output": {"frame_size": "params.width x params.height, else the first input", "fps": "params.fps, else the first input",
+               "output": {"frame_size": "params.width x params.height, else the first input",
+                          "fps": "params.fps, else the first input; constant, with every input joined at whole frames of it (no transition or a stinger: "
+                                 "an input at another rate or variable-rate is conformed to it, rounded to the nearest frame; one at that rate whose "
+                                 "length is not whole frames is cut, rounded down; the timeline places every clip at those lengths)",
                           "audio": "stereo AAC when any input has audio (silence is inserted for inputs without); none when no input has audio"},
                "refused_before_execution": ["source without a video stream or duration", "an input shorter than twice the transition",
                                             "transition stinger: see contract.stinger.refused"]},

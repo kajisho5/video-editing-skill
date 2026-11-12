@@ -1143,7 +1143,8 @@ frame. Before the join, a clip whose measured length differs from that (by more 
 `ffmpeg-skill/cut --start 0 --end <length> --accurate` (the operation's crf / preset); a clip already whole frames long is
 joined as it is, with no extra encode. A clip at another frame rate is joined as before (cutting it at its own rate
 cannot put its end on the edit's frames). The rest of the stinger path is unchanged. The plain CONCAT path is not
-changed here.
+changed here. (Extended by ADR-033: a plain CONCAT follows the same rule, and a clip at another rate is conformed to the
+edit's rate first, in both.)
 
 **Tests.** Fake engine: a source of 2.116992 s plans and reports its join at 21/10 (63 frames) and is cut once before the
 join; the standard 2 s fixtures run with no cut. Real media: two clips stream-copied from mid-GOP join with the stinger,
@@ -1274,3 +1275,96 @@ video-production-agent the request is the same, and the agent can map the new re
   - a checkout without look.py.
 - `tests/test_unit.py::PngAlphaTests` checks every filter type, 8 / 16 bits, grey + alpha, a palette with and without
   tRNS, and the files that give None.
+
+## ADR-033 — Plain CONCAT at whole frames: every input on the edit's frame grid, at any input rate
+
+**Context.** ADR-030 held a stinger CONCAT's clips to whole frames, but only those at the edit's rate. It left the plain
+CONCAT as it was ("A plain CONCAT of the same clips is refused the same way when it names `fps`"). That case was
+reproduced, then widened to mixed rates. The clips were tiny generated sources at 23.976, 25, 29.97, 30 and 60 fps, plus a
+variable-rate one (every fifth frame dropped). All are 2 s long (`-t 2`): 48 frames at 23.976 fps last 2.002 s, and so do
+60 frames at 29.97 fps. The runs used ffmpeg-skill main (3.5.0) and FFmpeg 6.1.1.
+
+- **30 fps edit, 20 clips at 23.976 fps between two 30 fps clips.** `r_frame_rate` 30/1 but `avg_frame_rate` 39600/1321
+  (29.977). There were 1320 frames over 44.033 s, with one missing frame (a 2-frame interval) at 20.0 s. The timeline said
+  44.040 s and placed the last clip at 42.040 s. With `fps: 30` the same request failed: `VALIDATION_ERROR` "frame rate
+  29.976 is not the requested 30".
+- **23.976 fps edit, 20 clips at 30 fps.** Each 2.0 s clip came out 48 frames long (2.002 s), so the file was 42.042 s against a
+  timeline of 42.002 s. The timeline fell 2 ms behind per clip, and the clips after the first sat off the frames it reported.
+- **60 fps edit [60, 30, 25, 29.97].** No hole yet, but the timeline said 8.002 s and the file was 8.000 s.
+
+join.py (2.4.1 and later) conforms each clip to the output rate, then trims picture and sound to the clip's own length
+(`trim=duration` / `atrim`, to the millisecond). The concat filter starts the next clip after the longer of the two.
+Frames are placed on the output grid. A length that is not whole frames of the output rate therefore moves every later
+clip by its remainder. Once the remainders add up to half a frame, a grid slot is skipped: that is the hole. This happens
+for any clip at another rate, and for a same-rate clip whose length is not whole frames (ADR-030's stream-copied segment).
+The timeline was the sum of the exact lengths, so it diverged from the file by the same amount. The contract promises the
+first input's rate when `fps` is not given, and that rate was not validated.
+
+**Decision.** A CONCAT without a transition joins every input at whole frames of its rate, exactly like a stinger
+CONCAT. Both now share one path (`Executor._whole_frame_inputs`). The rate is `params.fps`, else the first input's. The
+rules:
+- An input at that rate keeps ADR-030's rule. Its planned length is rounded down to whole frames. It is cut to that length
+  (`cut --start 0 --end <length> --accurate`) only when its measured length differs. Otherwise it is joined as it is.
+- **New:** an input at another rate, or one flagged variable-rate, is conformed first: `fit --fps <rate> --duration <length>
+  --method trim`. The length is rounded to the nearest frame, which is what the engine's fps conversion does itself, so no
+  content is lost for it. fit.py cuts at `-t` to the millisecond, so the duration passed is the last whole millisecond at
+  or before the length (a time rounded up would let one more frame in). A clip rounded up by under half a frame holds its
+  last instant for the rest. The timeline shows that as a segment of speed 0, the way FREEZE reports a hold.
+- The timeline is built from these lengths (`build_timelines(..., joined_length=...)`). The plan and the output therefore
+  report each clip where it lands. A stinger's joins come from the same lengths, which extends ADR-030 to clips at another
+  rate.
+- **Report.** `whole_frames: {rate, inputs: [{input, fps, length, joined_length, action, measured_length}]}` in the record
+  and the plan. In a plan, `action` is `none`, `cut_if_needed` or `conform`. There is a new additive contract block,
+  `whole_frames`.
+- **Validation.** The output must also run at the first input's rate when `fps` is not given (`VALIDATION_ERROR fps`), as
+  the contract promised.
+- **Unchanged.** A CONCAT with an xfade transition (its inputs overlap), and inputs already whole frames of the rate (no
+  extra encode, the same join argv).
+
+**Cost.** One extra encode per input at another rate, and per same-rate input whose length is not whole frames. The latter
+includes a frame-precision cut that kept a partial last frame: cut.py keeps every frame that starts before the end, so
+1.00 to 1.25 s at 30 fps is 8 frames, and it is cut to 7. That is the price of a constant-rate output and a timeline that
+matches the file. The stinger path already paid it.
+
+**Not fixed: the engine's millisecond lengths.** join.py writes each clip's length to the millisecond, and
+starts the next clip after the longer of picture and sound. A clip of whole frames whose length rounds *up* still starts
+the next clip that much late. At 30 fps that is a frame count 2 more than a multiple of 3, up by 1/3 ms. At 29.97 fps it is
+up to 0.5 ms. So some 35 to 50 such clips in one edit can still leave a one-frame hole. Measured: 60 clips of 5 frames at
+30 fps, every length rounding up from 0.166667 to 0.167 s, gave holes from 8.3 s on, with the timeline exact. This Skill
+cannot place a clip more precisely than the length join.py takes. It is a proposal to ffmpeg-skill (frame-exact clip
+lengths in join.py, e.g. `trim=end_frame` and sample-exact `atrim`), documented in `contract.whole_frames.engine_note`, and
+not worked around here. Choosing frame counts so that the millisecond rounds down would tie this Skill to a formatting
+detail of one engine release.
+
+**Versioning.** Additive (`contract --check`):
+- a new `whole_frames` block;
+- the `media_compatibility` / `tools[].media` CONCAT output text;
+- the `stinger` and `validation` texts;
+- `plan.steps[].whole_frames` and `execution.operations[].whole_frames`.
+
+`contract_version` stays "6.0". A bug fix, so the release is a patch.
+
+**Verified.**
+- `tests/test_integration.py::ConcatFrameRateTests` against ffmpeg-skill main. Every clip is a flat colour with a 0.1 s beep
+  at its start, so each join is found in the picture and in the sound. Three tests:
+  - 30 fps edit with ten 23.976 fps clips, with and without `fps: 30`;
+  - 23.976 fps edit with ten 30 fps clips;
+  - [29.97, 25, 60, variable-rate, 23.976, 30] with `fps: 30`, and a 60 fps edit of [60, 30, 25, 29.97].
+- What each test checks:
+  - there is no frame interval over 1.5 frames, and `avg_frame_rate` equals `r_frame_rate` at the promised rate;
+  - the timeline lasts the file's frames to 2 ms, and the sound lasts them to within a frame;
+  - every reported join is on a frame, the picture changes colour on exactly that frame, and the next beep starts within a
+    frame of it.
+- On the code before this change the same tests fail with the defects above:
+  - a hole at 19.967 s;
+  - a timeline of 22.002 s against a 22.022 s file;
+  - 12.004 s against 12.0 s.
+- `tests/test_engine_contract.py::ConcatWholeFramesTests` (fake engine) covers:
+  - the conform (fit) and the timeline with its hold segment;
+  - a variable-rate input;
+  - the cut of a length that is not whole frames;
+  - whole-frame inputs joined with no extra call;
+  - an xfade CONCAT left unchanged;
+  - the rate validated without `fps`.
+- `GeneratedClipTests` now expects the third clip on a frame of the 29.97 fps edit: its 3 s at 24 fps is joined as 90
+  frames, not 3.0 s.

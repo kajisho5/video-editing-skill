@@ -79,10 +79,12 @@ STINGER: Dict[str, Any] = {
             "the file's; its sound, if any, is mixed in. hyperframes-skill / remotion-ffmpeg-skill / blender-skill write one with its stinger.json: "
             "cut_point and cover come from it (the caller reads it and passes them)",
     "placement": "the clips are butt-joined; at each join the cut is the first frame of the next clip, and the stinger starts cut_point before it, so its "
-                 "frame at cut_point lies on the cut frame; a clip at the edit's frame rate takes its length rounded down to whole frames, so every cut is "
-                 "on a frame",
+                 "frame at cut_point lies on the cut frame; every clip is joined at whole frames of the edit's rate, as in a plain CONCAT (a clip at "
+                 "that rate rounded down, one at another rate or variable-rate conformed to it, rounded to the nearest frame), so every cut is on a "
+                 "frame",
     "engine_calls": ["ffmpeg-skill/look <stinger> --at <a quarter frame before cut_point> --width <its width> --no-timecode -o <png>, once before "
                      "anything runs: the stinger's frame at cut_point, written with its alpha (cover_check)",
+                     "ffmpeg-skill/fit --fps <edit rate> --duration <whole frames> --method trim, for a clip at another rate or variable-rate",
                      "ffmpeg-skill/cut --start 0 --end <whole frames> --accurate, only for a clip whose measured length is not that (a stream-copied "
                      "segment, as a rule)", "ffmpeg-skill/join (no transition, the CONCAT's size / rate / mode)", "ffmpeg-skill/overlay --video <stinger> --place 0-<length>@<start> per join "
                      "(alpha respected)", "with sound: ffmpeg-skill/broll --insert <stinger> --at <start> --duration <length> --audio mix per join, then "
@@ -104,6 +106,28 @@ STINGER: Dict[str, Any] = {
                    "cut_point is measured before anything runs: ffmpeg-skill/look writes it as a PNG with its alpha, this Skill reads every pixel's "
                    "alpha, and the frame covers when none is under 253 of 255 (ffmpeg-skill's alpha tolerance, 2 of 255); the same stinger and cut "
                    "point are measured once per request",
+}
+
+WHOLE_FRAMES: Dict[str, Any] = {
+    "applies_to": "CONCAT without a transition, and CONCAT with a stinger (contract.stinger): the inputs are butt-joined",
+    "rate": "params.fps, else the first input's frame rate (as join.py chooses it); the output is constant at that rate",
+    "rule": ["every input is joined at whole frames of the rate, and the timeline places every clip at that length",
+             "an input at the rate: its planned length rounded down to whole frames; cut to it (ffmpeg-skill/cut --start 0 --end <length> "
+             "--accurate) only when its measured length differs (a stream-copied segment, a cut that kept a part frame), else joined as it is",
+             "an input at another rate, or variable-rate: its planned length rounded to the nearest frame of the rate, conformed to the rate and "
+             "that length first (ffmpeg-skill/fit --fps <rate> --duration <length> --method trim); a clip rounded up holds its last instant for "
+             "the rest of its last frame (a timeline segment of speed 0)"],
+    "why": "join.py trims each clip to its own length and starts the next after it: a length that is not whole frames of the output rate moved "
+           "every later clip off the frame grid (a one-frame hole in the picture once the remainders reached half a frame, and a timeline that "
+           "drifted from the file by the remainder of every clip)",
+    "report": "execution.operations[].whole_frames and plan.steps[].whole_frames: {rate: {fps, rational}, inputs: [{input, fps, length, "
+              "joined_length, action: none | cut | conform (a plan: cut_if_needed | conform | none), measured_length}]}",
+    "validation": "the output's frame rate is the rate within 0.02, also when params.fps is not given (VALIDATION_ERROR fps)",
+    "not_applied": ["a CONCAT with an xfade transition (its inputs overlap; joined as before)"],
+    "engine_note": "join.py writes each clip's length to the millisecond and starts the next clip after the longer of its picture and its "
+                   "sound: a clip of whole frames whose length rounds up (at 30 fps a frame count 2 more than a multiple of 3, up by 1/3 ms; at "
+                   "29.97 fps up to 0.5 ms) still starts the next one that much late, so some 35 to 50 such clips in one edit can still leave a "
+                   "one-frame hole; that remainder is the engine's (a proposal to ffmpeg-skill), not worked around here",
 }
 
 AI_GENERATED: Dict[str, Any] = {
@@ -325,7 +349,8 @@ def skill_contract() -> Dict[str, Any]:
                        "after_each_operation": ["file exists, non-empty, readable", "probe: video stream, duration, frame size",
                                                 "duration within tolerance of the timeline (frame / auto / smart 0.35 s, keyframe 1.5 s)",
                                                 "frame size / aspect / width as requested, or equal to the input for TRIM / CUT / SPEED / OVERLAY / FREEZE / REVERSE",
-                                                "frame rate as requested", "audio stream kept when the input(s) had one"],
+                                                "frame rate as requested (a CONCAT without a transition or with a stinger: the first input's when params.fps "
+                                                "is not given)", "audio stream kept when the input(s) had one"],
                        "on_reuse": "the candidate is re-validated with the same checks (hash, size, probe); a stale record is discarded and the operation runs again",
                        "response": "every document is checked against the response shape before it is printed (self-check); a violation is INTERNAL_ERROR"},
         "doctor_shape": {"schema": DOCTOR_SCHEMA, "ok": "bool", "skill": {"id": SKILL_ID, "version": VERSION},
@@ -366,6 +391,8 @@ def skill_contract() -> Dict[str, Any]:
         "proposals": proposals_block(),
         # ---- stinger transition (docs/decisions.md ADR-023)
         "stinger": STINGER,
+        # ---- butt joins at whole frames (docs/decisions.md ADR-030, ADR-033)
+        "whole_frames": WHOLE_FRAMES,
         # ---- AI-generated sources (docs/decisions.md ADR-022)
         "ai_generated": AI_GENERATED,
         # ---- segment cache and partial re-render (docs/decisions.md ADR-018)

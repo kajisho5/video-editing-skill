@@ -96,6 +96,7 @@ class Executor:
         self.request_sha256: Optional[str] = None   # sha256 of the canonical request document (set by the CLI)
         self.smart_unavailable: Dict[str, str] = {}  # op ref -> why a precision smart TRIM / CUT runs as --accurate (ADR-031)
         self.stinger_cover: Dict[str, Dict[str, Any]] = {}  # stinger CONCAT ref -> the cover measured at its cut point (ADR-032)
+        self.whole_frames: Dict[str, Dict[str, Any]] = {}   # plain / stinger CONCAT ref -> how each input was joined at whole frames (ADR-033)
 
     # ------------------------------------------------------------ preparation
     def probe_sources(self) -> None:
@@ -118,7 +119,7 @@ class Executor:
                                 {"source": ref, "reason": "no_duration"})
             self.source_probes[ref] = doc
             self.durations[ref] = Time.from_float(float(d))
-        self.clips = build_timelines(self.project, self.durations)
+        self.clips = build_timelines(self.project, self.durations, joined_length=self._joined_length)
         self._check_engine()
         self._check_size_outputs()
         self._check_ranges()
@@ -148,6 +149,12 @@ class Executor:
                         gaps.append(f"tool:ffmpeg-skill/{tool}")
                     else:
                         gaps += [f"flag:ffmpeg-skill/{tool} {f}" for f in self.skill.missing_flags(tool, flags)]
+            if self.joins_whole_frames(ref):   # an input not whole frames of the edit's rate is cut, one at another rate conformed (ADR-030, ADR-033)
+                needs = [("cut", ["--start", "--end", "--accurate"])]
+                if any(self._input_conform(ref, r) == "rate" for r in op.video_inputs):
+                    needs.append(("fit", ["--fps", "--duration", "--method"]))
+                for tool, flags in needs:
+                    gaps += [f"flag:ffmpeg-skill/{tool} {f}" for f in self.skill.missing_flags(tool, flags)]
             if op.type == "CONDENSE":   # cut each piece, fit --duration a sped one, join them (ADR-026)
                 needs = [("cut", ["--start", "--end", "--accurate"]), ("join", ["--transition", "--width", "--height", "--fps"])]
                 if any("factor" in r for r in list(op.params["rules"].values()) + [op.params["default"]]):
@@ -543,6 +550,8 @@ class Executor:
                 d["condense"] = self.condense_plan(ref)
             if self.project.operations[ref].stinger is not None and self.source_probes:
                 d["stinger"] = self.stinger_plan(ref)
+            if self.joins_whole_frames(ref) and self.source_probes:
+                d["whole_frames"] = self.whole_frames_plan(ref)
             smart = self.smart_plan(ref)
             if smart is not None:
                 d["smart"] = smart
@@ -564,7 +573,14 @@ class Executor:
             argv = self._argv(ref, dry_run=True)
             run = run_tool(self.skill, self.steps[ref].script, argv, timeout=120, dry_run=True)
             doc = run.document if isinstance(run.document, dict) else {}
-            return {"ok": run.ok, "commands": list(doc.get("commands", [])), "note": None if run.ok else (run.stderr_tail or "dry-run failed")}
+            note = None if run.ok else (run.stderr_tail or "dry-run failed")
+            if run.ok and self.joins_whole_frames(ref) and self.source_probes:
+                rows = self.whole_frames_plan(ref)["inputs"]
+                if any(r["action"] != "none" for r in rows):
+                    note = ("the join as previewed; before it, an input at another frame rate is conformed (ffmpeg-skill fit --fps --duration "
+                            "--method trim) and one whose length is not whole frames of the edit's rate is cut (ffmpeg-skill cut --accurate): "
+                            "plan.steps[].whole_frames")
+            return {"ok": run.ok, "commands": list(doc.get("commands", [])), "note": note}
         except EditError as exc:
             return {"ok": False, "commands": [], "note": exc.message}
 
@@ -709,6 +725,8 @@ class Executor:
             commands, seconds = self._run_condense(ref, partial, t0)
         elif op.stinger is not None:
             commands, seconds = self._run_stinger(ref, partial, t0)
+        elif self.joins_whole_frames(ref):
+            commands, seconds = self._run_concat(ref, partial, t0)
         else:
             argv = self._argv(ref)
             self.log(f"run {ref}: {st.tool}")
@@ -742,6 +760,8 @@ class Executor:
             self.results[-1]["condense"] = self.condense_plan(ref)
         if op.stinger is not None:
             self.results[-1]["stinger"] = self.stinger_plan(ref)
+        if self.joins_whole_frames(ref):
+            self.results[-1]["whole_frames"] = self.whole_frames.get(ref) or self.whole_frames_plan(ref)
         if engine_doc is not None and op.type in ("TRIM", "CUT") and op.params.get("precision") in ("keyframe", "auto", "smart"):
             self.results[-1]["cuts"] = self._cut_report(op, engine_doc)
 
@@ -875,7 +895,7 @@ class Executor:
         t = Time(Fraction(0))
         known = True
         for r in op.video_inputs[:-1]:
-            d = self._stinger_length(ref, r)
+            d = self._joined_length(ref, r, self._planned_length(r))
             if d is None:
                 known = False
                 break
@@ -969,28 +989,172 @@ class Executor:
         self.stinger_cover[ref] = m
         return m
 
-    def _stinger_rate(self, ref: str, r: str) -> Optional[Fraction]:
-        """The edit's frame rate, when input `r` runs at it (then its length can be held to whole frames of it); else None."""
+    # ------------------------------------------------------------ CONCAT at whole frames (ADR-030, ADR-033)
+    def joins_whole_frames(self, ref: str) -> bool:
+        """A plain (no transition) or stinger CONCAT: its inputs are butt-joined, so each must be whole frames of the edit's rate."""
+        op = self.project.operations[ref]
+        tr = op.params.get("transition") if op.type == "CONCAT" else None
+        return op.type == "CONCAT" and (tr is None or tr["type"] == "stinger")
+
+    def _edit_rate(self, ref: str) -> Optional[Fraction]:
+        """The CONCAT's frame rate: params.fps, else its first input's (as join.py chooses it)."""
         op = self.project.operations[ref]
         fps = self.target_fps(ref) or self.profile(op.video_inputs[0]).get("fps")
-        rfps = self.profile(r).get("fps")
-        if not fps or not rfps or abs(fps - rfps) > FPS_TOLERANCE:
-            return None
-        return Fraction(fps).limit_denominator(1001)
+        return Fraction(fps).limit_denominator(1001) if fps else None
 
-    def _stinger_length(self, ref: str, r: str) -> Optional[Time]:
-        """The length input `r` takes in a stinger CONCAT: its planned length, rounded down to whole frames of the edit's rate when
-        it runs at that rate, so every join (the cut) is on a frame. A stream-copied segment's length (its MP4 edit list) is
-        rarely whole frames, and its last frames can end before it; joined as measured, the next clip starts between frames
-        and the joined picture has a hole there (ADR-030)."""
-        c = self.clips.get(r)
-        d = c.duration if c is not None and c.duration is not None else self.durations.get(r)
-        if d is None:
+    def _input_conform(self, ref: str, r: str) -> Optional[str]:
+        """How input `r` of a whole-frame CONCAT reaches the edit's rate: "rate" when it runs at another rate or is variable-rate
+        (conformed by ffmpeg-skill fit --fps), "length" when it runs at that rate (cut only if its length is not whole frames),
+        None when a rate is not known (joined as it is)."""
+        rate = self._edit_rate(ref)
+        prof = self.profile(r)
+        if rate is None or not prof.get("fps"):
             return None
-        rate = self._stinger_rate(ref, r)
-        if rate is None:
+        if abs(prof["fps"] - float(rate)) > FPS_TOLERANCE or prof.get("vfr"):
+            return "rate"
+        return "length"
+
+    def _planned_length(self, r: str) -> Optional[Time]:
+        c = self.clips.get(r)
+        return c.duration if c is not None and c.duration is not None else self.durations.get(r)
+
+    def _joined_length(self, ref: str, r: str, d: Optional[Time]) -> Optional[Time]:
+        """The length input `r` (planned length `d`) takes in a plain or stinger CONCAT: whole frames of the edit's rate, so every
+        join is on a frame and the timeline places each clip where it lands. join.py trims every clip to its length and starts the
+        next one after it: a length that is not whole frames of the output rate (a stream-copied segment, or any clip at another
+        rate) left a one-frame hole in the picture where the remainders added up to half a frame, and placed the clips after it
+        off the reported timeline (ADR-030, ADR-033). At the edit's rate the length is rounded down (a clip is never held past
+        its last whole frame); at another rate it is rounded to the nearest frame, as the engine's fps conversion does (no
+        content is dropped for it). Called while the timelines are built."""
+        kind = self._input_conform(ref, r) if d is not None and self.joins_whole_frames(ref) else None
+        if kind is None or d is None:
             return d
-        return Time(Fraction(math.floor(d.value * rate + Fraction(1, 1000))) / rate)
+        rate = self._edit_rate(ref)
+        assert rate is not None
+        frames = math.floor(d.value * rate + Fraction(1, 2)) if kind == "rate" else math.floor(d.value * rate + Fraction(1, 1000))
+        return Time(Fraction(frames) / rate)
+
+    def whole_frames_plan(self, ref: str) -> Dict[str, Any]:
+        """The edit's rate and, per input, its planned length, the whole-frame length it is joined at and what is done to reach it
+        (none | cut | conform; a cut is decided on the measured length, so a plan says cut_if_needed)."""
+        op = self.project.operations[ref]
+        rate = self._edit_rate(ref)
+        rows = []
+        for r in op.video_inputs:
+            kind = self._input_conform(ref, r)
+            d = self._planned_length(r)
+            j = self._joined_length(ref, r, d)
+            rows.append({"input": r, "fps": self.profile(r).get("fps"), "length": d.to_dict() if d is not None else None,
+                         "joined_length": j.to_dict() if j is not None else None,
+                         "action": {"rate": "conform", "length": "cut_if_needed"}.get(kind or "", "none")})
+        return {"rate": {"fps": float(rate), "rational": f"{rate.numerator}/{rate.denominator}"} if rate else None, "inputs": rows}
+
+    def _whole_frame_inputs(self, ref: str, call, enc: List[str]) -> List[str]:
+        """The paths join.py gets: each input held to its whole-frame length. One at another rate (or variable-rate) is conformed to
+        the edit's rate and that length (ffmpeg-skill fit --fps --duration --method trim); one at the edit's rate whose measured
+        length is not that length is cut to it (ffmpeg-skill cut --start 0 --end --accurate); one already that length is joined as
+        it is, with no extra encode. What was done is recorded in self.whole_frames[ref]."""
+        op = self.project.operations[ref]
+        report = self.whole_frames_plan(ref)
+        rate = self._edit_rate(ref)
+        paths: List[str] = []
+        for r, row in zip(op.video_inputs, report["inputs"]):
+            path = self._path_of(r, False)
+            kind = self._input_conform(ref, r)
+            want = self._joined_length(ref, r, self._planned_length(r))
+            row["action"] = "none"
+            if kind is None or want is None or rate is None:
+                paths.append(path)
+                continue
+            if kind == "rate":
+                # fit.py --method trim cuts at -t <duration, milliseconds>: a whole millisecond at or before the last frame's end
+                # keeps exactly the planned frames (a time rounded up would let the next frame in)
+                until = Time(Fraction(math.floor(want.value * 1000), 1000))
+                self.log(f"run {ref}: input {r!r} ({row['fps']} fps) conformed to {float(rate):g} fps, {want.text(6)}s (whole frames)")
+                path = call("fit", ["--fps", _fps_text(rate), "--duration", until.tool_arg(), "--method", "trim"] + enc, [path])
+                row["action"] = "conform"
+            else:
+                end = Time(Fraction(math.floor(want.value * 1_000_000), 1_000_000))   # not rounded up past the last whole frame
+                doc = probe(self.skill, path)
+                have = (doc.get("video") or {}).get("duration") or doc.get("duration")
+                row["measured_length"] = float(have) if have is not None else None
+                if have is None or abs(float(have) - want.seconds) > 0.001:
+                    self.log(f"run {ref}: input {r!r} is {have}s, joined as {want.text(6)}s (whole frames)")
+                    path = call("cut", ["--start", "0", "--end", end.tool_arg(), "--accurate"] + enc, [path])
+                    row["action"] = "cut"
+            paths.append(path)
+        self.whole_frames[ref] = report
+        return paths
+
+    def _flag_call(self, ref: str, tag: str, what: str, t0: str, temps: List[str], acc: Dict[str, Any], tool: str, argv_tail: List[str],
+                   inputs: List[str]) -> str:
+        """One ffmpeg-skill call writing a temporary file of this operation (<op>.<tag><n>.partial.<pid><ext>), its flags held to
+        ALLOWED_FLAGS and spelled as the installed engine spells them; a failure removes every temporary file and is recorded."""
+        op = self.project.operations[ref]
+        out = os.path.join(self.work, f"{op.operation_id}.{tag}{len(temps)}.partial.{os.getpid()}{output_extension(self.project, ref)}")
+        _remove(out)
+        temps.append(out)
+        argv = list(inputs) + ["-o", out]
+        i = 0
+        while i < len(argv_tail):
+            flag = argv_tail[i]
+            if flag[2:].replace("-", "_") not in ALLOWED_FLAGS[tool]:
+                raise EditError("INTERNAL_ERROR", f"flag {flag} is not allowed for ffmpeg-skill/{tool}")
+            spelled = self.skill.resolve_flag(tool, flag)
+            if spelled is None:
+                raise EditError("TOOL_ERROR", f"ffmpeg-skill/{tool} has no {flag} flag", {"tool": f"ffmpeg-skill/{tool}", "missing": [f"flag:{flag}"]}, retryable=False)
+            val = argv_tail[i + 1] if i + 1 < len(argv_tail) and not argv_tail[i + 1].startswith("--") else None
+            if val is None:
+                argv.append(spelled)
+                i += 1
+            else:
+                argv += [f"{spelled}={val}"] if val.startswith("-") else [spelled, val]
+                i += 2
+        self.log(f"run {ref}: ffmpeg-skill/{tool}")
+        run = run_tool(self.skill, tool, argv, timeout=self.project.options.timeout_seconds)
+        acc["commands"].extend(run.commands)
+        acc["seconds"] += run.seconds
+        if not run.ok:
+            err = tool_error(run, f"operation {ref!r} ({what}, ffmpeg-skill/{tool})")
+            for t in temps:
+                _remove(t)
+            self.results.append(self._record(op, self.steps[ref], "failed", t0, None, None, None, acc["commands"], acc["seconds"], err))
+            raise err
+        return out
+
+    def _encoding_flags(self, op) -> List[str]:
+        enc: List[str] = []
+        for k in ("crf", "preset"):
+            if op.encoding and k in op.encoding:
+                enc += ["--" + k, str(op.encoding[k])]
+        return enc
+
+    def _run_concat(self, ref: str, partial: str, t0: str) -> tuple:
+        """A plain CONCAT: every input held to whole frames of the edit's rate (_whole_frame_inputs), then one join.py call, as the
+        compiled step describes it, on those files."""
+        op = self.project.operations[ref]
+        st = self.steps[ref]
+        temps: List[str] = []
+        acc: Dict[str, Any] = {"commands": [], "seconds": 0.0}
+
+        def call(tool: str, argv_tail: List[str], inputs: List[str]) -> str:
+            return self._flag_call(ref, "wf", "CONCAT", t0, temps, acc, tool, argv_tail, inputs)
+        try:
+            clips = self._whole_frame_inputs(ref, call, self._encoding_flags(op))
+            argv = st.argv_for(clips, partial, resolve=lambda f: self.skill.resolve_flag("join", f))
+            self.log(f"run {ref}: ffmpeg-skill/join")
+            run = run_tool(self.skill, "join", argv, timeout=self.project.options.timeout_seconds)
+            acc["commands"].extend(run.commands)
+            acc["seconds"] += run.seconds
+            if not run.ok:
+                _remove(partial)
+                err = tool_error(run, f"operation {ref!r} ({st.tool})")
+                self.results.append(self._record(op, st, "failed", t0, None, None, None, acc["commands"], acc["seconds"], err))
+                raise err
+        finally:
+            for t in temps:
+                _remove(t)
+        return acc["commands"], acc["seconds"]
 
     def _check_stinger(self, ref: str) -> None:
         op = self.project.operations[ref]
@@ -1058,71 +1222,26 @@ class Executor:
         assert sd is not None
         frame = self.target_frame(ref)
         temps: List[str] = []
-        commands: List[str] = []
-        seconds = 0.0
+        acc: Dict[str, Any] = {"commands": [], "seconds": 0.0}
 
         def call(tool: str, argv_tail: List[str], inputs: List[str]) -> str:
-            nonlocal seconds
-            out = os.path.join(self.work, f"{op.operation_id}.stg{len(temps)}.partial.{os.getpid()}{ext}")
-            _remove(out)
-            temps.append(out)
-            argv = list(inputs) + ["-o", out]
-            i = 0
-            while i < len(argv_tail):   # held to ALLOWED_FLAGS, spelled as the installed engine spells it
-                flag = argv_tail[i]
-                if flag[2:].replace("-", "_") not in ALLOWED_FLAGS[tool]:
-                    raise EditError("INTERNAL_ERROR", f"flag {flag} is not allowed for ffmpeg-skill/{tool}")
-                spelled = self.skill.resolve_flag(tool, flag)
-                if spelled is None:
-                    raise EditError("TOOL_ERROR", f"ffmpeg-skill/{tool} has no {flag} flag", {"tool": f"ffmpeg-skill/{tool}", "missing": [f"flag:{flag}"]}, retryable=False)
-                val = argv_tail[i + 1] if i + 1 < len(argv_tail) and not argv_tail[i + 1].startswith("--") else None
-                if val is None:
-                    argv.append(spelled)
-                    i += 1
-                else:
-                    argv += [f"{spelled}={val}"] if val.startswith("-") else [spelled, val]
-                    i += 2
-            self.log(f"run {ref}: ffmpeg-skill/{tool}")
-            run = run_tool(self.skill, tool, argv, timeout=self.project.options.timeout_seconds)
-            commands.extend(run.commands)
-            seconds += run.seconds
-            if not run.ok:
-                err = tool_error(run, f"operation {ref!r} (CONCAT stinger, ffmpeg-skill/{tool})")
-                for t in temps:
-                    _remove(t)
-                self.results.append(self._record(op, st, "failed", t0, None, None, None, commands, seconds, err))
-                raise err
-            return out
+            return self._flag_call(ref, "stg", "CONCAT stinger", t0, temps, acc, tool, argv_tail, inputs)
 
-        enc: List[str] = []
-        for k in ("crf", "preset"):
-            if op.encoding and k in op.encoding:
-                enc += ["--" + k, str(op.encoding[k])]
+        enc = self._encoding_flags(op)
         try:
-            # every clip is joined at whole frames of the edit's rate (ADR-030): an input whose measured length is not the planned
-            # length in whole frames (a stream-copied segment, as a rule) is first cut to it frame-accurately
-            clips: List[str] = []
-            for r in op.video_inputs:
-                path = self._path_of(r, False)
-                want = self._stinger_length(ref, r)
-                if want is not None and self._stinger_rate(ref, r) is not None:
-                    doc = probe(self.skill, path)
-                    have = (doc.get("video") or {}).get("duration") or doc.get("duration")
-                    if have is None or abs(float(have) - want.seconds) > 0.001:
-                        end = Time(Fraction(math.floor(want.value * 1_000_000), 1_000_000))   # not rounded up past the last whole frame
-                        self.log(f"run {ref}: input {r!r} is {have}s, joined as {want.text(6)}s (whole frames)")
-                        path = call("cut", ["--start", "0", "--end", end.tool_arg(), "--accurate"] + enc, [path])
-                clips.append(path)
+            # every clip is joined at whole frames of the edit's rate (ADR-030, ADR-033): one at another rate is conformed to it, one whose
+            # measured length is not its planned length in whole frames (a stream-copied segment, as a rule) is first cut to it
+            clips = self._whole_frame_inputs(ref, call, enc)
             joined = os.path.join(self.work, f"{op.operation_id}.stg-join.partial.{os.getpid()}{ext}")
             temps.append(joined)
             join_argv = st.argv_for(clips, joined, resolve=lambda f: self.skill.resolve_flag("join", f))
             self.log(f"run {ref}: ffmpeg-skill/join")
             run = run_tool(self.skill, "join", join_argv, timeout=self.project.options.timeout_seconds)
-            commands.extend(run.commands)
-            seconds += run.seconds
+            acc["commands"].extend(run.commands)
+            acc["seconds"] += run.seconds
             if not run.ok:
                 err = tool_error(run, f"operation {ref!r} (ffmpeg-skill/join)")
-                self.results.append(self._record(op, st, "failed", t0, None, None, None, commands, seconds, err))
+                self.results.append(self._record(op, st, "failed", t0, None, None, None, acc["commands"], acc["seconds"], err))
                 raise err
             places: List[str] = []
             for j in plan["joins"]:
@@ -1144,7 +1263,7 @@ class Executor:
             for t in temps:
                 if t != partial:
                     _remove(t)
-        return commands, seconds
+        return acc["commands"], acc["seconds"]
 
     # ------------------------------------------------------------ CONDENSE (ADR-026)
     def _input_duration(self, op) -> Optional[Time]:
@@ -1398,6 +1517,10 @@ class Executor:
         if "fps" in p and fps is not None and abs(fps - float(p["fps"])) > FPS_TOLERANCE:
             raise EditError("VALIDATION_ERROR", f"{what}: frame rate {fps:g} is not the requested {float(p['fps']):g}",
                             {"observed": fps, "expected": float(p["fps"]), "reason": "fps"})
+        rate = self._edit_rate(op.ref) if "fps" not in p and self.joins_whole_frames(op.ref) else None
+        if rate is not None and fps is not None and abs(fps - float(rate)) > FPS_TOLERANCE:   # the contract's "else the first input" (ADR-033)
+            raise EditError("VALIDATION_ERROR", f"{what}: frame rate {fps:g} is not the first input's {float(rate):g}",
+                            {"observed": fps, "expected": round(float(rate), 6), "reason": "fps"})
         expected_audio = self.profile_expected_audio(op)
         if expected_audio is True and not doc.get("audio"):
             raise EditError("VALIDATION_ERROR", f"{what}: the audio stream was lost", {"reason": "audio_lost"})

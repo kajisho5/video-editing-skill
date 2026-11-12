@@ -185,6 +185,8 @@ SCRIPT = textwrap.dedent('''
         width, height, fps = sw, sh, first.get("fps", 30.0)
         if flag("--fps"):
             fps = float(flag("--fps"))
+        if name == "join" and "badrate" in os.path.basename(inputs[0]):   # a join that misses its rate (output validation, ADR-033)
+            fps -= 1
         if name == "join":   # join.py rule
             if flag("--width") and flag("--height"):
                 width, height = int(flag("--width")), int(flag("--height"))

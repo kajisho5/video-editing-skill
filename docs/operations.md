@@ -229,10 +229,16 @@ What changed between ffmpeg-skill releases and how this Skill handles each, dete
 | a dry run refuses an output directory that does not exist | by 1.26.0 (not in 0.16.0) | `plan` creates the work directory for its previews and removes it again (a plan still writes nothing) |
 | `_common.py` → `_common/` package | 2.0 | not used: this Skill only runs `scripts/<tool>.py` and `scripts/_contract.py` |
 
-Known upstream defect, not worked around: from ffmpeg-skill 2.4.1 (`join.py`, ffmpeg-skill PR #302, commit d6f3318) a plain-cut
-CONCAT whose first clip's audio outruns its picture by under a frame can leave a one-frame timestamp hole at the cut
-(166 frames over 5.567 s at `--fps 30`, `avg_frame_rate` 29.82). This Skill's output validation refuses that file
-(`VALIDATION_ERROR`, `reason: fps`) instead of delivering it; `tests/test_integration.py::test_pipeline_e2e` shows it.
+Known upstream behaviour: from ffmpeg-skill 2.4.1 (`join.py`, ffmpeg-skill PR #302, commit d6f3318) a plain-cut CONCAT
+trims every clip to its own length and starts the next one after it, so a clip whose length is not whole frames of the
+output rate (any clip at another rate, a stream-copied segment) moved the later clips off the frame grid and left a
+one-frame timestamp hole once the remainders reached half a frame (166 frames over 5.567 s at `--fps 30`, `avg_frame_rate`
+29.82). Since ADR-033 every input of a plain or stinger CONCAT reaches join.py at whole frames of the edit's rate (one at
+another rate conformed by `fit --fps --duration --method trim`, one whose length is not whole frames cut), and the
+timeline is built from those lengths; the output's rate is validated against the first input's when `fps` is not given.
+What remains is the engine's: join.py writes each length to the millisecond, so some 35 to 50 clips whose length rounds up
+can still leave a hole (`contract.whole_frames.engine_note`; output validation refuses it when it moves the measured rate
+by more than 0.02).
 
 The HDR fixture in `tests/test_integration.py` is an SDR test pattern **flagged** as HDR (BT.2020 primaries, PQ
 transfer tags): it exercises the engine's HDR detection and HEVC path and this Skill's codec / mixing rules, not

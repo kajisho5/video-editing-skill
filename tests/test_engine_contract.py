@@ -774,6 +774,86 @@ class StingerTransitionTests(FakeEngineHarness):
             shutil.rmtree(root, ignore_errors=True)
 
 
+class ConcatWholeFramesTests(FakeEngineHarness):
+    """ADR-033: a plain CONCAT joins every input at whole frames of its rate. An input at another rate (or variable-rate) is
+    conformed first (fit --fps --duration --method trim), one at the edit's rate whose length is not whole frames is cut (cut
+    --accurate), and the timeline places every clip at those lengths. Inputs already whole frames are joined as before."""
+
+    def fake(self, name, **header):
+        with open(os.path.join(self.ws, "in", name), "wb") as fh:
+            fh.write(b"FAKE" + json.dumps(dict({"duration": 2.0}, **header)).encode())
+        return "in/" + name
+
+    def concat(self, inputs, sources, params=None):
+        return request(self.sources() + sources, [{"id": "c", "type": "CONCAT", "inputs": inputs, "params": params or {}}],
+                       [{"id": "x", "operation": "c", "path": "out/c.mp4"}], options={"overwrite": True})
+
+    @staticmethod
+    def tools(rec):
+        """Each engine call by the file it wrote: a temporary file's tag (wf0, ...) or join for the operation's own partial."""
+        names = [os.path.basename(c.split()[-1]).split(".partial.")[0].split(".")[1:] for c in rec["commands"]]
+        return [n[0] if n else "join" for n in names]
+
+    def test_an_input_at_another_rate_is_conformed_first(self):
+        # 2.03 s at 25 fps is 60.9 frames at 30 fps: joined as 61 frames (the nearest), 2.0333 s
+        doc = self.concat(["A", "W", "B"], [{"id": "W", "path": self.fake("w25.mp4", duration=2.03, fps=25.0)}])
+        rc, plan = self.run_(doc, "plan", expect=0)
+        wf = plan["plan"]["steps"][0]["whole_frames"]
+        self.assertEqual(wf["rate"]["rational"], "30/1")
+        self.assertEqual([(r["input"], r["action"], r["joined_length"]["rational"]) for r in wf["inputs"]],
+                         [("A", "cut_if_needed", "2/1"), ("W", "conform", "61/30"), ("B", "cut_if_needed", "2/1")])
+        self.assertIn("conformed", plan["plan"]["steps"][0]["preview"]["note"])
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([r["action"] for r in rec["whole_frames"]["inputs"]], ["none", "conform", "none"])
+        self.assertEqual(self.tools(rec), ["wf0", "join"], "one fit for W, then the join")
+        # W's 2.03 s of picture, then its last instant held for the rest of its 61st frame (a segment of speed 0), then B
+        segs = out["execution"]["outputs"][0]["timeline"]["tracks"][0]["segments"]
+        self.assertEqual([(g["source"], g["speed"], g["timeline_range"]["start"]["rational"]) for g in segs],
+                         [("A", "1/1", "0/1"), ("W", "1/1", "2/1"), ("W", "0/1", "403/100"), ("B", "1/1", "121/30")])
+        self.assertEqual(out["execution"]["outputs"][0]["timeline"]["duration"]["rational"], "181/30", "2 + 61/30 + 2")
+        with open(os.path.join(self.ws, ".video-editing", "work", rec["operation_id"] + ".mp4"), "rb") as fh:
+            header = json.loads(fh.read()[4:].decode())
+        self.assertEqual(header["tool"], "join")
+        self.assertTrue(any(".wf0.partial." in a for a in header["args"]), "W reaches join.py as the conformed file")
+
+    def test_a_variable_rate_input_is_conformed(self):
+        write_fake_media(os.path.join(self.ws, "in", "phone_vfr.mp4"))
+        doc = self.concat(["A", "V"], [{"id": "V", "path": "in/phone_vfr.mp4"}])
+        rc, out = self.run_(doc, expect=0)
+        self.assertEqual([r["action"] for r in out["execution"]["operations"][0]["whole_frames"]["inputs"]], ["none", "conform"])
+
+    def test_a_length_not_whole_frames_is_cut_and_the_timeline_follows(self):
+        """A stream-copied segment's length (2.116992 s, its edit list) is 63.5 frames at 30 fps: cut to 63 frames, 2.1 s."""
+        doc = self.concat(["CP", "B"], [{"id": "CP", "path": self.fake("copied.mp4", duration=2.116992)}])
+        rc, plan = self.run_(doc, "plan", expect=0)
+        self.assertEqual(plan["plan"]["steps"][0]["timeline"]["tracks"][0]["segments"][1]["timeline_range"]["start"]["rational"], "21/10")
+        rc, out = self.run_(doc, expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual([(r["action"], r.get("measured_length")) for r in rec["whole_frames"]["inputs"]], [("cut", 2.116992), ("none", 2.0)])
+        self.assertEqual(self.tools(rec), ["wf0", "join"])
+        self.assertEqual(out["execution"]["outputs"][0]["timeline"]["duration"]["rational"], "41/10")
+
+    def test_inputs_already_whole_frames_are_joined_as_before(self):
+        rc, out = self.run_(self.concat(["A", "B"], []), expect=0)
+        rec = out["execution"]["operations"][0]
+        self.assertEqual(self.tools(rec), ["join"], "no extra encode")
+        self.assertEqual([r["action"] for r in rec["whole_frames"]["inputs"]], ["none", "none"])
+        work = os.path.join(self.ws, ".video-editing", "work")
+        self.assertEqual(sorted(f for f in os.listdir(work) if ".partial." in f), [])
+
+    def test_a_transition_concat_is_unchanged(self):
+        rc, out = self.run_(self.concat(["A", "B"], [], {"transition": {"type": "fade", "duration": 0.5}}), expect=0)
+        self.assertNotIn("whole_frames", out["execution"]["operations"][0])
+
+    def test_the_first_inputs_rate_is_validated_without_fps(self):
+        """The contract promises the first input's rate when params.fps is absent: an output at another rate is refused (the fake
+        join.py writes one frame per second fewer when its first input's name says badrate)."""
+        doc = self.concat(["R", "B"], [{"id": "R", "path": self.fake("badrate.mp4")}])
+        rc, out = self.run_(doc, expect=EXIT_CODES["VALIDATION_ERROR"])
+        self.assertEqual((out["error"]["details"]["reason"], out["error"]["details"]["expected"]), ("fps", 30.0), out["error"])
+
+
 class CondenseFakeTests(FakeEngineHarness):
     """CONDENSE through the fake engine: one cut per kept piece, fit for a sped one, a join; nothing kept is refused."""
 

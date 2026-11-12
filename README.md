@@ -54,7 +54,7 @@ Provided (capabilities are declared only where an implementation exists):
 |---|---|---|
 | `video.trim` | `TRIM` keep `[start, end)` of one input | `ffmpeg-skill/cut` |
 | `video.cut` | `CUT` keep several ranges, joined in the order given | `ffmpeg-skill/cut` |
-| `video.concat` | `CONCAT` join ≥ 2 inputs in order, conform size / fps | `ffmpeg-skill/join` |
+| `video.concat` | `CONCAT` join ≥ 2 inputs in order, conform size / fps (every input at whole frames of the edit's rate, ADR-033) | `ffmpeg-skill/join` |
 | `video.transition` | `CONCAT` with `params.transition` (xfade family) | `ffmpeg-skill/join` |
 | `video.reorder` | order of `CONCAT.inputs` / `CUT.keep` | — |
 | `video.speed` | `SPEED` constant factor 1/4 … 4, pitch-preserved audio, optional slow-motion `smooth` (blend / interpolate) | `ffmpeg-skill/fit` |
@@ -373,7 +373,8 @@ values are reported under `project`, never as observations.
   alpha>", "cut_point": 0.5, "cover": {"start": 0.5, "end": 0.5333}}` (cut point and cover from the stinger's
   stinger.json). The clips are butt-joined, and the stinger is laid over each join so that its cut-point frame is the
   cut frame. Every clip is joined at whole frames of the edit's rate: a clip whose length is not (a stream-copied
-  segment, as a rule) is first cut frame-accurately to it (ADR-030). Its sound is mixed in. Before anything runs, the
+  segment, as a rule) is first cut frame-accurately to it (ADR-030), and one at another rate is conformed to it
+  (ADR-033; the same rule as a plain `CONCAT`). Its sound is mixed in. Before anything runs, the
   stinger's own frame at the cut point is measured (ffmpeg-skill `look --at` writes it with its alpha; every pixel must be
   opaque within 2 of 255): a stinger that does not cover it is refused (`INVALID_INPUT stinger_not_covering`, ADR-032),
   as is one without a stated `cut_point` / `cover`. Needs ffmpeg-skill 2.x+ (look, overlay `--place`, broll, audio `--replace`).

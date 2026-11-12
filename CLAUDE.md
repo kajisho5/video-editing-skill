@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-032). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-033). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -256,7 +256,13 @@ exception to ADR-001.
   writes it as a PNG with its alpha, `alpha.alpha_coverage` reads every pixel (stdlib), covered = none under 253/255. Not
   covered -> `INVALID_INPUT stinger_not_covering` (`details.measured`); unreadable -> `stinger_cover_unmeasured`; missing
   cut_point / cover -> `stinger_no_cut_point` / `stinger_no_cover`. `look` is an optional engine tool (additive). qc-skill
-  still has no stinger check (handed over). Released as a minor version; `contract_version` stays "6.0".
+  still has no stinger check (handed over). Released as 0.7.0 (#45); `contract_version` stays "6.0".
+- (ADR-033) — plain CONCAT joins every input at whole frames of its rate, like a stinger CONCAT (one shared path): an input
+  at another rate or variable-rate is conformed first (`fit --fps --duration --method trim`, nearest frame), a same-rate one
+  whose length is not whole frames is cut (floor); the timeline is built from those lengths; the output rate is validated
+  against the first input's without `fps`. Reproduced first: 23.976 clips in a 30 fps edit left a one-frame hole (avg 29.977),
+  30 fps clips in a 23.976 edit drifted 2 ms/clip from the timeline. Residual engine defect (join.py's millisecond lengths,
+  35-50 round-up clips can still hole) documented, not worked around. Additive; a patch release.
 
 ## Picking the next task
 
