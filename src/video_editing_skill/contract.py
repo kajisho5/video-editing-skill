@@ -127,7 +127,8 @@ WHOLE_FRAMES: Dict[str, Any] = {
     "engine_note": "join.py writes each clip's length to the millisecond and starts the next clip after the longer of its picture and its "
                    "sound: a clip of whole frames whose length rounds up (at 30 fps a frame count 2 more than a multiple of 3, up by 1/3 ms; at "
                    "29.97 fps up to 0.5 ms) still starts the next one that much late, so some 35 to 50 such clips in one edit can still leave a "
-                   "one-frame hole; that remainder is the engine's (a proposal to ffmpeg-skill), not worked around here",
+                   "one-frame hole; that remainder is the engine's (a proposal to ffmpeg-skill), not worked around here. Before ffmpeg-skill 2.4.1 "
+                   "join.py does not trim a clip's sound to its picture, so an AAC tail can still start the next clip up to a frame late",
 }
 
 AI_GENERATED: Dict[str, Any] = {

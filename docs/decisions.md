@@ -1336,6 +1336,17 @@ lengths in join.py, e.g. `trim=end_frame` and sample-exact `atrim`), documented 
 not worked around here. Choosing frame counts so that the millisecond rounds down would tie this Skill to a formatting
 detail of one engine release.
 
+**Engines before 2.4.1.** join.py of 0.11.0 concatenates each clip's picture and sound as they are, with no trim to one
+length. An intermediate's AAC sound runs a few milliseconds past its picture (fit and cut encode whole AAC frames), and the
+concat filter starts the next clip after it. Measured on 0.11.0 with FFmpeg 6.1:
+- a 60 fps edit of [60, 30, 25, 29.97] switched to its fourth clip one frame late (6.0167 s against 6.000 s), with 481
+  frames for a 480-frame timeline;
+- ten 23.976 fps clips in a 30 fps edit gave 2 frames more than the timeline;
+- a short 30 fps edit was exact.
+
+The whole-frame inputs still remove the larger error, but the timeline is exact only from 2.4.1 on. `ConcatFrameRateTests`
+runs there (2.24.1, 3.0.0 and main in CI) and is skipped on 0.11.0. The contract's `whole_frames.engine_note` says so.
+
 **Versioning.** Additive (`contract --check`):
 - a new `whole_frames` block;
 - the `media_compatibility` / `tools[].media` CONCAT output text;
@@ -1345,7 +1356,7 @@ detail of one engine release.
 `contract_version` stays "6.0". A bug fix, so the release is a patch.
 
 **Verified.**
-- `tests/test_integration.py::ConcatFrameRateTests` against ffmpeg-skill main. Every clip is a flat colour with a 0.1 s beep
+- `tests/test_integration.py::ConcatFrameRateTests` against ffmpeg-skill main (2.4.1+ only, see above). Every clip is a flat colour with a 0.1 s beep
   at its start, so each join is found in the picture and in the sound. Three tests:
   - 30 fps edit with ten 23.976 fps clips, with and without `fps: 30`;
   - 23.976 fps edit with ten 30 fps clips;

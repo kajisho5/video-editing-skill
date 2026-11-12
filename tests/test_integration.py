@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "fixtures"))
 from generate import build_all  # noqa: E402
 
 from video_editing_skill.canonical import sha256_file  # noqa: E402
+from video_editing_skill.ffmpeg_skill import parse_version  # noqa: E402
 
 READY = HAVE_FFMPEG and FFMPEG_SKILL is not None and FFMPEG_SKILL.version_supported() and not FFMPEG_SKILL.missing_tools()
 REASON = "needs ffmpeg/ffprobe on PATH and a supported ffmpeg-skill checkout (VIDEO_EDITING_FFMPEG_SKILL_DIR)"
@@ -42,6 +43,9 @@ HAS_STINGER = (READY and all(t in FFMPEG_SKILL.tools for t in ("broll", "audio",
 HAS_SHOTS = READY and "scenes" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("scenes", ["--shots"]) == []   # static spans (ADR-025)
 HAS_EXPORT_SIZE = READY and "export" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("export", ["--max-mb", "--no-scale", "--allow-long"]) == []
 HAS_JOIN_COPY = READY and FFMPEG_SKILL.missing_flags("join", ["--copy"]) == []   # join.py --copy, from 2.24.0 (segment cache, ADR-018)
+# join.py holds each clip's picture and sound to one length only from 2.4.1 (behaviour, no flag): before it, a clip's AAC tail starts the
+# next clip late, by a frame at 60 fps (ADR-033). The whole-frame CONCAT timeline is exact from there.
+JOIN_HOLDS_CLIPS = READY and (parse_version(FFMPEG_SKILL.version) or (0, 0, 0)) >= (2, 4, 1)
 # fit.py's aspect-only canvas (no width) changed in ffmpeg-skill 0.16.10 from "keep the source width / height" to "never
 # exceed the source": the exact frame each rule must deliver, written out (old, bounded).
 BOUNDED = READY and FFMPEG_SKILL.fit_bounds_by_source()
@@ -1243,6 +1247,7 @@ class StingerTests(unittest.TestCase):
 
 
 @unittest.skipUnless(READY, REASON)
+@unittest.skipUnless(JOIN_HOLDS_CLIPS, "join.py holds a clip's sound to its picture only from ffmpeg-skill 2.4.1 (ADR-033)")
 class ConcatFrameRateTests(unittest.TestCase):
     """ADR-033 (regression): a plain CONCAT of clips at 23.976, 25, 29.97, 30 and 60 fps and a variable-rate one. join.py trims
     every clip to its own length and starts the next one after it, so a clip whose length is not whole frames of the output rate
