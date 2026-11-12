@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.2 - 2026-11-12
+
+- Fix xfade CONCAT of mixed or non-whole-frame inputs: join at whole frames (#47) (53c4032)
+
 ## v0.7.1 - 2026-11-12
 
 - Fix plain CONCAT of mixed frame rates: join every input at whole frames (#46) (169f606)
