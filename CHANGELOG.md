@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.1 - 2026-11-12
+
+- Fix plain CONCAT of mixed frame rates: join every input at whole frames (#46) (169f606)
+
 ## v0.7.0 - 2026-11-12
 
 - Measure a stinger's cover at its cut point (roadmap step 13) (#45) (086242f)
