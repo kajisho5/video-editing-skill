@@ -446,6 +446,8 @@ class Executor:
                 key["render"] = "segments"
             if op.stinger is not None:   # made only after its cover was measured (ADR-032): a result made without that never matches
                 key["stinger_cover"] = f"measured, opaque within {OPAQUE_WITHIN}/255"
+            if self.joins_whole_frames(ref):   # every input joined at whole frames (ADR-033): a result joined without that never matches
+                key["joins"] = "whole frames of the edit's rate"
             self.keys[ref] = stable_hash(key)
 
     # ------------------------------------------------------------ segment cache (ADR-018)
