@@ -1501,3 +1501,28 @@ to the microsecond, rounded down to the frame), as ADR-033 proposed for clip len
   - a 25 fps input conformed and a 0.25 s transition joined as 8 frames, in the plan, the join's argv and the timeline;
   - whole-frame inputs and transition joined as before, with no extra call and the same `--duration`;
   - an input too short for the transition at its whole-frame length, refused before anything runs.
+
+## ADR-035 — The overlay boundary: `OVERLAY` stays plain still compositing as part of an edit
+
+**Context.** `OVERLAY` composites one still image over a video. Two requests to widen it were open: a video layer
+with chroma key (`overlay.py --video` / `--chromakey`, issue #11 item 2), and ADR-002's note that a picture-in-picture
+`POSITION` type should rather "extend OVERLAY" with a video layer. Neither was decided. The
+[Velisa ownership decisions 2026-11-12](https://github.com/kajisho5/Velisa/pull/156) (O10; Velisa
+`docs/ecosystem/DECISION_LOG.md` D21) settled who owns each kind of overlay.
+
+**Decision.**
+- This Skill keeps `静止画オーバーレイ`: plain still compositing as part of an edit. `OVERLAY` places one png / jpg at
+  a named position (or `{x, y}`) for a time range, alpha respected. Its parameters stay as they are.
+- motion-graphics-skill owns `ロゴ・PiP・クロマキー合成` and `動くグラフィックの配置`. A video layer, picture-in-picture,
+  chroma key, a logo or image treated as a graphic (fade, theme, safe zones) and any moving graphic go there
+  (`image_overlay`, `logo`, `video_overlay`, `rendered_layer`).
+- ffmpeg-skill is the engine under both.
+- The PiP / chroma-key request for `OVERLAY` is answered by this record, not implemented here. ADR-002's "extend
+  OVERLAY with a video layer" no longer applies: `POSITION` stays unsupported, and no operation is added.
+- The wiring is unchanged. A caller choosing between this Skill's `OVERLAY` (the agent's `edit.overlay`) and
+  motion-graphics-skill (`motion.image`) reads this rule.
+
+**Not yet done.** Roadmap step 19 also asks the contract to say this: `OVERLAY`'s description, and its refusal of a
+video source as `INVALID_INPUT` with a message that names motion-graphics-skill `video_overlay`. Today a video source
+in `params.image` is refused as `DEPENDENCY_ERROR kind_mismatch`, and `OVERLAY`'s description sits in the pinned
+`operations` block, so that change is a contract change with its own release. It is left to that step.
