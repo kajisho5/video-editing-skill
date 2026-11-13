@@ -561,9 +561,10 @@ Then (ADR-016, step 5): `CROP` (`ffmpeg-skill/crop`): pixel-rectangle crops are 
 
 Contract 0.5.0 candidates, none scheduled (ADR-002 / ADR-003 / ADR-014, `contract.versioning.next`, `kajisho5/video-editing-skill#11`):
 `RESIZE.height`, which waits on a `fit.py` flag — `RESIZE.height` was found, by live verification against ffmpeg-skill 0.10.0, to be
-blocked this way too (`fit.py` has no `--height` flag), not the small addition ADR-003 first described. Flagged but
-not decided or scheduled (issue #11 items 2 and 3): `OVERLAY` video-layer + chroma-key parameters
-(`overlay.py --video`/`--chromakey`, per ADR-002's own "extend OVERLAY rather than add a type" prescription), and
-capability ownership for `stabilize` / `sequence` / `background` (here, elsewhere, or nowhere — no decision yet).
-Not planned: `POSITION` (would extend OVERLAY with a video layer).
+blocked this way too (`fit.py` has no `--height` flag), not the small addition ADR-003 first described. Answered, not
+implemented (issue #11 item 2, ADR-035): `OVERLAY` video-layer + chroma-key parameters. `OVERLAY` stays plain still
+compositing; a video layer, PiP, chroma key and moving graphics are motion-graphics-skill's. Flagged but not decided
+or scheduled (issue #11 item 3): capability ownership for `stabilize` / `sequence` / `background` (here, elsewhere, or
+nowhere — no decision yet).
+Not planned: `POSITION` (ADR-035).
 Also: an `OVERLAY` that tolerates silent inputs once ffmpeg-skill's overlay terminates on them.

@@ -23,6 +23,11 @@ Workflow for a caller:
    contract shape before it is printed. On failure `{"ok": false, "error": {code, message, retryable, details}}`,
    the failed record with its error, later operations `skipped`, and no output file is left behind.
 
+Overlay boundary (ADR-035): `OVERLAY` is plain still compositing as part of an edit (one png / jpg at a named
+position for a time range, alpha respected). A video layer, picture-in-picture, chroma key, a logo or image treated as a
+graphic (fade, theme, safe zones) and any moving graphic belong to motion-graphics-skill (`image_overlay`, `logo`,
+`video_overlay`, `rendered_layer`); ffmpeg-skill is the engine under both.
+
 Media rules (`contract.media_compatibility`): every source is probed first; `OVERLAY` needs a video input with an
 audio stream; `CONCAT` conforms sizes / rates and adds audio when any input has it. Engine gaps (a missing
 ffmpeg-skill tool, encoder or filter) are refused before execution as `TOOL_ERROR`.
