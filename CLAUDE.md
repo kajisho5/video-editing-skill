@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-035). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-036). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -29,8 +29,8 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 Two independent version axes, both on `skill_contract()`:
 
-- **`version`** (currently `"0.6.0"`) — this package's release version. Free to move on any release.
-- **`contract_version`** (currently `"6.0"`) — the version of the *pinned shape*
+- **`version`** (currently `"0.8.0"`) — this package's release version. Free to move on any release.
+- **`contract_version`** (currently `"7.0"`) — the version of the *pinned shape*
   (`PINNED_BLOCKS` in `contract.py`). Bumps only when a pinned block changes in a breaking way.
   A dependent pins a range against `contract_version`, never `version`.
 
@@ -271,6 +271,9 @@ exception to ADR-001.
   join.py writes xfade offsets to the millisecond, and one that rounds up past its frame (1 in 3 at 30 fps, ~1 in 2 at 29.97,
   none at 25) starts that transition exactly one frame late; documented, proposed to ffmpeg-skill, not worked around. Additive;
   a patch release.
+- (ADR-035 / ADR-036, step 19) — the overlay boundary: `OVERLAY` is plain still compositing; a video in `params.image` is
+  `INVALID_INPUT overlay_video_layer` naming motion-graphics-skill `video_overlay` (was `DEPENDENCY_ERROR kind_mismatch`).
+  Pinned `operations` / `unsupported` text changed: `contract_version` "6.0" -> "7.0", `version` 0.8.0 by hand.
 
 ## Picking the next task
 

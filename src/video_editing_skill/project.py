@@ -307,6 +307,13 @@ def parse_request(doc: Any, policy: PathPolicy, hash_sources: bool = True) -> Ed
             if op.stinger is not None and j == len(op.inputs) - 1 and r not in sources:   # the stinger keeps its alpha only as a source file
                 raise EditError("DEPENDENCY_ERROR", f"operation {op.ref!r}: transition.stinger must reference a video source (a file with alpha), not an operation",
                                 {"reason": "kind_mismatch"})
+            if op.type == "OVERLAY" and j == len(op.inputs) - 1 and (r in ops or (r in sources and sources[r].kind == "video")):
+                # ADR-036 (the overlay boundary, ADR-035): OVERLAY is plain still compositing; a video layer is motion-graphics-skill's
+                what_ = "an operation's output (a video)" if r in ops else f"video source {r!r}"
+                raise EditError("INVALID_INPUT", f"operation {op.ref!r}: params.image is {what_}; OVERLAY composites one still image (png / jpg) only. "
+                                f"A video layer, picture-in-picture or chroma key is motion-graphics-skill's video_overlay element "
+                                f"(an animated graphic with alpha: its rendered_layer)",
+                                {"reason": "overlay_video_layer", "operation": op.ref, "input": r, "use": "motion-graphics-skill video_overlay"})
             if r in sources:
                 want = "image" if is_image_slot else "video"
                 if sources[r].kind != want:

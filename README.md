@@ -180,7 +180,8 @@ the same `contract_version` — this is how 0.1.0 gained `media_compatibility`, 
 - `sources[].path`: a file under an allowed input root (absolute, or relative to the workspace).
   Video: `.mp4 .mov .mkv .m4v .webm .mts .m2ts .avi .mxf .ts`; image: `.png .jpg .jpeg`.
 - `operations[]`: `id` (label), `type` (allowlist), `input` (single-input types) or `inputs` (`CONCAT`), `params`
-  (see `contract.operations`). `OVERLAY.params.image` names an image source.
+  (see `contract.operations`). `OVERLAY.params.image` names an image source; a video there (a video source or an
+  operation) is `INVALID_INPUT overlay_video_layer`, whose message names motion-graphics-skill `video_overlay` (ADR-036).
 - `outputs[].path`: **relative to the workspace**, `.mp4 .mov .mkv`; never an input, never an existing file unless
   `options.overwrite`. `outputs[].encoding` (optional): `{"crf": 14..28, "preset": "ultrafast" … "veryslow"}` for the
   operation that produces the output (see `contract.encoding`; codec, bitrate modes, audio, pixel format are fixed

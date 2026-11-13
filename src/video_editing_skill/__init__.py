@@ -8,7 +8,7 @@ caller (video-production-agent). See README.md.
 
 SKILL_ID = "video-editing"
 PACKAGE_NAME = "video-editing-skill"
-VERSION = "0.7.4"
+VERSION = "0.8.0"
 
 # Two independent axes (docs/decisions.md ADR-007): VERSION is this package's own release
 # version and can move on any release, including one that adds nothing a dependent needs to
@@ -28,7 +28,7 @@ VERSION = "0.7.4"
 # - breaking by this repo's own pinning convention, even though it removes or narrows nothing
 # a 0.2.x caller relied on. Before that, bumped to "2.0" for 0.2.0 (ADR-009): FILL gained an
 # `anchor` parameter and `outputs[].encoding` was formalized in `request_shape`.
-CONTRACT_VERSION = "6.0"
+CONTRACT_VERSION = "7.0"
 
 REQUEST_SCHEMA = "video-editing/request@1"
 RESPONSE_SCHEMA = "video-editing/response@1"

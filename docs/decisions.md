@@ -1522,7 +1522,36 @@ with chroma key (`overlay.py --video` / `--chromakey`, issue #11 item 2), and AD
 - The wiring is unchanged. A caller choosing between this Skill's `OVERLAY` (the agent's `edit.overlay`) and
   motion-graphics-skill (`motion.image`) reads this rule.
 
-**Not yet done.** Roadmap step 19 also asks the contract to say this: `OVERLAY`'s description, and its refusal of a
-video source as `INVALID_INPUT` with a message that names motion-graphics-skill `video_overlay`. Today a video source
-in `params.image` is refused as `DEPENDENCY_ERROR kind_mismatch`, and `OVERLAY`'s description sits in the pinned
-`operations` block, so that change is a contract change with its own release. It is left to that step.
+**Contract part.** Roadmap step 19 also asks the contract to say this: `OVERLAY`'s description, and its refusal of a
+video source as `INVALID_INPUT` with a message that names motion-graphics-skill `video_overlay`. That is ADR-036.
+
+## ADR-036 — `OVERLAY` refuses a video with `INVALID_INPUT` naming motion-graphics-skill `video_overlay`; contract 7.0
+
+**Context.** ADR-035 wrote the overlay boundary down in prose; roadmap step 19 also asks the contract to carry it. A video
+given to `OVERLAY` was refused as `DEPENDENCY_ERROR kind_mismatch` ("must be a image source"), which says what is wrong
+but not where the request belongs. `OVERLAY`'s documentation sits in the pinned `operations` block, and `POSITION`'s
+reason in the pinned `unsupported` block still said a video layer "would extend OVERLAY (ADR-002)", which ADR-035 retired.
+
+**Decision.**
+- A video in `OVERLAY.params.image` (a video source, or an operation's output, which is always a video) is refused before
+  anything runs as `INVALID_INPUT`, `details.reason: overlay_video_layer`, `details.use: "motion-graphics-skill
+  video_overlay"`, with a message that names motion-graphics-skill's `video_overlay` element (and `rendered_layer` for an
+  animated graphic with alpha). `validate`, `plan` and `run` refuse it alike. `INVALID_INPUT` already exists; no error code is
+  added. An image in a video slot stays `DEPENDENCY_ERROR kind_mismatch`, and so does an operation in `IMAGE_INSERT`.
+- The contract says the same in four places: `operations.OVERLAY.parameters.image` (pinned), the overlay tool's
+  `description`, `media_compatibility.OVERLAY.refused_before_execution`, and `media_policy.image`. `POSITION`'s reason
+  (pinned `unsupported`) now names motion-graphics-skill `video_overlay` instead of a future `OVERLAY` video layer, and
+  `versioning.next` drops the `OVERLAY` video-layer candidate (not planned, ADR-035).
+- The still path is unchanged: parameters, argv and outputs of every `OVERLAY` with an image are what they were.
+
+**Versioning.** The `operations` and `unsupported` blocks are pinned (docs/contract.md), so this is a breaking contract
+change by this repository's rule even though no request that used to succeed now fails: `contract_version` "6.0" → "7.0",
+`version` 0.7.4 → 0.8.0, both by hand in the same change (ADR-029's lesson: the release workflow does not bump
+`contract_version`). A minor version, not a major one: the package is still 0.x. The golden copy is regenerated.
+video-production-agent widens its version gate to 0.8.x and re-pins from the v0.8.0 tag; its mapping of a failed `OVERLAY`
+sees `INVALID_INPUT` (exit 3) where it saw `DEPENDENCY_ERROR` for this one case.
+
+**Verified.** `tests/test_engine_contract.py` (`test_overlay_refuses_a_video_and_names_motion_graphics`): a video source and
+a TRIM's output in `params.image` are refused by `validate`, `plan` and `run` with `INVALID_INPUT overlay_video_layer` naming
+motion-graphics-skill `video_overlay`, and no engine tool runs; the contract test reads the four places. The still-image
+`OVERLAY` tests are unchanged and pass.
