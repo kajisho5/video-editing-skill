@@ -259,6 +259,32 @@ class PreExecutionAndResponseTests(FakeEngineHarness):
         self.assertEqual(out["status"], "completed")
         self.assertNotEqual(self.calls(), [], "the overlay tool ran")
 
+    def test_overlay_refuses_a_video_and_names_motion_graphics(self):
+        """Roadmap step 19, ADR-036: a video in OVERLAY's params.image (a video source, or an operation's output) is
+        INVALID_INPUT overlay_video_layer naming motion-graphics-skill video_overlay, for validate, plan and run, before
+        any tool runs."""
+        trim = {"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}
+        for ops, image in (([], "B"), ([trim], "t")):
+            doc = request(self.sources(), ops + [{"id": "o", "type": "OVERLAY", "input": "A", "params": {"image": image}}],
+                          [{"id": "x", "operation": "o", "path": "out/o.mp4"}])
+            for cmd in ("validate", "plan", "run"):
+                rc, out = self.run_(doc, cmd=cmd, expect=EXIT_CODES["INVALID_INPUT"])
+                err = out["error"]
+                self.assertEqual((err["code"], err["details"]["reason"], err["details"]["input"]), ("INVALID_INPUT", "overlay_video_layer", image), err)
+                self.assertIn("motion-graphics-skill", err["message"])
+                self.assertIn("video_overlay", err["message"])
+                self.assertEqual(err["details"]["use"], "motion-graphics-skill video_overlay")
+        self.assertEqual(self.calls(), [])
+
+    def test_the_contract_names_motion_graphics_for_a_video_layer(self):
+        from video_editing_skill import contract
+        c = contract.skill_contract()
+        self.assertIn("motion-graphics-skill video_overlay", c["operations"]["OVERLAY"]["parameters"]["image"])
+        tool = next(t for t in c["tools"] if t["operation_type"] == "OVERLAY")
+        self.assertIn("motion-graphics-skill's video_overlay", tool["description"])
+        self.assertIn("motion-graphics-skill's video_overlay", next(u for u in c["unsupported"] if u["type"] == "POSITION")["reason"])
+        self.assertTrue(any("overlay_video_layer" in r for r in c["media_compatibility"]["OVERLAY"]["refused_before_execution"]))
+
     def test_undecodable_image_is_invalid_input(self):
         doc = request(self.sources(bad=True), [{"id": "o", "type": "OVERLAY", "input": "A", "params": {"image": "bad"}}], [{"id": "x", "operation": "o", "path": "out/o.mp4"}])
         rc, out = self.run_(doc, expect=EXIT_CODES["INVALID_INPUT"])

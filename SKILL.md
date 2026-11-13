@@ -26,7 +26,9 @@ Workflow for a caller:
 Overlay boundary (ADR-035): `OVERLAY` is plain still compositing as part of an edit (one png / jpg at a named
 position for a time range, alpha respected). A video layer, picture-in-picture, chroma key, a logo or image treated as a
 graphic (fade, theme, safe zones) and any moving graphic belong to motion-graphics-skill (`image_overlay`, `logo`,
-`video_overlay`, `rendered_layer`); ffmpeg-skill is the engine under both.
+`video_overlay`, `rendered_layer`); ffmpeg-skill is the engine under both. A video given as `OVERLAY.params.image` (a video
+source or an operation) is refused before anything runs as `INVALID_INPUT overlay_video_layer`, naming motion-graphics-skill
+`video_overlay` (ADR-036).
 
 Media rules (`contract.media_compatibility`): every source is probed first; `OVERLAY` needs a video input with an
 audio stream; `CONCAT` conforms sizes / rates and adds audio when any input has it. Engine gaps (a missing

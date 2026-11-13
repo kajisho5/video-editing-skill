@@ -113,7 +113,8 @@ MEDIA_POLICY = {
         "video_only": "all operations allowed, OVERLAY included (ffmpeg-skill >=0.10.0 bounds the looped-image overlay with an explicit -t instead of -shortest); the output has no audio stream (validated)",
         "video_and_audio": "all operations; the audio stream is kept (validated)",
         "audio_only": "refused as a source (no_video_stream); audio-only editing is not provided",
-        "image": "OVERLAY.params.image only (png / jpg, alpha respected); an image in a video slot is DEPENDENCY_ERROR kind_mismatch",
+        "image": "OVERLAY.params.image only (png / jpg, alpha respected); an image in a video slot is DEPENDENCY_ERROR kind_mismatch; a video in "
+                 "OVERLAY.params.image is INVALID_INPUT overlay_video_layer (motion-graphics-skill video_overlay)",
         "mixed_audio_presence_in_concat": "allowed; the engine inserts silence for the inputs without audio and the output has audio (validated)",
         "different_resolution_in_concat": "allowed; conformed by params.mode to the normalized frame",
         "different_frame_rate_in_concat": "allowed; conformed to params.fps or the first input's rate",
@@ -151,7 +152,8 @@ OPERATIONS: Dict[str, Dict[str, Any]] = {
     "RESIZE": {"arity": "one", "tool": "ffmpeg-skill/fit", "capability": "video.resize",
                "summary": "scale to a width keeping the aspect ratio"},
     "OVERLAY": {"arity": "one", "tool": "ffmpeg-skill/overlay", "capability": "video.overlay",
-                "summary": "composite a still image (logo, lower-third PNG) at a named position for a time range"},
+                "summary": "composite a still image (logo, lower-third PNG) at a named position for a time range; a video layer, picture-in-picture "
+                           "or chroma key is motion-graphics-skill's video_overlay (ADR-035)"},
     "ROTATE": {"arity": "one", "tool": "ffmpeg-skill/fit", "capability": "video.rotate",
                "summary": "turn the picture clockwise by 90/180/270 and/or mirror it horizontally or vertically (no scaling, padding or cropping)"},
     "FREEZE": {"arity": "one", "tool": "ffmpeg-skill/freeze", "capability": "video.freeze",
@@ -205,7 +207,9 @@ MEDIA: Dict[str, Dict[str, Any]] = {
     "OVERLAY": {"inputs": "one video plus one image source (png / jpg; alpha respected)", "requires": {"video": True, "audio": False, "image": True},
                 "output": {"frame_size": "as input", "audio": "as input", "fps": "as input"},
                 "refused_before_execution": ["source without a video stream or duration", "image that does not decode",
-                                             "start / end beyond the input duration", "input frame with an odd width or height (odd_frame)"]},
+                                             "start / end beyond the input duration", "input frame with an odd width or height (odd_frame)",
+                                             "a video source or an operation in params.image (INVALID_INPUT overlay_video_layer: a video layer is "
+                                             "motion-graphics-skill's video_overlay)"]},
     "ROTATE": {"inputs": "one video", "requires": {"video": True, "audio": False, "image": False},
                "output": {"frame_size": "as input, with width and height swapped when params.degrees is 90 or 270", "audio": "as input", "fps": "as input"},
                "refused_before_execution": ["source without a video stream or duration", "input frame with an odd width or height (odd_frame)"]},
@@ -250,7 +254,8 @@ MEDIA: Dict[str, Dict[str, Any]] = {
 # (ADR-014). `engine_tool` names the ffmpeg-skill tool that would execute the type, when there is one.
 UNSUPPORTED: Dict[str, Dict[str, Any]] = {
     "POSITION": {"capability": "video.position", "engine_tool": None,
-                 "reason": "free placement of a video layer is not provided: OVERLAY composites still images only; a video layer would extend OVERLAY (ADR-002)"},
+                 "reason": "free placement of a video layer (picture-in-picture, chroma key) is motion-graphics-skill's video_overlay, not an operation "
+                           "here: OVERLAY composites still images only (ADR-035)"},
     "REORDER": {"capability": "video.reorder", "engine_tool": None,
                 "reason": "not a separate type: give CONCAT its inputs in the wanted order, or CUT its keep ranges in the wanted order"},
     "TRANSITION": {"capability": "video.transition", "engine_tool": None, "reason": "not a separate type: set CONCAT params.transition"},

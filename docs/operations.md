@@ -134,7 +134,7 @@ image must decode to a frame. Per operation:
 | `FIT` | video | aspect as requested (width when given, padded); audio, fps as the input unless `fps` |
 | `FILL` | video | aspect as requested (width when given, centre-cropped); audio, fps as the input unless `fps` |
 | `RESIZE` | video | `width` as requested, height by the source aspect; audio, fps as the input unless `fps` |
-| `OVERLAY` | video + image | frame size, fps and audio as the input |
+| `OVERLAY` | video + image (a video in `params.image`: `INVALID_INPUT overlay_video_layer`, use motion-graphics-skill `video_overlay`) | frame size, fps and audio as the input |
 | `ROTATE` | video | frame size as the input, width/height swapped for a 90/270 `degrees`; audio, fps as the input |
 | `FREEZE` | video | frame size, fps as the input; audio as the input, silent under the hold; duration = input + hold |
 | `REVERSE` | video | frame size, fps, duration as the input; audio as the input, reversed |

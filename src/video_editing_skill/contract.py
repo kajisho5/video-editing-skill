@@ -171,7 +171,7 @@ PARAM_DOCS: Dict[str, Dict[str, str]] = {
     "FILL": {"aspect": "W:H", "width": "even int (optional)",
              "anchor": "{x, y} each 0..1: which edge the crop keeps (0=left/top, 0.5=centre default, 1=right/bottom) (optional)", "fps": "optional"},
     "RESIZE": {"width": "even int", "fps": "optional"},
-    "OVERLAY": {"image": "image source id", "position": "|".join(POSITIONS) + " or {x, y} px", "margin": "int px", "scale": "image width px (optional)",
+    "OVERLAY": {"image": "image source id (png / jpg); a video source or an operation is INVALID_INPUT overlay_video_layer: use motion-graphics-skill video_overlay", "position": "|".join(POSITIONS) + " or {x, y} px", "margin": "int px", "scale": "image width px (optional)",
                 "opacity": "(0, 1]", "start": "time (optional)", "end": "time (optional)", "fade": "seconds 0..10 (optional)"},
     "ROTATE": {"degrees": "90 | 180 | 270, clockwise (optional)", "flip": "h | v, mirror horizontal/vertical (optional; at least one of degrees/flip is required)"},
     "FREEZE": {"hold": "time 0.01..600 s: how long the frame is held",
@@ -383,10 +383,9 @@ def skill_contract() -> Dict[str, Any]:
                        "also_pinned_by_agents": ["request_shape", "response_shape", "engine", "formats", "capability_names", "tools[].parameters"],
                        "next": {"0.7.0": ["RESIZE: `height` as the alternative to `width` -- blocked on ffmpeg-skill: `fit.py` has no `--height` flag "
                                          "(docs/decisions.md ADR-003 correction, found by live verification against ffmpeg-skill 0.10.0)",
-                                         "OVERLAY video-layer + chroma-key params (ffmpeg-skill overlay.py --video/--chromakey), per ADR-002's own \"extend OVERLAY rather than add a "
-                                         "type\" prescription -- flagged, not decided or scheduled here (see kajisho5/video-editing-skill#11 item 2)",
                                          "stabilize / sequence / background: capability ownership (here, elsewhere, or nowhere) not yet decided (see kajisho5/video-editing-skill#11 item 3)",
-                                         "POSITION: not planned as a type (see docs/decisions.md ADR-002)"]}},
+                                         "POSITION: not planned as a type (see docs/decisions.md ADR-002)",
+                                         "OVERLAY video layer / chroma key: not planned; motion-graphics-skill video_overlay owns it (docs/decisions.md ADR-035)"]}},
         # ---- 0.1.x additive blocks: encoding profile, frame semantics, media policy (docs/decisions.md ADR-003 .. ADR-005)
         "encoding": ENCODING,
         # ---- target file size (docs/decisions.md ADR-028)

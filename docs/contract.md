@@ -137,15 +137,24 @@ gains the `cut.py --smart` line, doctor's `engine.compatibility.smart_cut` (bool
 changes: the default precision is still `frame`, and `keyframe` / `auto` compile to the same argv as in 0.5.x.
 `video-production-agent` widens its `SUPPORTED_SKILL_VERSIONS` to 0.6.x and re-pins from the v0.6.0 tag.
 
+## 0.8.0 (docs/decisions.md ADR-036)
+
+`version` `0.7.4` → `0.8.0`, `contract_version` `"6.0"` → `"7.0"`, both by hand in the same change. The pinned
+`operations` block's `OVERLAY.parameters.image` says a video goes to motion-graphics-skill `video_overlay`, and the pinned
+`unsupported` block's `POSITION` reason names it too; `tools[].parameters` changes with the first. A video in
+`OVERLAY.params.image` is now `INVALID_INPUT overlay_video_layer` (was `DEPENDENCY_ERROR kind_mismatch`); nothing that ran
+before is refused, and the still path is unchanged. Additive: the overlay tool's `description`,
+`media_compatibility.OVERLAY.refused_before_execution`, `media_policy.image`, and `versioning.next` (the `OVERLAY`
+video-layer candidate is dropped, ADR-035). `video-production-agent` widens its version gate to 0.8.x and re-pins from
+the v0.8.0 tag.
+
 ## 0.7.0 (candidates, none scheduled; docs/decisions.md ADR-002 / ADR-003 / ADR-011 / ADR-014, `kajisho5/video-editing-skill#11`)
 
 `versioning.next["0.7.0"]` (formerly `next["0.6.0"]` and `next["0.5.0"]`, carried over unchanged) lists breaking-change candidates for a future version, none currently in progress:
 `RESIZE.height` — found, by live verification against ffmpeg-skill 0.10.0, to be blocked on the engine
-(`fit.py` has no `--height` flag), not the small addition it was first framed as; `OVERLAY` video-layer + chroma-key parameters
-(`overlay.py --video`/`--chromakey`), per ADR-002's own "extend OVERLAY rather than add a type" prescription —
-flagged by issue #11 item 2, not decided or scheduled; and capability ownership for `stabilize` / `sequence` /
-`background` (issue #11 item 3) — undecided whether they belong here, elsewhere, or nowhere. `POSITION` is not
-planned.
+(`fit.py` has no `--height` flag), not the small addition it was first framed as; and capability ownership for `stabilize` / `sequence` /
+`background` (issue #11 item 3) — undecided whether they belong here, elsewhere, or nowhere. `POSITION` and an `OVERLAY`
+video layer are not planned: motion-graphics-skill `video_overlay` owns them (ADR-035 / ADR-036).
 
 ## `provides` (docs/decisions.md ADR-006)
 
