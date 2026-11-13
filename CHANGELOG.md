@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.0 - 2026-11-13
+
+- OVERLAY refuses a video with INVALID_INPUT naming motion-graphics-skill video_overlay; contract 7.0 (ADR-036, roadmap step 19) (#50) (5134734)
+
 ## v0.7.4 - 2026-11-13
 
 - docs: write down the overlay boundary (ADR-035, roadmap step 19, partly) (#49) (688bf8b)
