@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.7.4 - 2026-11-13
+
+- docs: write down the overlay boundary (ADR-035, roadmap step 19, partly) (#49) (688bf8b)
+
 ## v0.7.3 - 2026-11-12
 
 - docs(roadmap): overlay boundary and propose ownership from the 2026-11-12 decisions (#48) (bfa950d)
