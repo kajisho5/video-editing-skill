@@ -18,7 +18,8 @@ Modes (written to <root>/MODE):
   stale_reuse    probe reports no video stream for a *finished* work-dir intermediate (a reuse candidate), never for a partial
 Probe facts: "alpha" in a video's name -> pix_fmt yuva444p10le (a stinger, ADR-023); look.py writes a real RGBA PNG of that frame, opaque, or with its
 left half transparent when the name contains "holey" (ADR-032); a video whose name contains "noaudio" has no audio stream; an image whose bytes start with "corrupt" does
-not decode (no frame size); a video whose name contains "silent" is fine but has no audio (alias of noaudio); "hdr" in the
+not decode (no frame size, the pre-3.8.17 probe), one whose bytes start with "unreadable" is refused by probe (kind input, reason
+still_unreadable, 3.8.17+); a video whose name contains "silent" is fine but has no audio (alias of noaudio); "hdr" in the
 name -> hdr: true (the fake encodes such sources as hevc, like the engine); "rot90" -> rotation: 90 (stored 640x360, shown
 360x640); "vfr" -> variable_frame_rate_suspected: true; "wide" -> 1280x720 @ 25 fps. Frame targets follow fit.py / join.py
 exactly (even(): round then up to even), including fit.py's aspect-only canvas rule before / from 0.16.10 by package.json version. --crf / --preset are recorded in the output header (visible through probe as
@@ -146,6 +147,12 @@ SCRIPT = textwrap.dedent('''
             return sum(dur_of(p) for p in inputs) - float(flag("--duration", "0")) * (len(inputs) - 1)
         return dur_of(inputs[0])
     if name == "probe":
+        if args[0].endswith((".png", ".jpg", ".jpeg")) and os.path.isfile(args[0]):
+            with open(args[0], "rb") as fh:
+                if fh.read(10) == b"unreadable":    # ffmpeg-skill 3.8.17+: an image name that does not decode is refused
+                    emit({"status": "failed", "exit_code": 1, "error": {"kind": "input", "code": "INPUT_INVALID", "reason": "still_unreadable",
+                                                                       "message": args[0] + " is not a picture ffmpeg can decode", "retryable": False}})
+                    sys.exit(1)
         emit(probe_doc(args[0])); sys.exit(0)
     out = args[args.index("-o") + 1]
     if LAYOUT in ("1.x", "2.x", "help-only", "3.x") and not os.path.isdir(os.path.dirname(os.path.abspath(out))):

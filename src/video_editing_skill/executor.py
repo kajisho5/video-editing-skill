@@ -105,7 +105,15 @@ class Executor:
         the media-compatibility checks and for validating outputs."""
         for ref in sorted(self.project.sources):
             src = self.project.sources[ref]
-            doc = probe(self.skill, src.path)
+            try:
+                doc = probe(self.skill, src.path)
+            except EditError as e:
+                # ffmpeg-skill 3.8.17+ refuses a file with an image name that does not decode (kind input, reason
+                # still_unreadable) where older releases reported it as a picture with no frame size (ADR-038)
+                if src.kind == "image" and e.code == "INVALID_INPUT" and e.details.get("ffmpeg_skill_reason") == "still_unreadable":
+                    raise EditError("INVALID_INPUT", f"source {ref!r} does not decode as an image ({e.message})",
+                                    {"source": ref, "reason": "image_undecodable", "ffmpeg_skill_reason": "still_unreadable"}) from e
+                raise
             if src.kind == "image":
                 if _size_of(doc) is None:
                     raise EditError("INVALID_INPUT", f"source {ref!r} does not decode as an image", {"source": ref, "reason": "image_undecodable"})

@@ -1587,3 +1587,27 @@ cause: its own staging lives inside the caller's workspace.
 All of these checks except the last fail against a helper that does not remove its directories. The offline suite
 (`test_unit` … `test_tmp_dirs`, plus `test_integration` skipped without an engine) left 138 directories before this change
 and 0 after.
+
+## ADR-038 — An image ffmpeg-skill's probe refuses as `still_unreadable` is `INVALID_INPUT image_undecodable`
+
+**Context.** An image source that does not decode is refused before any encode with `INVALID_INPUT`, reason
+`image_undecodable` (docs/operations.md, docs/security.md). The check read ffmpeg-skill's probe document: no frame size
+meant the image does not decode. ffmpeg-skill 3.8.17 (28333c0, #530, audit A184) changed probe for such a file: it is
+refused with `kind: input` and `error.reason: still_unreadable`, which ffmpeg-skill's docs/contract.md lists among its
+documented reasons. Before, probe reported a 0x0 picture and exited 0. The refusal reached the caller as a generic
+`INVALID_INPUT` from the probe with no `reason`, so `integration (ffmpeg-skill main)` failed with `KeyError: 'reason'`.
+
+**Decision.**
+- `tool_error()` keeps ffmpeg-skill's `error.reason` of a `kind: input` failure as `details.ffmpeg_skill_reason`.
+- When probing an image source fails with `ffmpeg_skill_reason: still_unreadable`, the source is refused as
+  `INVALID_INPUT` `image_undecodable` naming the source, as with an older ffmpeg-skill. `ffmpeg_skill_reason` is kept in
+  the details. Any other probe failure keeps its own error.
+- The older behaviour (a probe document with no frame size) is still read the same way.
+
+**Contract.** Additive. `image_undecodable` was already the documented reason. `ffmpeg_skill_reason` is a new detail
+key, outside the pinned blocks.
+
+**Verified.** `test_engine_contract`: the fake engine refuses an image whose bytes start with `unreadable` the way
+3.8.17+ does, and the run is refused as `image_undecodable` before any tool runs. The image whose bytes start with
+`corrupt` (no frame size, the older probe) gives the same result. `test_integration`'s
+`test_corrupt_image_is_refused_before_the_engine` passes against ffmpeg-skill main (3.14.1).

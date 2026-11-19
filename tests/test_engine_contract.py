@@ -290,6 +290,18 @@ class PreExecutionAndResponseTests(FakeEngineHarness):
         self.assertEqual(out["error"]["details"]["reason"], "image_undecodable")
         self.assertEqual(self.calls(), [])
 
+    def test_image_the_engine_refuses_as_unreadable_is_image_undecodable(self):
+        """ffmpeg-skill 3.8.17+ refuses an undecodable image at probe (kind input, reason still_unreadable) instead of
+        reporting no frame size; the refusal is the same INVALID_INPUT image_undecodable either way (ADR-038)."""
+        with open(os.path.join(self.ws, "in", "bad.png"), "wb") as fh:
+            fh.write(b"unreadable image bytes")
+        doc = request(self.sources(bad=True), [{"id": "o", "type": "OVERLAY", "input": "A", "params": {"image": "bad"}}], [{"id": "x", "operation": "o", "path": "out/o.mp4"}])
+        rc, out = self.run_(doc, expect=EXIT_CODES["INVALID_INPUT"])
+        self.assertEqual((out["error"]["details"]["reason"], out["error"]["details"]["source"], out["error"]["details"]["ffmpeg_skill_reason"]),
+                         ("image_undecodable", "bad", "still_unreadable"))
+        self.assertFalse(out["error"]["retryable"])
+        self.assertEqual(self.calls(), [])
+
     def test_engine_gap_is_tool_error_before_execution(self):
         set_mode(self.root, "no_xfade")
         doc = request(self.sources(), [{"id": "c", "type": "CONCAT", "inputs": ["A", "B"], "params": {}}], [{"id": "x", "operation": "c", "path": "out/o.mp4"}])
