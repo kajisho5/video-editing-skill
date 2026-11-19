@@ -87,7 +87,7 @@ class StaticTests(unittest.TestCase):
 
 class BlackBoxTests(unittest.TestCase):
     def setUp(self):
-        self.ws = make_workspace()
+        self.ws = make_workspace(self)
         write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
         write_fake_media(os.path.join(self.ws, "in", "b.mp4"))
         self.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": "/nonexistent"}
@@ -216,7 +216,7 @@ class InjectionTests(unittest.TestCase):
     forwarded; boundary settings (workspace, allowed roots, engine location) are CLI flags the request cannot carry."""
 
     def setUp(self):
-        self.ws = make_workspace()
+        self.ws = make_workspace(self)
         write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
         write_fake_media(os.path.join(self.ws, "in", "logo.png"))
         self.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": "/nonexistent"}
@@ -351,7 +351,7 @@ class ArgvAuditTests(unittest.TestCase):
         self.assertIn("PATH", env)
 
     def test_encoding_profile_cannot_smuggle_flags(self):
-        ws = make_workspace()
+        ws = make_workspace(self)
         write_fake_media(os.path.join(ws, "in", "a.mp4"))
         for enc in ({"preset": "medium -tune film"}, {"preset": "medium;id"}, {"crf": "18 --preset ultrafast"}, {"crf": 18, "x264opts": "x"}, {"filter": "x"}, {"codec": "libx265"}):
             doc = request([{"id": "A", "path": "in/a.mp4"}], [{"id": "t", "type": "TRIM", "input": "A", "params": {"start": 0, "end": 1}}],

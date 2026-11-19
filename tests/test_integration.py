@@ -12,7 +12,7 @@ import time
 import unittest
 from fractions import Fraction
 
-from helpers import FFMPEG_SKILL, HAVE_FFMPEG, cli, request
+from helpers import FFMPEG_SKILL, HAVE_FFMPEG, cli, request, tmp_dir
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "fixtures"))
 from generate import build_all  # noqa: E402
@@ -73,7 +73,7 @@ def size(path):
 class RealMediaTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-int-")
+        cls.root = tmp_dir("ves-int-", cls)
         cls.media = build_all(os.path.join(cls.root, "media"))
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
 
@@ -261,7 +261,7 @@ class OperationE2ETests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-e2e-")
+        cls.root = tmp_dir("ves-e2e-", cls)
         cls.media = build_all(os.path.join(cls.root, "media"))
         na = os.path.join(cls.root, "media", "noaudio.mp4")
         subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30", "-t", "4",
@@ -675,7 +675,7 @@ class SegmentCacheLongFormTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-long-")
+        cls.root = tmp_dir("ves-long-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -744,7 +744,7 @@ class KeyframeAwareCutTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-kf-")
+        cls.root = tmp_dir("ves-kf-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -817,7 +817,7 @@ class SmartCutTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-smart-")
+        cls.root = tmp_dir("ves-smart-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -928,7 +928,7 @@ class PunchInTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-pin-")
+        cls.root = tmp_dir("ves-pin-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -983,7 +983,7 @@ class MultiAspectTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-aspect-")
+        cls.root = tmp_dir("ves-aspect-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -1050,7 +1050,7 @@ class GeneratedClipTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-gen-")
+        cls.root = tmp_dir("ves-gen-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -1125,7 +1125,7 @@ class StingerTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-stinger-")
+        cls.root = tmp_dir("ves-stinger-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -1264,7 +1264,7 @@ class ConcatFrameRateTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-fps-")
+        cls.root = tmp_dir("ves-fps-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -1372,7 +1372,7 @@ class ConcatXfadeFrameRateTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-xfade-")
+        cls.root = tmp_dir("ves-xfade-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -1500,7 +1500,7 @@ class MotionSpanTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-motion-")
+        cls.root = tmp_dir("ves-motion-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -1575,7 +1575,7 @@ class CondenseTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-condense-")
+        cls.root = tmp_dir("ves-condense-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -1652,7 +1652,7 @@ class SizeLimitTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-size-")
+        cls.root = tmp_dir("ves-size-", cls)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
         cls.media = os.path.join(cls.root, "media")
         os.makedirs(cls.media)
@@ -1724,7 +1724,7 @@ class MediaMatrixE2ETests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="ves-matrix-")
+        cls.root = tmp_dir("ves-matrix-", cls)
         media = os.path.join(cls.root, "media")
         cls.media = build_all(media)
         ff = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]

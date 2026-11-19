@@ -43,9 +43,9 @@ class ContainmentTests(unittest.TestCase):
 
 class PolicyTests(unittest.TestCase):
     def setUp(self):
-        self.ws = make_workspace()
+        self.ws = make_workspace(self)
         self.media = write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
-        self.outside = make_workspace()
+        self.outside = make_workspace(self)
         self.secret = write_fake_media(os.path.join(self.outside, "in", "secret.mp4"))
         self.policy = PathPolicy(self.ws)
 
@@ -74,7 +74,7 @@ class PolicyTests(unittest.TestCase):
             PathPolicy(os.path.join(self.ws, "missing"))
 
     def test_prefix_collision(self):
-        evil = make_workspace()
+        evil = make_workspace(self)
         sibling = self.ws + "_evil"
         os.rename(evil, sibling)
         try:
@@ -154,7 +154,7 @@ class WindowsRealTests(unittest.TestCase):
         return buf.value
 
     def test_short_and_cased_spellings_are_the_same_workspace(self):
-        ws = make_workspace()
+        ws = make_workspace(self)
         long_dir = os.path.join(ws, "Long Directory Name For Short Path")
         os.makedirs(os.path.join(long_dir, "in"))
         media = write_fake_media(os.path.join(long_dir, "in", "Clip With Spaces.mp4"))

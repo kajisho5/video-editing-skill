@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-036). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-037). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -58,6 +58,9 @@ and the richer execution report without breaking the one known consumer.
 ```
 cd tests && PYTHONPATH=../src python3 -m unittest discover -s . -p "test_*.py" -v
 ```
+
+Temporary directories: only through `helpers.tmp_dir(prefix, owner)` / `make_workspace(owner)` (ADR-037), never a bare
+`tempfile.mkdtemp`; `VIDEO_EDITING_TEST_TMPDIR` moves them, `VIDEO_EDITING_KEEP_TEST_TMP=1` keeps them.
 
 Offline suite (unit / paths / security / engine-contract with a fake engine) needs nothing beyond
 the standard library. `test_integration.py`'s real-media matrix (scenarios A–O) needs a real

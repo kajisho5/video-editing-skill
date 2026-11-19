@@ -142,7 +142,7 @@ class OperationParamTests(unittest.TestCase):
 
 class ProjectTests(unittest.TestCase):
     def setUp(self):
-        self.ws = make_workspace()
+        self.ws = make_workspace(self)
         self.a = write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
         self.b = write_fake_media(os.path.join(self.ws, "in", "b.mp4"), 2048)
         self.logo = write_fake_media(os.path.join(self.ws, "in", "logo.png"))
@@ -423,7 +423,7 @@ class ImageInsertTests(unittest.TestCase):
     """ADR-015 (roadmap step 4): IMAGE_INSERT {duration, width?, height?, fps?} on one image source -> ffmpeg-skill insert.py."""
 
     def setUp(self):
-        self.ws = make_workspace()
+        self.ws = make_workspace(self)
         write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
         write_fake_media(os.path.join(self.ws, "in", "logo.png"))
         self.policy = PathPolicy(self.ws)
@@ -488,7 +488,7 @@ class ImageInsertTests(unittest.TestCase):
 
 class TimelineTests(unittest.TestCase):
     def setUp(self):
-        self.ws = make_workspace()
+        self.ws = make_workspace(self)
         write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
         write_fake_media(os.path.join(self.ws, "in", "b.mp4"))
         self.policy = PathPolicy(self.ws)
@@ -679,7 +679,7 @@ class ExecutorHarness(unittest.TestCase):
     """An Executor fed probe documents directly (no engine), for media / normalization / validation tests."""
 
     def setUp(self):
-        self.ws = make_workspace()
+        self.ws = make_workspace(self)
         self.a = write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
         self.b = write_fake_media(os.path.join(self.ws, "in", "b.mp4"), 2048)
         self.logo = write_fake_media(os.path.join(self.ws, "in", "logo.png"))
@@ -1230,7 +1230,7 @@ class RetakeProposalTests(unittest.TestCase):
             to_segments(props, ["p99"])
 
     def test_cli_propose_writes_nothing(self):
-        ws = make_workspace()
+        ws = make_workspace(self)
         path = os.path.join(ws, "in", "words.json")
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"words": _words(self.RETAKES)}, fh)
@@ -1311,7 +1311,7 @@ class SizeLimitParamTests(unittest.TestCase):
     """outputs[].max_size (ADR-028): units, refusals, the retry arithmetic."""
 
     def setUp(self):
-        self.ws = make_workspace()
+        self.ws = make_workspace(self)
         write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
         self.policy = PathPolicy(self.ws)
 
@@ -1372,7 +1372,7 @@ class PngAlphaTests(unittest.TestCase):
     def measure(self, data):
         import tempfile
         from video_editing_skill.alpha import alpha_coverage
-        fd, path = tempfile.mkstemp(suffix=".png")
+        fd, path = tempfile.mkstemp(prefix="ves-alpha-", suffix=".png")
         try:
             with os.fdopen(fd, "wb") as fh:
                 fh.write(data)
