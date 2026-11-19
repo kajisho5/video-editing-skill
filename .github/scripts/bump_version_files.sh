@@ -51,4 +51,5 @@ PYEOF
 if [ "${REGENERATE_CONTRACT:-0}" = "1" ]; then
   video-editing contract --json > tests/contract/contract.json
   echo "regenerated tests/contract/contract.json for v${NEXT_VERSION}"
+  python3 contract/generate.py   # contract/contract.json: the committed contract file, read at a tag with git show
 fi

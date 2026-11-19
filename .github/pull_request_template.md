@@ -9,4 +9,5 @@
 - `python -m unittest -v test_integration` against a real ffmpeg-skill <version> checkout: N passed
 - `ruff check src tests` / `mypy src`: clean
 - `video-editing contract --check tests/contract/contract.json --json`: no drift
+- `python contract/generate.py --check`: the committed contract file is current
 -->

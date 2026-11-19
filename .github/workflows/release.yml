@@ -94,7 +94,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml src/video_editing_skill/__init__.py CHANGELOG.md tests/contract/contract.json
+          git add pyproject.toml src/video_editing_skill/__init__.py CHANGELOG.md tests/contract/contract.json contract/contract.json
           if git diff --cached --quiet; then
             echo "no file changes to commit for v${NEXT_VERSION} (changelog-only release notes still apply to the tag)"
           else
