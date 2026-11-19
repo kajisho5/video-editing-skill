@@ -47,6 +47,7 @@ fi
 header="# Changelog"
 if [ -f CHANGELOG.md ] && [ "$(head -n1 CHANGELOG.md)" = "$header" ]; then
   existing_body_file="$(mktemp)"
+  trap 'rm -f "$existing_body_file"' EXIT   # a temporary file is removed on every way out (Velisa ADR-021)
   tail -n +2 CHANGELOG.md > "$existing_body_file"
 elif [ -f CHANGELOG.md ]; then
   existing_body_file="CHANGELOG.md"   # no recognized header: keep the whole prior file as the body, don't lose it

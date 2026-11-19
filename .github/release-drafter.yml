@@ -23,16 +23,19 @@ categories:
   - title: '📝 Documentation'
     labels: ['documentation', 'docs']
 
-# Only the label -> bump mapping matters for release.yml's dry run; `default: patch` is what makes
-# an unlabeled merged PR (or one only carrying a category label with no explicit bump) a patch release
-# by default, per this repo's release-automation design.
+# Only the label -> bump mapping matters for release.yml's dry run. Only release-level labels bump:
+# a pull request labelled only chore / maintenance / ci / documentation / docs / test releases nothing.
+# release-drafter cannot express that itself (`default` accepts only major, minor or patch), so
+# .github/scripts/release_gate.py decides first whether anything merged since the tag is releasable
+# (Velisa ADR-023, the same rule as imagemagick-skill). `default: patch` is then reached only by a
+# pull request with no label at all, which still ships as a patch.
 version-resolver:
   major:
     labels: ['major', 'breaking']
   minor:
     labels: ['minor', 'feature', 'enhancement']
   patch:
-    labels: ['patch', 'fix', 'bug', 'chore', 'maintenance', 'ci', 'documentation', 'docs']
+    labels: ['patch', 'fix', 'bug']
   default: patch
 
 autolabeler:

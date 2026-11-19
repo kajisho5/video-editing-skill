@@ -6,7 +6,8 @@
 # Rule (see CLAUDE.md "Releases"):
 #   - auto-bump fires ONLY when pyproject.toml's current version already equals the latest release
 #     tag. In that case the next version is whatever release-drafter's dry run resolved from the
-#     labels of PRs merged since that tag (default: patch when a merged PR carries no version label).
+#     labels of PRs merged since that tag (default: patch when a merged PR carries no label at all), unless
+#     release_gate.py found nothing releasable (RELEASABLE=false: chore/ci/docs/test-only pull requests).
 #   - otherwise (no tag yet, or the version was already bumped by hand ahead of the last tag) the
 #     current pyproject.toml version is respected as-is and released unchanged: this is what makes a
 #     manual version bump in a merged PR (this repo's own convention for a breaking contract change,
@@ -17,6 +18,9 @@
 #   CURRENT_VERSION           required; from pyproject.toml, e.g. "0.3.0"
 #   DRAFTER_RESOLVED_VERSION  release-drafter's dry-run `resolved_version` output; only read when
 #                             the auto-bump branch is taken. May be unset/empty otherwise.
+#   RELEASABLE                release_gate.py's answer for the auto-bump branch: "false" means every pull request
+#                             merged since the latest tag only carries chore/ci/docs/test-style labels, so nothing
+#                             is released (Velisa ADR-023). Unset or anything else: release as resolved.
 #
 # Output: writes `next_version`, `latest_tag`, `mode` (auto|manual) and `should_release` (true|false)
 # to $GITHUB_OUTPUT when set, and always prints them as `key=value` lines on stdout so this script is
@@ -35,7 +39,10 @@ latest_version="${latest_tag#v}"
 
 if [ -n "$latest_tag" ] && [ "$latest_version" = "$CURRENT_VERSION" ]; then
   mode="auto"
-  if [ -z "${DRAFTER_RESOLVED_VERSION:-}" ]; then
+  if [ "${RELEASABLE:-}" = "false" ]; then
+    echo "compute_version.sh: nothing to release (only chore/ci/docs/test changes since ${latest_tag})" >&2
+    next_version="$CURRENT_VERSION"
+  elif [ -z "${DRAFTER_RESOLVED_VERSION:-}" ]; then
     # nothing merged since the last tag resolves to a version: no release, said rather than failed
     echo "compute_version.sh: nothing to release (no version resolved since ${latest_tag})" >&2
     next_version="$CURRENT_VERSION"

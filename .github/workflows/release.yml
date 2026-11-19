@@ -45,6 +45,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 .github/scripts/dependabot_release_labels.py
 
+      # Velisa ADR-023: pull requests labelled only chore / ci / docs / test release nothing. release-drafter's
+      # `default` cannot say "no release", so release_gate.py answers that from the merged pull requests' labels.
+      - name: Decide whether anything merged since the latest tag is releasable
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/release_gate.py
+
       - name: Resolve the next version (release-drafter, dry run)
         id: drafter
         continue-on-error: true   # bootstrap (no prior tag) can leave this with nothing to resolve;
@@ -62,11 +70,12 @@ jobs:
         env:
           CURRENT_VERSION: ${{ steps.current.outputs.version }}
           DRAFTER_RESOLVED_VERSION: ${{ steps.drafter.outputs.resolved_version }}  # underscore: resolved-version was always empty
+          RELEASABLE: ${{ steps.gate.outputs.releasable }}
         run: bash .github/scripts/compute_version.sh
 
       - name: Nothing to release
         if: steps.compute.outputs.should_release != 'true'
-        run: echo "v${{ steps.compute.outputs.next_version }} is already tagged; nothing to do."
+        run: echo "v${{ steps.compute.outputs.next_version }} is already tagged, or nothing releasable was merged; nothing to do."
 
       - name: Install the package (needed to regenerate the pinned contract snapshot)
         if: steps.compute.outputs.should_release == 'true'
@@ -87,7 +96,7 @@ jobs:
           NEXT_VERSION: ${{ steps.compute.outputs.next_version }}
         run: bash .github/scripts/render_changelog.sh
 
-      - name: Commit, tag, and push
+      - name: Commit and tag (not pushed yet)
         if: steps.compute.outputs.should_release == 'true'
         env:
           NEXT_VERSION: ${{ steps.compute.outputs.next_version }}
@@ -104,7 +113,20 @@ jobs:
           # step used to make never left the runner and "Create the GitHub Release" failed with
           # "tag v0.4.0 exists locally but has not been pushed" (no release was ever published).
           git tag -a "v${NEXT_VERSION}" -m "v${NEXT_VERSION}"
-          git push origin HEAD:main "refs/tags/v${NEXT_VERSION}"
+
+      # The release commit is pushed with GITHUB_TOKEN, so no workflow runs on it on main: test it here, before
+      # it is pushed. A failure stops the release; main and the tags stay as they were (Velisa ADR-023).
+      - name: Test the release commit before pushing it
+        if: steps.compute.outputs.should_release == 'true'
+        run: |
+          (cd tests && python3 -m unittest test_unit test_paths test_security test_engine_contract test_engine_compat test_release_scripts test_release_labels test_contract_file test_tmp_dirs)
+          video-editing contract --check tests/contract/contract.json
+
+      - name: Push the release commit and tag
+        if: steps.compute.outputs.should_release == 'true'
+        env:
+          NEXT_VERSION: ${{ steps.compute.outputs.next_version }}
+        run: git push origin HEAD:main "refs/tags/v${NEXT_VERSION}"
 
       - name: Create the GitHub Release
         if: steps.compute.outputs.should_release == 'true'
