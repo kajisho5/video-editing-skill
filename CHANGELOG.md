@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.3 - 2026-11-19
+
+- fix(overlay): an image the engine refuses as still_unreadable is image_undecodable (ADR-038) (#53) (1c03a11)
+
 ## v0.8.2 - 2026-11-19
 
 - fix(tests): always remove the tests' temporary directories (ADR-037) (#52) (454c218)
