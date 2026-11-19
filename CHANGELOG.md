@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.4 - 2026-11-19
+
+- ci: call Velisa's contract-diff on contract changes, one run per pull request (#54) (9210e7b)
+
 ## v0.8.3 - 2026-11-19
 
 - fix(overlay): an image the engine refuses as still_unreadable is image_undecodable (ADR-038) (#53) (1c03a11)
