@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 class CommittedContractFileTest(unittest.TestCase):
     def test_contract_file_is_up_to_date(self):
         result = subprocess.run([sys.executable, str(ROOT / "contract" / "generate.py"), "--check"],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+                                capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
