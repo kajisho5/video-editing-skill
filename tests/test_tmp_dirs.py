@@ -41,7 +41,7 @@ class TmpDirTests(unittest.TestCase):
             "        raise RuntimeError('on purpose')\n"
             "import os, sys\n"
             "r = unittest.TextTestRunner(stream=open(os.devnull, 'w')).run(unittest.defaultTestLoader.loadTestsFromTestCase(T))\n"
-            "print(len(r.failures), len(r.errors), sorted(os.listdir(os.environ['VIDEO_EDITING_TEST_TMPDIR'])))\n"
+            "print(len(r.failures), len(r.errors), sorted(os.listdir(os.environ['VIDEO_EDITING_TEST_TMPDIR'])), flush=True)\n"
             "os._exit(0)\n"  # skip atexit: the cleanups alone must have removed them
         )
         r = self.run_child(code)
@@ -60,7 +60,7 @@ class TmpDirTests(unittest.TestCase):
             "        pass\n"
             "import os\n"
             "r = unittest.TextTestRunner(stream=open(os.devnull, 'w')).run(unittest.defaultTestLoader.loadTestsFromTestCase(T))\n"
-            "print(len(r.errors), sorted(os.listdir(os.environ['VIDEO_EDITING_TEST_TMPDIR'])))\n"
+            "print(len(r.errors), sorted(os.listdir(os.environ['VIDEO_EDITING_TEST_TMPDIR'])), flush=True)\n"
             "os._exit(0)\n"
         )
         r = self.run_child(code)
