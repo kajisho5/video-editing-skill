@@ -9,12 +9,11 @@ CANCELLED        timeout / interrupt
 import json
 import os
 import shutil
-import tempfile
 import time
 import unittest
 
 from fake_engine import make_fake_skill, set_mode
-from helpers import cli, make_workspace, request, write_fake_media
+from helpers import cli, make_workspace, request, tmp_dir, write_fake_media
 
 from video_editing_skill.errors import EXIT_CODES
 from video_editing_skill.ffmpeg_skill import ToolRun, _candidate, locate, run_tool, tool_error
@@ -45,7 +44,7 @@ class ToolErrorMappingTests(unittest.TestCase):
 class FakeEngineTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-")
+        cls.root = tmp_dir("ves-fake-ffmpeg-skill-", cls)
         make_fake_skill(cls.root)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": cls.root}
 
@@ -55,7 +54,7 @@ class FakeEngineTests(unittest.TestCase):
 
     def setUp(self):
         set_mode(self.root, "ok")
-        self.ws = make_workspace()
+        self.ws = make_workspace(self)
         write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
         write_fake_media(os.path.join(self.ws, "in", "b.mp4"))
         write_fake_media(os.path.join(self.ws, "in", "logo.png"))
@@ -176,7 +175,7 @@ class FakeEngineTests(unittest.TestCase):
         self.assertEqual(out2["execution"]["operations"][0]["status"], "completed")
 
     def test_unsupported_engine_version(self):
-        other = tempfile.mkdtemp(prefix="fake-old-")
+        other = tmp_dir("ves-fake-old-", self)
         try:
             make_fake_skill(other, version="0.8.4")
             rc, out, _ = cli(["run", "-", "--json", "--workspace", self.ws], stdin=json.dumps(self.doc()).encode(),
@@ -188,7 +187,7 @@ class FakeEngineTests(unittest.TestCase):
             shutil.rmtree(other, ignore_errors=True)
 
     def test_locate_needs_probe_script(self):
-        empty = tempfile.mkdtemp(prefix="not-a-skill-")
+        empty = tmp_dir("ves-not-a-skill-", self)
         try:
             self.assertIsNone(_candidate(empty))  # a directory without scripts/probe.py is not an engine
         finally:
@@ -208,7 +207,7 @@ class FakeEngineHarness(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-")
+        cls.root = tmp_dir("ves-fake-ffmpeg-skill-", cls)
         make_fake_skill(cls.root)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": cls.root}
 
@@ -218,7 +217,7 @@ class FakeEngineHarness(unittest.TestCase):
 
     def setUp(self):
         set_mode(self.root, "ok")
-        self.ws = make_workspace()
+        self.ws = make_workspace(self)
         write_fake_media(os.path.join(self.ws, "in", "a.mp4"))
         write_fake_media(os.path.join(self.ws, "in", "b.mp4"))
         write_fake_media(os.path.join(self.ws, "in", "noaudio.mp4"))
@@ -583,7 +582,7 @@ class SegmentCacheTests(FakeEngineHarness):
         self.assertNotIn("segments", plan["plan"]["steps"][0])
 
     def test_engine_without_join_copy_is_refused_before_execution(self):
-        root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-0x-")
+        root = tmp_dir("ves-fake-ffmpeg-skill-0x-", self)
         try:
             make_fake_skill(root, version="0.11.0", layout="0.x")
             rc, out, err = cli(["run", "-", "--json", "--workspace", self.ws], stdin=json.dumps(self.doc()).encode(),
@@ -799,7 +798,7 @@ class StingerTransitionTests(FakeEngineHarness):
 
     def test_refused_without_look(self):
         """look.py measures the cover (ADR-032): a checkout without it cannot run a stinger CONCAT (TOOL_ERROR before execution)."""
-        root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-nolook-")
+        root = tmp_dir("ves-fake-ffmpeg-skill-nolook-", self)
         try:
             make_fake_skill(root, absent=("look",))
             from video_editing_skill.response import check_response

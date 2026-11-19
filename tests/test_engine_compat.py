@@ -13,11 +13,10 @@ spelling fails here exactly as it would against the real release.
 import json
 import os
 import shutil
-import tempfile
 import unittest
 
 from fake_engine import make_fake_skill
-from helpers import cli, make_workspace, request, write_fake_media
+from helpers import cli, make_workspace, request, tmp_dir, write_fake_media
 
 from video_editing_skill.compiler import OPERATION_FLAGS
 from video_editing_skill.contract import ffmpeg_skill_version_range
@@ -31,7 +30,7 @@ class LayoutCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix=f"fake-ffmpeg-skill-{cls.layout}-")
+        cls.root = tmp_dir(f"ves-fake-ffmpeg-skill-{cls.layout}-", cls)
         make_fake_skill(cls.root, version=cls.version, layout=cls.layout)
         cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": cls.root}
 
@@ -40,7 +39,7 @@ class LayoutCase(unittest.TestCase):
         shutil.rmtree(cls.root, ignore_errors=True)
 
     def setUp(self):
-        self.ws = make_workspace()
+        self.ws = make_workspace(self)
         for name in ("a.mp4", "b.mp4", "bt2020.mp4", "logo.png"):
             write_fake_media(os.path.join(self.ws, "in", name))
 
@@ -186,7 +185,7 @@ class Engine2xTests(LayoutCase):
         rc, rep, err = cli(["doctor", "--json"], env=self.env)
         self.assertEqual({u["type"]: u["engine_tool_status"] for u in rep["unsupported"]}, {"POSITION": None})
         self.assertIn("CROP", rep["supported_operations"])
-        root = tempfile.mkdtemp(prefix="fake-ffmpeg-skill-nocrop-")
+        root = tmp_dir("ves-fake-ffmpeg-skill-nocrop-", self)
         try:
             make_fake_skill(root, version=self.version, layout=self.layout, absent=("crop",))
             rc, rep, err = cli(["doctor", "--json"], env={"VIDEO_EDITING_FFMPEG_SKILL_DIR": root})
@@ -497,8 +496,8 @@ class VersionPolicyTests(unittest.TestCase):
             self.assertEqual(FfmpegSkill("/nonexistent", v, ["cut"]).cut_keeps_hevc_by_default(), keeps, v)
 
     def test_floor_refusal_names_the_reason(self):
-        root = tempfile.mkdtemp(prefix="fake-old-")
-        ws = make_workspace()
+        root = tmp_dir("ves-fake-old-", self)
+        ws = make_workspace(self)
         try:
             make_fake_skill(root, version="0.9.1", layout="0.10")
             write_fake_media(os.path.join(ws, "in", "a.mp4"))

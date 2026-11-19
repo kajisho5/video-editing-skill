@@ -1555,3 +1555,35 @@ sees `INVALID_INPUT` (exit 3) where it saw `DEPENDENCY_ERROR` for this one case.
 a TRIM's output in `params.image` are refused by `validate`, `plan` and `run` with `INVALID_INPUT overlay_video_layer` naming
 motion-graphics-skill `video_overlay`, and no engine tool runs; the contract test reads the four places. The still-image
 `OVERLAY` tests are unchanged and pass.
+
+## ADR-037 — The tests' temporary directories are always removed
+
+**Context.** The tests made their workspaces and real-media roots with `tempfile.mkdtemp` and many never removed them:
+`make_workspace()` (about 20 test classes) had no cleanup at all, and the real-media classes relied on `tearDownClass`, which
+unittest does not call when `setUpClass` fails (for instance when a fixture build fails). One offline run left 138 `ves-*`
+directories in the OS temp directory; a shared machine had collected about 1,800 of them. The Skill itself is not the
+cause: its own staging lives inside the caller's workspace.
+
+**Decision.**
+- Every top-level temporary directory of the tests comes from `tests/helpers.py`'s `tmp_dir(prefix, owner)` (`make_workspace(owner)`
+  uses it). Its prefix starts with `ves-`. With a TestCase class as `owner` it is removed by `addClassCleanup`, which also runs
+  when `setUpClass` fails; with a TestCase instance, by `addCleanup`, after the test whether it passed, failed or raised.
+- Whatever is still there at interpreter exit is removed by an `atexit` handler. SIGTERM (a CI cancel) is handled once a
+  directory exists, when nothing else handles it and only from the main thread: the directories are removed and the process
+  then ends by SIGTERM. SIGKILL cannot be handled.
+- `VIDEO_EDITING_TEST_TMPDIR=DIR` makes them under DIR; `VIDEO_EDITING_KEEP_TEST_TMP=1` keeps them and prints their paths
+  on stderr, for debugging only.
+- Subdirectories made under such a root (`tempfile.mkdtemp(dir=self.root)`) go with it.
+
+**Verified.** `tests/test_tmp_dirs.py`:
+- the directories are removed after a failing and a raising test (the cleanups alone, with `atexit` skipped);
+- they are removed after a failing `setUpClass`, at exit when there is no owner, and on SIGTERM even while the code under
+  test swallows every exception;
+- `VIDEO_EDITING_KEEP_TEST_TMP=1` keeps them and prints the paths;
+- `test_paths`, `test_security` and `test_release_scripts` run whole in a child process with `TMPDIR` pointed at an empty
+  directory and leave it empty;
+- no test file calls `tempfile.mkdtemp` or `TemporaryDirectory` without `dir=`.
+
+All of these checks except the last fail against a helper that does not remove its directories. The offline suite
+(`test_unit` … `test_tmp_dirs`, plus `test_integration` skipped without an engine) left 138 directories before this change
+and 0 after.

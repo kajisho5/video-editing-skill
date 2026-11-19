@@ -7,8 +7,9 @@ where bash or git is unavailable (the Windows unit runner).
 import os
 import shutil
 import subprocess
-import tempfile
 import unittest
+
+from helpers import tmp_dir
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, ".github", "scripts")
@@ -18,7 +19,7 @@ USABLE = os.name != "nt" and shutil.which("bash") is not None and shutil.which("
 @unittest.skipUnless(USABLE, "needs bash and git (POSIX)")
 class ComputeVersionTests(unittest.TestCase):
     def setUp(self):
-        self.repo = tempfile.mkdtemp(prefix="ves-release-")
+        self.repo = tmp_dir("ves-release-", self)
         self.git("init", "-q")
         self.git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "init")
 
