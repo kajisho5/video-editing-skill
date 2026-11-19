@@ -42,7 +42,12 @@ its contract), expect `video-production-agent` to re-pin, and regenerate the gol
 ```
 video-editing contract --json > tests/contract/contract.json
 video-editing contract --check tests/contract/contract.json   # must report "ok"
+python contract/generate.py                                   # contract/contract.json, the committed copy
 ```
+
+`contract/contract.json` is the contract as a committed file (byte for byte the `contract --json` output), so
+any tag's contract can be read with `git show <tag>:contract/contract.json` without running the code.
+`tests/test_contract_file.py` fails when it is out of date; the release workflow regenerates it after the bump.
 
 New top-level keys or `tools[]` keys outside the pinned blocks are additive and don't need a
 version bump — that's how 0.1.0 gained `media_compatibility`, `provides`, `contract_version` itself,
@@ -65,7 +70,7 @@ sandboxed session. `.github/workflows/tests.yml` runs both, matrixed across OS/P
 
 Every push to `main` runs `.github/workflows/release.yml`, one job: `compute_version.sh` decides the version, and
 only when that tag does not exist yet it bumps `pyproject.toml` + `src/video_editing_skill/__init__.py`
-(`bump_version_files.sh`), regenerates `tests/contract/contract.json`, prepends `CHANGELOG.md`
+(`bump_version_files.sh`), regenerates `tests/contract/contract.json` and `contract/contract.json`, prepends `CHANGELOG.md`
 (`render_changelog.sh`, from `git log`, never from interpolated PR text), commits `chore(release): vX.Y.Z`, pushes
 an annotated tag and creates the GitHub Release (PyPI only if `PYPI_API_TOKEN` is set). The rule: auto-bump only
 when `pyproject.toml` equals the latest tag (patch by default, minor for `feature`/`enhancement`, major only for a

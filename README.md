@@ -134,7 +134,9 @@ allowlist, compiler flags, capabilities, unsupported list, media table, error ta
 with a saved copy, reports drift, classifying every difference as `[breaking]` (a pinned block or pinned ToolSpec
 field changed, a key removed) or `[additive]` (a key added outside the pinned blocks). CI runs it against
 `tests/contract/contract.json`; regenerate that file with `video-editing contract --json > tests/contract/contract.json`
-when a contract change is intended. The contract prints:
+when a contract change is intended. `contract/contract.json` is the same output committed as a file, so a release's
+contract is `git show vX.Y.Z:contract/contract.json`; regenerate it with `python contract/generate.py` (a unit test
+fails when it is stale). The contract prints:
 `skill_id`, `version`, `contract_version`, `capabilities`, `unsupported`, `tools[]` (ToolSpec fields aligned with
 video-production-agent: `tool_id`, `skill_id`, `version`, `required_capabilities`, `inputs`, `produces_output`,
 `deterministic`, `result_keys`, plus `media`), `operations` with parameter docs, `media_compatibility`, `graph`,
@@ -413,6 +415,7 @@ pip install -e . ruff mypy
 ruff check src tests && mypy src && python -m compileall -q src tests
 video-editing contract --check tests/contract/contract.json        # implementation ↔ contract ↔ golden copy
 video-editing contract --json > tests/contract/contract.json       # only for an intended contract change (see docs/contract.md)
+python contract/generate.py                                         # then the committed contract file, contract/contract.json
 ```
 
 ## Testing
