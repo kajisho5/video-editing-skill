@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.1 - 2026-11-19
+
+- ci: commit the contract as contract/contract.json (#51) (2dd01e0)
+
 ## v0.8.0 - 2026-11-13
 
 - OVERLAY refuses a video with INVALID_INPUT naming motion-graphics-skill video_overlay; contract 7.0 (ADR-036, roadmap step 19) (#50) (5134734)
