@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.2 - 2026-11-19
+
+- fix(tests): always remove the tests' temporary directories (ADR-037) (#52) (454c218)
+
 ## v0.8.1 - 2026-11-19
 
 - ci: commit the contract as contract/contract.json (#51) (2dd01e0)
