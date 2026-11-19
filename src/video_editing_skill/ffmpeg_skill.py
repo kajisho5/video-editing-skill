@@ -427,11 +427,16 @@ def tool_error(run: ToolRun, what: str) -> EditError:
         return EditError("CANCELLED", f"{what}: timed out", {"tool": run.tool, "reason": "timeout"}, retryable=True)
     kind = None
     msg = ""
+    reason = None
     if isinstance(run.document, dict) and isinstance(run.document.get("error"), dict):
         kind = run.document["error"].get("kind")
         msg = str(run.document["error"].get("message", ""))
+        reason = run.document["error"].get("reason")      # ffmpeg-skill's documented error.reason, when it gives one
     if kind == "input":
-        return EditError("INVALID_INPUT", f"{what}: {msg or run.stderr_tail}", {"tool": run.tool, "ffmpeg_skill_error": "input"}, retryable=False)
+        details: Dict[str, Any] = {"tool": run.tool, "ffmpeg_skill_error": "input"}
+        if isinstance(reason, str):
+            details["ffmpeg_skill_reason"] = reason
+        return EditError("INVALID_INPUT", f"{what}: {msg or run.stderr_tail}", details, retryable=False)
     if kind == "missing_tool" or run.exit_code == 127:
         return EditError("TOOL_ERROR", f"{what}: ffmpeg/ffprobe missing", {"tool": run.tool, "ffmpeg_skill_error": "missing_tool"}, retryable=False)
     return EditError("TOOL_ERROR", f"{what}: {msg or run.stderr_tail or f'exit {run.exit_code}'}",
