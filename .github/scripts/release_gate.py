@@ -29,12 +29,14 @@ out before the rule above is applied (CONTRACT_LABEL_PREFIX); otherwise a fix pu
 From a Skill's 1.0.0, a breaking contract change ships only in a major release (Velisa ADR-031 section 5,
 decision D46). So when the latest tag is 1.0.0 or later, a merged pull request labelled `contract:breaking` that
 carries none of the labels `version-resolver` maps to major (MAJOR_LABELS when it maps none) stops the release:
-the reason is printed, `releasable=false` is written and the script exits 1. It does not stop a release that is a
-major one anyway: in auto mode a merged pull request carries a major label, or (version bumped by hand) the
-version file's major is above the tag's. On 0.x nothing changes: si contract-diff's rule there is that a breaking
+the reason is printed, `releasable=false` is written and the script exits 1. Each such pull request needs its own
+major label, as on the pull request itself. When the version was bumped by hand (or cannot be read) the labels do
+not pick the version, so only a version file whose major is above the tag's lets the release go. On 0.x nothing changes: si contract-diff's rule there is that a breaking
 change needs only a minor bump (ADR-020), and the labels already give at least a patch.
-The same rule runs on every pull request, from .github/workflows/major-label-check.yml (`--check-pr`): it waits
-for that commit's contract-diff run, reads the pull request's labels as they are then, and fails the check.
+The same rule runs on every pull request, from .github/workflows/major-label-check.yml (`--check-pr`): from 1.0.0 it
+waits for that commit's contract-diff run, reads the pull request's labels as they are then, and fails the check. It
+also fails when that run did not succeed or never came, or left no contract:* label (a fork's token cannot write
+one), as the classification is then not known.
 
 A commit on main that came from no pull request releases unless its subject starts with
 chore / ci / docs / build / test / refactor / style. Nothing releasable since the tag means
@@ -149,8 +151,10 @@ def file_version(path=VERSION_FILE):
             text = fh.read()
     except FileNotFoundError:
         return None
-    m = re.search(r"(?ms)^\[project\]\s*$(.*?)(?=^\[|\Z)", text)
-    found = re.search(r"""(?m)^version\s*=\s*['"]([^'"]+)['"]""", m.group(1) if m else text)
+    m = re.search(r"(?ms)^[ \t]*\[[ \t]*project[ \t]*\][ \t]*(?:#[^\n]*)?$(.*?)(?=^[ \t]*\[|\Z)", text)
+    if not m:
+        return None  # never a version from another table
+    found = re.search(r"""(?m)^[ \t]*version[ \t]*=[ \t]*['"]([^'"]+)['"]""", m.group(1))
     return found.group(1) if found else None
 
 
@@ -171,51 +175,70 @@ def needs_major(labels, version, major=None):
 def major_blockers(commits, version, major=None, new_version=None):
     """commits as for decide(), `version` the latest tag -> the reasons the release must stop (empty: it may go).
 
-    `new_version` is the version file's when it was bumped by hand (manual mode); None in auto mode. The release is
-    a major one, and nothing stops it, when that version's major is above the tag's, or (auto mode) a merged pull
-    request carries a major label.
+    `new_version` is the version file's when it was bumped by hand (manual mode; "" when it cannot be read), None in
+    auto mode. In auto mode each contract:breaking pull request needs its own major label, as on the pull request
+    itself. In manual mode the labels do not pick the version: only a version file whose major is above the tag's
+    lets them go.
     """
     major = major_labels() if major is None else major
     current, bumped = parse_version(version), parse_version(new_version)
     if current is None or current[0] < 1:
         return []
-    if new_version is not None:
-        if bumped is not None and bumped[0] > current[0]:
-            return []
-    elif any({name.lower() for name in pull} & major for _, pulls in commits for pull in pulls):
+    if new_version is not None and bumped is not None and bumped[0] > current[0]:
         return []
     reasons = []
     for subject, pulls in commits:
         for labels in pulls:
             if new_version is not None and BREAKING_LABEL in {name.lower() for name in labels}:
                 # bumped by hand: the labels do not pick the version, so a major label does not help
-                reasons.append(f"{BREAKING_LABEL} in a release bumped by hand to {new_version}, not a major: {subject}")
+                shipped = f"bumped by hand to {new_version}" if new_version else "whose version file cannot be read"
+                reasons.append(f"{BREAKING_LABEL} in a release {shipped}, not a major: {subject}")
             elif new_version is None and needs_major(labels, version, major):
                 reasons.append(f"{BREAKING_LABEL} without {'/'.join(sorted(major))}: {subject}")
     return reasons
+
+
+def bumped_by_hand(version, tag):
+    """True when the version file no longer equals the tag less its `v`: release.yml's manual mode, which ships the
+    file's version as written. Whole strings are compared, as release.yml does (`1.2.3+build.1` is not `1.2.3`)."""
+    tag = (tag or "").strip()
+    if not tag:
+        return False
+    if version is None:
+        return True  # unreadable here is not "unchanged": release.yml reads it its own way
+    return version.strip() != (tag[1:] if tag.startswith("v") else tag)
 
 
 def _major_name(major):
     return "major" if "major" in major else sorted(major)[0]
 
 
-def pr_verdict(labels, tag_version, head_version, major=None):
+def pr_verdict(labels, tag_version, head_version, major=None, need_contract_label=False):
     """The pull request check: (ok, message) for a pull request with these labels.
 
     `tag_version` is the latest release tag, `head_version` the version file on the pull request. When the pull
     request bumps the version by hand, that version is what ships, so only a higher major passes; otherwise a
-    major label does (release-drafter then resolves a major release).
+    major label does (release-drafter then resolves a major release). `need_contract_label`: contract-diff ran
+    and succeeded, so a pull request with no contract:* label at all was not classified (a fork's token cannot
+    label) and fails.
     """
     major = major_labels() if major is None else major
     names = sorted({name.lower() for name in labels})
     current = parse_version(tag_version)
     if current is None or current[0] < 1:
         return True, f"{tag_version or 'no release tag'} is before 1.0.0: a contract:breaking change needs no major label"
+    if need_contract_label and not any(name.startswith(CONTRACT_LABEL_PREFIX) for name in names):
+        return False, ("contract-diff put no contract:* label on this pull request (a fork's token cannot write one), "
+                       "so whether it is breaking is not known. A maintainer reads contract-diff's summary and adds "
+                       "contract:none, contract:additive or contract:breaking; the check then runs again")
     if BREAKING_LABEL not in names:
         return True, f"not labelled {BREAKING_LABEL}"
     head = parse_version(head_version)
-    if head is not None and head != current:
-        if head[0] > current[0]:
+    if bumped_by_hand(head_version, tag_version):
+        if head_version is None:
+            return False, (f"labelled {BREAKING_LABEL} on {tag_version}, and the version in pyproject.toml cannot be "
+                           f"read, so whether this is a major release is not known")
+        if head is not None and head[0] > current[0]:
             return True, f"the version is bumped by hand to {head_version}, a major release"
         return False, (f"labelled {BREAKING_LABEL}, and the version is bumped by hand to {head_version}, which is not a "
                        f"major release after {tag_version} (Velisa ADR-031: from 1.0.0 a breaking change ships only in "
@@ -283,41 +306,72 @@ def _gh_json(path):
     return json.loads(out or "null")
 
 
-def _wait_for_contract_diff(repo, sha, appear=90, finish=1500, every=15):
-    """Wait until every contract-diff run on `sha` has finished: it labels with GITHUB_TOKEN, which starts no run."""
+def _wait_for_contract_diff(repo, sha, appear=120, finish=1500, every=15):
+    """Wait for contract-diff on `sha` (it labels with GITHUB_TOKEN, which starts no run) -> "ok", "absent" or a reason.
+
+    "ok": the newest pull_request run on `sha` finished with success, so its label is on the pull request. "absent":
+    this repository has no contract-diff.yml. Anything else says why the labels cannot be trusted yet (no run, a run
+    that failed or was cancelled, or a time-out).
+    """
     if not os.path.exists(os.path.join(ROOT, ".github", "workflows", CONTRACT_DIFF_WORKFLOW)):
-        print(f"no {CONTRACT_DIFF_WORKFLOW} here: the labels are read as they are")
-        return
+        return "absent"
     start = time.monotonic()
+    time.sleep(every)  # the run this same event starts may not be listed yet (reopened: an older run would be)
     while True:
-        runs = _gh_json(f"repos/{repo}/actions/workflows/{CONTRACT_DIFF_WORKFLOW}/runs?head_sha={sha}&per_page=50")
-        statuses = [run.get("status") for run in (runs or {}).get("workflow_runs", [])]
+        runs = _gh_json(f"repos/{repo}/actions/workflows/{CONTRACT_DIFF_WORKFLOW}/runs"
+                        f"?head_sha={sha}&event=pull_request&per_page=50")
+        runs = sorted((runs or {}).get("workflow_runs", []), key=lambda run: (run.get("created_at") or "", run.get("id") or 0))
         waited = time.monotonic() - start
-        if statuses and all(status == "completed" for status in statuses):
-            print(f"contract-diff on {sha[:12]} has finished")
-            return
-        if not statuses and waited >= appear:
-            print(f"no contract-diff run on {sha[:12]} after {appear}s: the labels are read as they are")
-            return
+        if runs and all(run.get("status") == "completed" for run in runs):
+            conclusion = runs[-1].get("conclusion")
+            if conclusion == "success":
+                return "ok"
+            return f"the newest contract-diff run on {sha[:12]} ended {conclusion}"
+        if not runs and waited >= appear:
+            return f"no contract-diff run on {sha[:12]} after {appear}s"
         if waited >= finish:
-            print(f"::warning::contract-diff on {sha[:12]} has not finished after {finish}s: the labels are read as they are")
-            return
+            return f"contract-diff on {sha[:12]} has not finished after {finish}s"
         time.sleep(every)
 
 
+def _on_base(base, path):
+    """True when `path` exists on the base branch (the checkout has every branch: fetch-depth 0)."""
+    try:
+        _git("cat-file", "-e", f"origin/{base}:{path}")
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
 def check_pr(number, head_sha=None):
-    """The pull request check (major-label-check.yml): 0 when the pull request may merge, 1 when it needs `major`."""
+    """The pull request check (major-label-check.yml): 0 when the pull request may merge, 1 when it may not."""
     repo = os.environ.get("GITHUB_REPOSITORY")
     if not repo:
         print("release_gate.py: GITHUB_REPOSITORY is required to read pull request labels", file=sys.stderr)
         return 2
-    if head_sha:
-        _wait_for_contract_diff(repo, head_sha)
-    labels = [label["name"] for label in _gh_json(f"repos/{repo}/issues/{number}/labels?per_page=100") or []]
     tags = _git("tag", "--list", "v*", "--sort=-v:refname").split()
     tag = tags[0] if tags else ""
-    ok, message = pr_verdict(labels, tag, file_version())
-    print(f"labels: {', '.join(sorted(labels)) or '(none)'}; latest tag: {tag or '(none)'}; version file: {file_version()}")
+    current = parse_version(tag)
+    if current is None or current[0] < 1:
+        print(f"{tag or 'no release tag'} is before 1.0.0: nothing to check")
+        return 0
+    waited = None
+    if head_sha:
+        waited = _wait_for_contract_diff(repo, head_sha)
+        base = os.environ.get("GITHUB_BASE_REF") or "main"
+        if waited == "absent" and _on_base(base, f".github/workflows/{CONTRACT_DIFF_WORKFLOW}"):
+            print(f"::error::this pull request removes {CONTRACT_DIFF_WORKFLOW}, which {base} has, so it is not classified")
+            return 1
+        if waited == "absent":
+            print(f"no {CONTRACT_DIFF_WORKFLOW} here: the labels are read as they are")
+        elif waited != "ok":
+            print(f"::error::{waited}, so this pull request's contract:* label is not known. Re-run contract-diff, "
+                  f"then this check.")
+            return 1
+    labels = [label["name"] for label in _gh_json(f"repos/{repo}/issues/{number}/labels?per_page=100") or []]
+    version = file_version()
+    ok, message = pr_verdict(labels, tag, version, need_contract_label=head_sha is not None and waited == "ok")
+    print(f"labels: {', '.join(sorted(labels)) or '(none)'}; latest tag: {tag}; version file: {version}")
     print(message if ok else f"::error::{message}")
     return 0 if ok else 1
 
@@ -353,7 +407,8 @@ def main(argv=None):
     for reason in reasons:
         print(f"  {reason}")
     version = file_version()
-    blockers = major_blockers(commits, since, new_version=None if parse_version(version) == parse_version(since) else version)
+    manual = bumped_by_hand(version, since)
+    blockers = major_blockers(commits, since, new_version=(version or "") if manual else None)
     if blockers:
         for reason in blockers:
             print(f"::error::{reason}")
