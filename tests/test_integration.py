@@ -2069,3 +2069,88 @@ class MediaMatrixE2ETests(unittest.TestCase):
         mixed = request([self.src("hdr", "H"), self.src("a", "A")], [{"id": "c", "type": "CONCAT", "inputs": ["H", "A"], "params": {}}], [{"id": "o", "operation": "c", "path": "out/o.mp4"}])
         out = self.run_cli("run", mixed, expect=3)
         self.assertEqual(out["error"]["details"]["reason"], "hdr_mismatch")
+
+
+@unittest.skipUnless(READY and "silence" in (FFMPEG_SKILL.tools if FFMPEG_SKILL else []), REASON)
+class RippleTests(unittest.TestCase):
+    """docs/decisions.md ADR-042 (Velisa ADR-032): a 9 s clip at 30000/1001 whose sound is ten 440 Hz bursts standing for words
+    (We measured um the noise. / Sorry, wrong slide. / Now results.). The word "um" and the second sentence are removed as
+    transcription/select reports them; ripple places the cuts on the measured silences and on frames, retimes the transcript and
+    the subtitles, and its CONDENSE request, run, delivers exactly the record frames with the kept bursts where the retimed files
+    say they are."""
+
+    WORDS = [("We", 0.5, 0.7), ("measured", 0.8, 1.3), ("um", 1.5, 1.7), ("the", 2.0, 2.1), ("noise.", 2.15, 2.6),
+             ("Sorry,", 4.0, 4.4), ("wrong", 4.5, 4.9), ("slide.", 5.0, 5.5), ("Now", 6.5, 6.8), ("results.", 6.9, 7.6)]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = tmp_dir("ves-ripple-", cls)
+        cls.env = {"VIDEO_EDITING_FFMPEG_SKILL_DIR": FFMPEG_SKILL.root}
+        cls.media = os.path.join(cls.root, "media")
+        os.makedirs(cls.media)
+        cls.src = os.path.join(cls.media, "talk.mp4")
+        on = "+".join(f"between(t,{s},{e})" for _, s, e in cls.WORDS)
+        subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30000/1001:d=9",
+                        "-f", "lavfi", "-i", f"aevalsrc='0.5*sin(2*PI*440*t)*({on})':s=48000:d=9", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-shortest", cls.src], check=True)
+        segs, k = [], 0
+        for sid, (a, b) in (("seg_0001", (0, 5)), ("seg_0002", (5, 8)), ("seg_0003", (8, 10))):
+            ws = [{"start": s, "end": e, "text": t, "confidence": 0.9, "index": k + i} for i, (t, s, e) in enumerate(cls.WORDS[a:b])]
+            k += len(ws)
+            text = " ".join(w["text"] for w in ws)
+            segs.append({"id": sid, "start": ws[0]["start"], "end": ws[-1]["end"], "text": text, "raw_text": text, "confidence": 0.9,
+                         "speaker_id": None, "words": ws})
+        cls.transcript = os.path.join(cls.media, "talk.transcript.json")
+        with open(cls.transcript, "w", encoding="utf-8") as fh:
+            json.dump({"schema": "transcription-skill/transcript/0.1", "id": "tr", "language": "en", "duration": 9.0, "segments": segs,
+                       "source": {"filename": "talk.mp4", "media_duration": 9.0}, "warnings": []}, fh)
+        cls.srt = os.path.join(cls.media, "talk.srt")
+        with open(cls.srt, "w", encoding="utf-8") as fh:
+            fh.write("1\n00:00:00,500 --> 00:00:02,600\nWe measured um the noise.\n\n2\n00:00:04,000 --> 00:00:05,500\nSorry, wrong slide.\n\n"
+                     "3\n00:00:06,500 --> 00:00:07,600\nNow results.\n")
+        # what transcription-skill transcription/select returns for {mode: remove, words: [[2, 2]], segments: [seg_0002]}
+        cls.selection = {"rule": {"version": "transcript-selection@1"}, "mode": "remove", "transcript_id": "tr", "sentences": [],
+                         "spans": [{"id": "r1", "start": 1.5, "end": 1.7, "in": {"lo": 1.3, "hi": 1.5, "after_kept": True},
+                                    "out": {"lo": 1.7, "hi": 2.0, "before_kept": True}, "text": "um"},
+                                   {"id": "r2", "start": 4.0, "end": 5.5, "in": {"lo": 2.6, "hi": 4.0, "after_kept": True},
+                                    "out": {"lo": 5.5, "hi": 6.5, "before_kept": True}, "text": "Sorry, wrong slide."}]}
+
+    def cli_doc(self, cmd, doc, ws):
+        rc, out, err = cli([cmd, "-", "--json", "--workspace", ws, "--allowed-input", self.media], stdin=json.dumps(doc).encode(), env=self.env)
+        self.assertIsInstance(out, dict, err)
+        self.assertEqual(rc, 0, json.dumps(out.get("error")) + err)
+        return out
+
+    def test_ripple_then_run(self):
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        res = self.cli_doc("ripple", {"schema": "video-editing/ripple@1", "source": self.src, "selection": self.selection,
+                                      "transcript": self.transcript, "subtitles": [self.srt]}, ws)
+        self.assertEqual(res["rate"], "30000/1001")
+        self.assertEqual(res["source"]["frames"], 269)          # the picture's frames (nb_frames), not the 9.0 s the sound lasts
+        self.assertGreater(res["silence"]["silences"], 0)
+        for c in res["cuts"]:
+            for e in c["edges"]:
+                self.assertTrue(e["in"]["silence"] and e["out"]["silence"], e)
+        rate = Fraction(30000, 1001)
+        for c, (lo, hi) in zip(res["cuts"], ((1.3, 2.0), (2.6, 6.5))):   # every cut inside the gaps around the removed words
+            self.assertGreaterEqual(c["source_in"]["frame"] / rate, lo)
+            self.assertLessEqual(c["source_out"]["frame"] / rate, hi)
+        run = self.cli_doc("run", res["edit_request"], ws)
+        out = os.path.join(ws, res["edit_request"]["project"]["outputs"][0]["path"])
+        frames = int(subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v", "-show_entries", "stream=nb_read_frames",
+                                     "-of", "default=nw=1:nk=1", out], stdout=subprocess.PIPE, text=True, check=True).stdout.strip())
+        self.assertEqual(frames, res["record"]["frames"], run["execution"]["operations"][0].get("condense"))
+        # the bursts heard in the result start where the retimed transcript says the kept words start (within 25 ms)
+        det = subprocess.run(["ffmpeg", "-hide_banner", "-i", out, "-af", "silencedetect=n=-40dB:d=0.03", "-f", "null", "-"],
+                             stderr=subprocess.PIPE, text=True).stderr
+        heard = [float(x) for x in re.findall(r"silence_end: ([0-9.]+)", det)]
+        with open(res["transcript"]["path"], encoding="utf-8") as fh:
+            t = json.load(fh)
+        starts = [w["start"] for s in t["segments"] for w in s["words"]]
+        self.assertEqual([w["text"] for s in t["segments"] for w in s["words"]], ["We", "measured", "the", "noise.", "Now", "results."])
+        for want in (0.5, starts[2], starts[3], starts[4], starts[5]):
+            self.assertTrue(any(abs(h - want) < 0.025 for h in heard), (want, heard))
+        with open(res["subtitles"][0]["path"], encoding="utf-8") as fh:
+            srt = fh.read()
+        self.assertNotIn("Sorry", srt)
+        self.assertIn("Now results.", srt)

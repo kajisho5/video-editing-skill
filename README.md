@@ -372,6 +372,13 @@ values are reported under `project`, never as observations.
   Approve them by id; only approved spans are cut (CONDENSE). With `"source"`, `"static": {}` (no motion: shots
   ffmpeg-skill `scenes --shots` labels static) and / or `"silence": {"threshold_db": -40}` and `"combine": {"mode":
   "and"}`, it proposes labelled spans (`static`, `silence`, `silence+static`) the same way (ADR-025).
+- **Ripple cuts from a transcript selection** (ADR-042, Velisa ADR-032): `video-editing ripple - --json --workspace W`
+  with `{"schema": "video-editing/ripple@1", "source": "in/talk.mp4", "selection": <transcription-skill
+  transcription/select result>, "transcript": "in/talk.transcript.json", "subtitles": ["in/talk.srt"]}` places every cut
+  edge inside the gap its span allows (0.20 s kept after speech, 0.10 s before it, never past the gap's middle), on a
+  silence ffmpeg-skill `silence --list` measures there, and on the nearest frame of the source's rate (velisa/timebase@1).
+  It writes a JSON EDL (events in frames), the transcript and the SRT / VTT retimed to the cut, and returns
+  `edit_request`, one `CONDENSE` that `video-editing run` executes. Nothing is cut by `ripple` itself (`applied: false`).
 - **Stinger transition** (ADR-023): `CONCAT` `params.transition: {"type": "stinger", "stinger": "<video source with
   alpha>", "cut_point": 0.5, "cover": {"start": 0.5, "end": 0.5333}}` (cut point and cover from the stinger's
   stinger.json). The clips are butt-joined, and the stinger is laid over each join so that its cut-point frame is the

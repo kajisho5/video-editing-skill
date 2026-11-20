@@ -1722,3 +1722,41 @@ Additive. A new `segment_cache.fallback_record` key documents the three fields. 
   message with one `--copy:`.
 - `test_integration.SegmentCacheLongFormTests` against ffmpeg-skill 4.0.0 (both tests pass) and 3.15.1 (the copy-join test
   passes; the 4.0 test is skipped).
+
+## ADR-042 — `ripple`: cuts from a transcript selection placed in the gaps, on silence and on frames; the transcript and subtitles retimed
+
+2026-11-20. The ecosystem rule is Velisa ADR-032 (decision D47); roadmap step 21.
+
+A person picks sentences or words in a transcript to remove or keep. transcription-skill `transcription/select` turns that into
+removed spans, each with the window its edges may use (the gap to the kept speech). This Skill knows the media and its frame grid,
+so it places the cuts. It holds no judgement: what to cut is the caller's selection.
+
+- **Command.** `video-editing ripple` with `video-editing/ripple@1`: `source`, then `selection` (the select result, inline, as a
+  `run -` response or a file) or `spans`; optional `margins`, `silence`, `transcript`, `subtitles`, `outputs`, and `fps` /
+  `duration` instead of probing (with `silence: false` no engine is needed). It is a top-level `ripple` block like `proposals`
+  (ADR-024), not an operation type: a new type would change the pinned `operations` block, and the cut is already `CONDENSE`.
+- **Rule `ripple@1`.** An in edge keeps 0.20 s after the kept speech before it, an out edge 0.10 s before the kept speech after
+  it, neither past the middle of its window (the same lead / tail as the agent's `word_ranges@1`, so a closed gap leaves at most
+  0.30 s). An edge with no kept speech on its side goes to the window's end (the media's start or end in `keep`). With the source's
+  silences (ffmpeg-skill `silence --list`, -40 dB, 0.05 s) an edge moves to the silent point of its window nearest the target.
+  It is then the nearest frame of the source's rate (r_frame_rate read by velisa/timebase@1, a half up); a frame outside the window
+  becomes the nearest one inside it, and a window with no frame puts the edge on the removed side, so a kept word is never cut and
+  a sliver of a removed word may stay (warned). A plain `{start, end}` span has no window: each edge is its nearest frame. Cuts
+  that meet are merged; a cut of no frames is dropped and listed.
+- **Frames.** The source's frames are the video stream's `nb_frames` (else its duration), not the container's duration, which
+  the sound can make longer: measured on the test clip, 269 frames against a 9.0 s container. Record positions are counted in
+  frames (TB-5).
+- **Outputs.** A JSON EDL with the sidecar envelope fields (Velisa ADR-025: `schema`, `producer`, `generated_at`, `inputs` by
+  sha256): kept events with source and record frames, and the removed ranges. The transcript retimed: a word (or a segment
+  without words) whose middle lies in a cut is removed, the rest mapped, indices renumbered, a shortened segment's text rebuilt
+  from its words, `duration` the record duration, a warning that the source identity fields describe the uncut source. SRT /
+  WebVTT retimed: a cue that loses all its time is dropped, one that loses part is shortened, its text kept as written (headers,
+  NOTE, STYLE and cue settings kept). `edit_request`: one `CONDENSE` with the cuts as segments in frames (`{frames, fps}`),
+  label `transcript` rule cut, default keep. Every output path is checked before anything is written; an existing file is
+  replaced only with `--overwrite`.
+- **Checked.** `tests/test_ripple.py` runs the conformance cases in `tests/fixtures/ripple_conformance/cases.json` (margins at the
+  middle, silence at 29.97, no frame in the window, keep with lead-in and tail, a merge, a drop) and the command offline.
+  `RippleTests` (real media, ffmpeg-skill 3.8.3 here): ten tone bursts standing for words at 30000/1001; "um" and a sentence
+  removed; every edge in a measured silence; the run delivers 146 frames, as the EDL says; the kept bursts are heard within 25 ms
+  of where the retimed transcript puts them.
+- Contract: additive (`contract --check`: `[additive] top-level key added: ripple`). `contract_version` stays "7.0".

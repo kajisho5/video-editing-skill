@@ -206,6 +206,25 @@ def cmd_propose(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------- parser
+def cmd_ripple(args: argparse.Namespace) -> int:
+    """Ripple cuts from a transcript selection (ADR-042): the frame cut list, a JSON EDL, the retimed transcript / subtitles and a
+    CONDENSE request for `run`. The media is not cut here."""
+    from .ripple import RESULT_SCHEMA, check_ripple_doc, ripple
+    policy = _policy(args)
+    raw = _read_request(args.request)
+    skill = None
+    if not (isinstance(raw, dict) and raw.get("fps") is not None and raw.get("duration") is not None and raw.get("silence") is False):
+        skill, _versions, _doctor = _engine(args)
+    body = ripple(raw, policy, skill, overwrite=args.overwrite)
+    doc = {"ok": True, "schema": RESULT_SCHEMA, "skill": {"id": SKILL_ID, "version": VERSION}, "command": "ripple", "request_sha256": stable_hash(raw)}
+    doc.update(body)
+    problems = check_ripple_doc(doc)
+    if problems:
+        raise EditError("INTERNAL_ERROR", "response self-check failed: " + "; ".join(problems[:5]), {"problems": problems, "command": "ripple"})
+    _print_json(doc)
+    return 0
+
+
 def _add_common(p: argparse.ArgumentParser, request: bool) -> None:
     if request:
         p.add_argument("request", help="request JSON file, or - for stdin")
@@ -239,6 +258,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr = sub.add_parser("propose", help="cut proposals with reasons (retakes); writes and applies nothing")
     _add_common(pr, request=True)
     pr.set_defaults(func=cmd_propose, json=True)
+    rp = sub.add_parser("ripple", help="cuts from a transcript selection: frame cut list, EDL, retimed transcript / subtitles, a CONDENSE request; cuts no media")
+    _add_common(rp, request=True)
+    rp.add_argument("--overwrite", action="store_true", help="replace the EDL / retimed files when they exist")
+    rp.set_defaults(func=cmd_ripple, json=True)
     r = sub.add_parser("run", help="execute the request")
     _add_common(r, request=True)
     r.set_defaults(func=cmd_run, json=True)

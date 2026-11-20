@@ -1,0 +1,32 @@
+{
+  "fixture_version": 1,
+  "rule": "ripple@1",
+  "note": "Each case: the source's rate and duration, measured silences (seconds), spans as transcription/select writes them (or plain {start, end}: each edge the nearest frame, no window), and the cuts expected in frames [in, out), the dropped span ids and the record length in frames. Margins are the defaults (after_kept 0.20 s, before_kept 0.10 s).",
+  "cases": [
+    {"name": "one word at 25 fps, no silence: margins clamped at the window's middle",
+     "fps": "25", "duration": "10", "silences": [],
+     "spans": [{"id": "r1", "start": 1.5, "end": 1.7, "in": {"lo": 1.3, "hi": 1.5, "after_kept": true}, "out": {"lo": 1.7, "hi": 2.0, "before_kept": true}}],
+     "cuts": [[35, 48]], "dropped": [], "record_frames": 237},
+    {"name": "29.97 (30000/1001): each edge moves into the measured silence",
+     "fps": "29.97", "duration": "10", "silences": [[1.42, 1.48], [1.72, 1.80]],
+     "spans": [{"id": "r1", "start": 1.5, "end": 1.7, "in": {"lo": 1.3, "hi": 1.5, "after_kept": true}, "out": {"lo": 1.7, "hi": 2.0, "before_kept": true}}],
+     "cuts": [[43, 54]], "dropped": [], "record_frames": 289},
+    {"name": "a window with no frame: the edge goes to the removed side",
+     "fps": "25", "duration": "10", "silences": [],
+     "spans": [{"id": "r1", "start": 1.35, "end": 1.6, "in": {"lo": 1.33, "hi": 1.35, "after_kept": true}, "out": {"lo": 1.6, "hi": 1.62, "before_kept": true}}],
+     "cuts": [[34, 40]], "dropped": [], "record_frames": 244},
+    {"name": "keep mode: the lead-in from 0 and the tail to the end",
+     "fps": "25", "duration": "10", "silences": [],
+     "spans": [{"id": "r1", "start": 0.0, "end": 0.0, "in": {"lo": 0.0, "hi": 0.0, "after_kept": false}, "out": {"lo": 0.0, "hi": 0.8, "before_kept": true}},
+               {"id": "r2", "start": 10.0, "end": 10.0, "in": {"lo": 8.0, "hi": 10.0, "after_kept": true}, "out": {"lo": 10.0, "hi": 10.0, "before_kept": false}}],
+     "cuts": [[0, 18], [205, 250]], "dropped": [], "record_frames": 187},
+    {"name": "two cuts that meet on a frame are one cut",
+     "fps": "25", "duration": "10", "silences": [],
+     "spans": [{"id": "r1", "start": 1.0, "end": 1.24}, {"id": "r2", "start": 1.24, "end": 1.5}],
+     "cuts": [[25, 38]], "dropped": [], "record_frames": 237},
+    {"name": "a cut shorter than a frame is dropped",
+     "fps": "25", "duration": "10", "silences": [],
+     "spans": [{"id": "r1", "start": 2.01, "end": 2.015}, {"id": "r2", "start": 3.0, "end": 3.2}],
+     "cuts": [[75, 80]], "dropped": ["r1"], "record_frames": 245}
+  ]
+}
