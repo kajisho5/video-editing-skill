@@ -3,7 +3,7 @@
   "skill_id": "video-editing",
   "name": "Video Editing Skill",
   "package": "video-editing-skill",
-  "version": "0.8.8",
+  "version": "0.9.0",
   "contract_version": "7.0",
   "description": "Deterministic video editing: typed edit requests (trim, cut, concat with transitions, speed, fit/fill/resize, rotate/flip, image overlay, freeze frame, reverse, still image to clip) compiled to an operation graph with source/timeline mapping and executed through ffmpeg-skill. Not an agent: no editing decisions, no LLM, no commands.",
   "role": "execution",
@@ -175,7 +175,7 @@
     {
       "tool_id": "video-editing/concat",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "CONCAT",
       "capability": "video.concat",
       "description": "join two or more inputs in order, optionally with a transition, conforming size / fps",
@@ -229,7 +229,7 @@
     {
       "tool_id": "video-editing/condense",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "CONDENSE",
       "capability": "video.condense",
       "description": "apply a rule per labelled span (cut, keep, or speed by a factor) and keep everything else by params.default: approved proposals (retakes, silences, static spans) become segments here",
@@ -280,7 +280,7 @@
     {
       "tool_id": "video-editing/crop",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "CROP",
       "capability": "video.crop",
       "description": "keep exactly the pixel rectangle {x, y, width, height} the caller gives (no scaling, padding or aspect maths; FILL crops to an aspect ratio)",
@@ -331,7 +331,7 @@
     {
       "tool_id": "video-editing/cut",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "CUT",
       "capability": "video.cut",
       "description": "keep several ranges of one input, joined in the order given (removes everything else)",
@@ -379,7 +379,7 @@
     {
       "tool_id": "video-editing/fill",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "FILL",
       "capability": "video.fill",
       "description": "centre-crop into an aspect ratio (edges are lost)",
@@ -429,7 +429,7 @@
     {
       "tool_id": "video-editing/fit",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "FIT",
       "capability": "video.fit",
       "description": "letterbox / pillarbox into an aspect ratio (nothing is cropped)",
@@ -479,7 +479,7 @@
     {
       "tool_id": "video-editing/freeze",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "FREEZE",
       "capability": "video.freeze",
       "description": "hold one frame for a number of seconds: at a time (the rest of the clip plays on after the hold) or, without one, the last frame at the end",
@@ -528,7 +528,7 @@
     {
       "tool_id": "video-editing/image_insert",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "IMAGE_INSERT",
       "capability": "video.image_insert",
       "description": "turn a still image (title card, end slate) into a silent video clip of a set duration that CONCAT and every other type can take",
@@ -578,7 +578,7 @@
     {
       "tool_id": "video-editing/overlay",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "OVERLAY",
       "capability": "video.overlay",
       "description": "composite a still image (logo, lower-third PNG) at a named position for a time range; a video layer, picture-in-picture or chroma key is motion-graphics-skill's video_overlay (ADR-035)",
@@ -632,7 +632,7 @@
     {
       "tool_id": "video-editing/punch_in",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "PUNCH_IN",
       "capability": "video.punch_in",
       "description": "zoom in by a scale on a subject box the caller gives (e.g. detection-skill's face box) for a time range: a hard cut in and out, the window centred on the box and kept inside the frame, the frame size unchanged",
@@ -683,7 +683,7 @@
     {
       "tool_id": "video-editing/resize",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "RESIZE",
       "capability": "video.resize",
       "description": "scale to a width keeping the aspect ratio",
@@ -731,7 +731,7 @@
     {
       "tool_id": "video-editing/reverse",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "REVERSE",
       "capability": "video.reverse",
       "description": "play the input backwards, picture and audio",
@@ -777,7 +777,7 @@
     {
       "tool_id": "video-editing/rotate",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "ROTATE",
       "capability": "video.rotate",
       "description": "turn the picture clockwise by 90/180/270 and/or mirror it horizontally or vertically (no scaling, padding or cropping)",
@@ -825,7 +825,7 @@
     {
       "tool_id": "video-editing/speed",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "SPEED",
       "capability": "video.speed",
       "description": "retime by a constant factor (video and pitch-preserved audio)",
@@ -874,7 +874,7 @@
     {
       "tool_id": "video-editing/trim",
       "skill_id": "video-editing",
-      "version": "0.8.8",
+      "version": "0.9.0",
       "operation_type": "TRIM",
       "capability": "video.trim",
       "description": "keep one source time range [start, end)",
@@ -1318,7 +1318,7 @@
     "schema": "video-editing/response@1",
     "skill": {
       "id": "video-editing",
-      "version": "0.8.8"
+      "version": "0.9.0"
     },
     "status": "completed | reused",
     "project": "...",
@@ -1778,7 +1778,7 @@
     "ok": "bool",
     "skill": {
       "id": "video-editing",
-      "version": "0.8.8"
+      "version": "0.9.0"
     },
     "contract": "schema ids",
     "engine": "ffmpeg-skill location, version, ffmpeg / ffprobe, missing capabilities",
@@ -1798,7 +1798,7 @@
     "problems": "…"
   },
   "versioning": {
-    "version": "0.8.8",
+    "version": "0.9.0",
     "contract_version": "7.0",
     "pinned_blocks": [
       "schema",
@@ -1967,6 +1967,61 @@
     "not_provided": [
       "any model, score or language detection",
       "automatic application"
+    ]
+  },
+  "ripple": {
+    "invocation": [
+      "video-editing",
+      "ripple",
+      "-",
+      "--json",
+      "--workspace",
+      "<dir>",
+      "--allowed-input",
+      "<root>"
+    ],
+    "request_schema": "video-editing/ripple@1",
+    "response_schema": "video-editing/ripple-result@1",
+    "edl_schema": "video-editing/ripple-edl@1",
+    "request_shape": {
+      "schema": "video-editing/ripple@1",
+      "source": "the video to cut (under an allowed root): its rate (r_frame_rate) and frames (nb_frames) from ffmpeg-skill/probe",
+      "selection": "transcription-skill transcription/select result (rule transcript-selection@1), inline, as a `run -` response, or a .json file; or spans",
+      "spans": "[{start, end, in?: {lo, hi, after_kept}, out?: {lo, hi, before_kept}, id?, text?, speaker_ids?, segment_ids?}]: without in / out, each edge is the nearest frame of the time given",
+      "fps": "the source's rate (N/D or a decimal, velisa/timebase@1) instead of probing; with duration and silence false, no engine is needed",
+      "duration": "seconds, instead of probing",
+      "margins": "{after_kept: s (default 0.2), before_kept: s (default 0.1)}, 0..2",
+      "silence": "{threshold_db: -90..-5 (default -40), min_seconds: 0.02..10 (default 0.05)} | false: ffmpeg-skill/silence --list",
+      "transcript": "transcription-skill Transcript (.json) to retime",
+      "subtitles": "[.srt | .vtt] (at most 8) to retime",
+      "outputs": "{edl?, transcript?, subtitles?: [one per input], video?} relative to the workspace (default ripple/<name>...); an existing file is replaced only with --overwrite"
+    },
+    "rule": {
+      "version": "ripple@1",
+      "margins": "in edge: after_kept (default 0.20 s) after the kept speech before it; out edge: before_kept (default 0.10 s) before the kept speech after it; never past the middle of the window; no kept speech on that side: the window's end",
+      "silence": "ffmpeg-skill/silence --list (default -40 dB, 0.05 s): an edge whose window holds silence moves to the silent point nearest its margin target; false turns it off",
+      "frames": "nearest frame of the source's rate (velisa/timebase@1, a half up); outside the window: the nearest frame inside it; a window with no frame: the frame on the removed side (a sliver of a removed word may stay, a kept word is never cut)",
+      "merge": "cuts that meet or overlap are one cut; a cut of no frames is dropped and listed under dropped",
+      "positions": "record positions counted in frames (TB-5)",
+      "retime": "a word (or a segment without words) whose middle lies in a cut is removed; every other time t maps to its record time, a start inside a cut to the frame after it, an end to the frame before it; a cue that loses all its time is dropped, one that loses part is shortened (its text is kept as written)"
+    },
+    "response_shape": {
+      "cuts": "[{id, span_ids, source_in: {frame, seconds}, source_out, frames, seconds, text, speaker_ids, segment_ids, edges: [{in: {target, silence, placed, frame, rule, window}, out}]}]",
+      "dropped": "[{span_ids, reason, edges}]",
+      "removed": "{frames, seconds}",
+      "record": "{frames, seconds}",
+      "events": "[{event, source_in, source_out, record_in, record_out}] in frames",
+      "edl": "path of the EDL sidecar (velisa/sidecar-envelope fields: schema, producer, generated_at, inputs)",
+      "transcript": "{path, words_removed, segments_removed, segments_shortened} | null",
+      "subtitles": "[{input, path, cues, dropped, shortened}]",
+      "edit_request": "a video-editing/request@1 with one CONDENSE: the cuts as segments in frames of the source's rate, label 'transcript' rule cut, default keep",
+      "applied": "false"
+    },
+    "applies": "nothing to the media: `video-editing run` with edit_request cuts it; the EDL and the retimed files are written",
+    "not_provided": [
+      "choosing what to cut (the caller's selection)",
+      "speaker-specific cuts of one mixed track",
+      "subtitle text edits"
     ]
   },
   "stinger": {

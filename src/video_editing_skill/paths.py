@@ -124,7 +124,8 @@ class PathPolicy:
         return resolved
 
     # ---- outputs
-    def resolve_output(self, raw: str, what: str, inputs: Iterable[str], overwrite: bool = False) -> str:
+    def resolve_output(self, raw: str, what: str, inputs: Iterable[str], overwrite: bool = False,
+                       extensions: Iterable[str] = OUTPUT_EXTENSIONS) -> str:
         check_raw(raw, what)
         absolute = os.path.abspath(raw if os.path.isabs(raw) else os.path.join(self.workspace, raw))
         resolved = self._resolve_deepest(absolute)
@@ -132,8 +133,8 @@ class PathPolicy:
             raise EditError("PATH_NOT_ALLOWED", f"{what}: output must be inside the workspace: {os.path.basename(raw) or raw}",
                             {"reason": "workspace_escape"})
         ext = os.path.splitext(resolved)[1].lower()
-        if ext not in OUTPUT_EXTENSIONS:
-            raise EditError("UNSUPPORTED_FORMAT", f"{what}: output extension {ext or '(none)'} is not supported", {"supported": list(OUTPUT_EXTENSIONS)})
+        if ext not in tuple(extensions):
+            raise EditError("UNSUPPORTED_FORMAT", f"{what}: output extension {ext or '(none)'} is not supported", {"supported": list(extensions)})
         for i in inputs:
             if os.path.normcase(i) == os.path.normcase(resolved):
                 raise EditError("PATH_NOT_ALLOWED", f"{what}: output would overwrite an input", {"reason": "overwrite_input"})

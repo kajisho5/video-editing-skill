@@ -65,6 +65,13 @@ Removing a key, or changing the meaning of an existing one, is breaking even out
   regenerated on purpose (`video-editing contract --json > tests/contract/contract.json`), reviewed in the same
   change, and the classification tells the reviewer whether agents must re-pin.
 
+## `ripple` (docs/decisions.md ADR-042): additive
+
+A top-level `ripple` block, beside `proposals`, describes `video-editing ripple` (request `video-editing/ripple@1`, response
+`video-editing/ripple-result@1`, EDL sidecar `video-editing/ripple-edl@1`). No operation type, capability, error code or tool is
+added, and `PathPolicy.resolve_output` only gained an optional extension list, so no pinned block changes and `contract_version`
+stays "7.0". The cut itself is an ordinary `CONDENSE` request.
+
 ## 0.2.0 (shipped; docs/decisions.md ADR-009)
 
 `version` `0.1.0` → `0.2.0`, `contract_version` `"1.0"` → `"2.0"`: `FILL` gained an optional `anchor: {x, y}`

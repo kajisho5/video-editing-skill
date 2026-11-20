@@ -17,7 +17,7 @@ This is ADR-001 and it is the one rule every other decision in this repo defers 
 
 1. **Code** — `src/video_editing_skill/`. `contract.py`'s `skill_contract()` is generated from
    `operations.py` / `errors.py` / `compiler.py` / `ffmpeg_skill.py`, never maintained beside them.
-2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-038). Read it before
+2. **`docs/decisions.md`** — the ADR log (currently ADR-001 through ADR-042). Read it before
    changing anything that looks like a design decision; it explains *why*, not just *what*.
 3. **`docs/contract.md`** — contract versioning rules, pinned vs. additive blocks, drift
    classification. Read it before touching `contract.py`'s `PINNED_BLOCKS` or top-level shape.
@@ -282,6 +282,10 @@ exception to ADR-001.
 - (ADR-035 / ADR-036, step 19) — the overlay boundary: `OVERLAY` is plain still compositing; a video in `params.image` is
   `INVALID_INPUT overlay_video_layer` naming motion-graphics-skill `video_overlay` (was `DEPENDENCY_ERROR kind_mismatch`).
   Pinned `operations` / `unsupported` text changed: `contract_version` "6.0" -> "7.0", `version` 0.8.0 by hand.
+
+- (ADR-042, step 21, Velisa ADR-032) — `video-editing ripple`: transcription-skill `select` spans -> cut edges in their windows
+  (margins 0.20 / 0.10 s, measured silence, nearest frame of r_frame_rate, removed side when no frame fits), a JSON EDL, the transcript
+  and SRT / VTT retimed, and one CONDENSE for `run`. Additive: a top-level `ripple` block, no operation type, `contract_version` stays "7.0".
 
 ## Picking the next task
 
