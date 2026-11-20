@@ -40,7 +40,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e .
-      - run: python -m unittest -v test_unit test_paths test_security test_engine_contract test_engine_compat test_release_scripts test_release_labels test_contract_file test_tmp_dirs test_timebase_vectors
+      - run: python -m unittest -v test_unit test_paths test_security test_engine_contract test_engine_compat test_release_scripts test_release_labels test_release_gate_major test_contract_file test_tmp_dirs test_timebase_vectors
         working-directory: tests
       - run: video-editing contract --check tests/contract/contract.json
       - run: video-editing skill --json > /dev/null
