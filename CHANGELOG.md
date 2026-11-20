@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.8.8 - 2026-11-20
+
+- fix(timebase): read 29.97 as 30000/1001, compare rates exactly, round a half up (#59) (#60) (a0f5c00)
+
 ## v0.8.7 - 2026-11-20
 
 - fix(segments): record join_copy_mismatch and AAC drift on a copy-join fallback; long-form test cuts on AAC frames (ADR-041) (#61) (409681e)
