@@ -877,6 +877,12 @@ class ConcatWholeFramesTests(FakeEngineHarness):
         self.assertEqual([(r["action"], r["joined_length"]["rational"]) for r in wf["inputs"]],
                          [("cut_if_needed", "59059/30000"), ("cut_if_needed", "59059/30000")])
 
+    def test_an_explicit_ratio_params_fps_is_the_edit_rate_as_written(self):
+        doc = self.concat(["X", "Y"], [{"id": "X", "path": self.fake("x2997.mp4", fps=29.97)},
+                                       {"id": "Y", "path": self.fake("y2997.mp4", fps=29.97)}], {"fps": "5995/200"})
+        rc, plan = self.run_(doc, "plan", expect=0)
+        self.assertEqual(plan["plan"]["steps"][0]["whole_frames"]["rate"]["rational"], "1199/40", "5995/200 reduced, not read as 30000/1001")
+
     def test_an_input_0_01_fps_off_is_another_rate(self):
         # rates compare as exact fractions: 29.98 fps (1499/50) is not 29.97 (30000/1001), which the 0.02 tolerance merged
         doc = self.concat(["X", "Z"], [{"id": "X", "path": self.fake("x2997.mp4", fps=29.97)},

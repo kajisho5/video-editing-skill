@@ -65,6 +65,14 @@ def _rate_of(fps: Any) -> Optional[Fraction]:
         return None
 
 
+def _probed_rate_or_refuse(fps: Any, what: str) -> Fraction:
+    """A probed rate the join or a frame index is computed at; a rate the timebase spec refuses (outside (0, 1000]) is the input's fault."""
+    try:
+        return parse_rate(fps)
+    except RateError as e:
+        raise EditError("INVALID_INPUT", f"{what}: frame rate {fps!r} is not usable ({e})", {"reason": "fps"}) from None
+
+
 def _same_probed_rate(a: Any, b: Any) -> bool:
     """Whether two rates are one rate as ffmpeg-skill's probe can tell them apart (3 decimals): both are read back from their
     probe text and the exact fractions compared. 29.97 and 30000/1001 are one rate; 29.97 and 30 are not."""
@@ -960,7 +968,7 @@ class Executor:
         fps = self.profile(op.stinger).get("fps") if op.stinger else None
         if not fps:
             return None, cp
-        rate = parse_rate(fps)
+        rate = _probed_rate_or_refuse(fps, f"operation {ref!r} (stinger)")
         n = frames_at(cp, rate, "nearest")
         at = max(Fraction(0), (Fraction(n) - Fraction(1, 4)) / rate)
         return n, Time(at)
@@ -1065,8 +1073,9 @@ class Executor:
     def _edit_rate(self, ref: str) -> Optional[Fraction]:
         """The CONCAT's frame rate: params.fps, else its first input's (as join.py chooses it)."""
         op = self.project.operations[ref]
-        fps = self.target_fps(ref) or self.profile(op.video_inputs[0]).get("fps")
-        return _rate_of(fps)
+        if "fps" in op.params:
+            return op.params["fps"]   # read once by parse_rate (operations._frame); an explicit N/D is kept as written
+        return _rate_of(self.profile(op.video_inputs[0]).get("fps"))
 
     def _input_conform(self, ref: str, r: str) -> Optional[str]:
         """How input `r` of a whole-frame CONCAT reaches the edit's rate: "rate" when it runs at another rate or is variable-rate
@@ -1254,7 +1263,7 @@ class Executor:
                             {"operation": ref, "input": st, "reason": "stinger_fps"})
         if sfps:
             cp = op.params["transition"]["cut_point"].value
-            frames = cp * parse_rate(sfps)
+            frames = cp * _probed_rate_or_refuse(sfps, what)
             if abs(frames - round(frames)) > Fraction(1, 1000):
                 raise EditError("INVALID_REQUEST", f"{what}: cut_point {float(cp):.4f}s is not on a frame of the stinger ({sfps:g} fps)",
                                 {"operation": ref, "reason": "cut_point_not_on_frame"})
@@ -1419,7 +1428,7 @@ class Executor:
                 fps = prof.get("fps")
                 args: Dict[str, Any] = {"transition": "none", "width": prof["width"], "height": prof["height"]}
                 if fps:
-                    args["fps"] = _fps_text(parse_rate(fps))
+                    args["fps"] = _fps_text(_probed_rate_or_refuse(fps, f"operation {ref!r}"))
                 os.replace(self._engine_call(op, st, t0, "join", args, parts, temps, acc), partial)
         finally:
             for t in temps:
@@ -1493,7 +1502,7 @@ class Executor:
             if len(parts) == 1:
                 os.replace(parts[0], partial)
             else:
-                joined = call("join", {"transition": "none", "width": fw, "height": fh, "fps": _fps_text(parse_rate(prof["fps"]))}, parts)
+                joined = call("join", {"transition": "none", "width": fw, "height": fh, "fps": _fps_text(_probed_rate_or_refuse(prof["fps"], f"operation {ref!r}"))}, parts)
                 os.replace(joined, partial)
         finally:
             for t in temps:

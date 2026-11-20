@@ -210,7 +210,9 @@ def _exact(value: Any, code: str, what: str) -> Fraction:
             if int(m.group(2)) == 0:
                 raise RateError(code, f"{what}: {value!r} has a zero denominator")
             return Fraction(int(m.group(1)), int(m.group(2)))
-        if _DECIMAL.match(value.strip()):
+        d = _DECIMAL.match(value.strip())
+        # a bounded text and exponent: Fraction("1e1000000000") would build a number of a billion digits before any range check
+        if d and len(value.strip()) <= 64 and (not d.group(3) or abs(int(d.group(3)[1:])) <= 9):
             return Fraction(value.strip())
     raise RateError(code, f"{what}: {value!r} is not a number")
 

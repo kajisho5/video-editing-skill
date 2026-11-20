@@ -102,6 +102,22 @@ class SkillReadsRatesBySpecTests(unittest.TestCase):
     def test_frames_with_an_ntsc_decimal_rate(self):
         self.assertEqual(Time.parse({"frames": 300, "fps": "29.97"}).value, Fraction(1001, 100))
 
+    def test_a_huge_exponent_is_refused_before_it_is_built(self):
+        for text in ("1e1000000000", "1" * 65):
+            with self.assertRaises(RateError):
+                timebase.parse_rate(text)
+        self.assertEqual(timebase.parse_rate("2.5e1"), Fraction(25))
+
+    def test_a_span_snapped_to_one_instant_is_dropped(self):
+        import video_editing_skill.proposals as proposals
+        orig = proposals._engine_json
+        proposals._engine_json = lambda skill, tool, argv, what: {"silences": [[0.05, 0.10], [0.2, 0.5]]}
+        try:
+            out = measure_spans(object(), "x.mp4", {"threshold_db": -40, "min_seconds": 0.1}, None, 10.0)
+            self.assertEqual(out["silence"], [(Fraction(1, 5), Fraction(1, 2))], "[0.05, 0.10] at 10 fps snaps to [0.1, 0.1]")
+        finally:
+            proposals._engine_json = orig
+
     def test_proposal_spans_snap_a_half_up_to_the_ntsc_grid(self):
         class Skill:
             pass
