@@ -24,13 +24,12 @@ from .ffmpeg_skill import FfmpegSkill, cancelled, missing_capabilities, probe, r
 from .operations import ENCODING_DEFAULTS, MEDIA, condense_pieces, condense_played, even, params_to_json, punch_window
 from .paths import is_within
 from .project import EditProject
-from .timebase import Time
+from .timebase import RateError, Time, frames_at, parse_rate, probed_rate, transition_frames
 from .timeline import Clip, build_timelines
 
 DURATION_TOLERANCE = {"frame": 0.35, "keyframe": 1.5, "auto": 0.35, "smart": 0.35, "default": 0.35}
 SMART_UNAVAILABLE = ("this ffmpeg-skill checkout's cut.py has no --smart (ffmpeg-skill 3.2.3+): the whole cut is re-encoded "
                      "frame-accurately, as precision frame (cut.py --accurate)")
-FPS_TOLERANCE = 0.02
 ASPECT_TOLERANCE_PX = 2      # |height - width * ah / aw| for FIT / FILL without an explicit width
 
 
@@ -53,6 +52,24 @@ def _fps_of(doc: Optional[Dict[str, Any]]) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return f if f > 0 else None
+
+
+def _rate_of(fps: Any) -> Optional[Fraction]:
+    """A measured or requested frame rate as an exact fraction (velisa/timebase@1, ADR-040): the probe's 3-decimal `fps` 29.97 is
+    30000/1001, never limit_denominator's 2997/100. None when there is none or it is not a rate."""
+    if fps is None or fps == 0:
+        return None
+    try:
+        return parse_rate(fps)
+    except RateError:
+        return None
+
+
+def _same_probed_rate(a: Any, b: Any) -> bool:
+    """Whether two rates are one rate as ffmpeg-skill's probe can tell them apart (3 decimals): both are read back from their
+    probe text and the exact fractions compared. 29.97 and 30000/1001 are one rate; 29.97 and 30 are not."""
+    ra, rb = _rate_of(a), _rate_of(b)
+    return ra is not None and rb is not None and probed_rate(ra) == probed_rate(rb)
 
 
 def _hdr_of(video: Dict[str, Any]) -> bool:
@@ -943,8 +960,8 @@ class Executor:
         fps = self.profile(op.stinger).get("fps") if op.stinger else None
         if not fps:
             return None, cp
-        rate = Fraction(fps).limit_denominator(1001)
-        n = int(round(cp.value * rate))
+        rate = parse_rate(fps)
+        n = frames_at(cp, rate, "nearest")
         at = max(Fraction(0), (Fraction(n) - Fraction(1, 4)) / rate)
         return n, Time(at)
 
@@ -1035,7 +1052,7 @@ class Executor:
         rate = self._edit_rate(ref) if tr else None
         if tr is None or rate is None:
             return None
-        frames = max(1, math.floor(tr["duration"].value * rate + Fraction(1, 2)))
+        frames = transition_frames(tr["duration"], rate)
         return Time(Fraction(frames) / rate)
 
     def _hold_transitions(self) -> None:
@@ -1049,7 +1066,7 @@ class Executor:
         """The CONCAT's frame rate: params.fps, else its first input's (as join.py chooses it)."""
         op = self.project.operations[ref]
         fps = self.target_fps(ref) or self.profile(op.video_inputs[0]).get("fps")
-        return Fraction(fps).limit_denominator(1001) if fps else None
+        return _rate_of(fps)
 
     def _input_conform(self, ref: str, r: str) -> Optional[str]:
         """How input `r` of a whole-frame CONCAT reaches the edit's rate: "rate" when it runs at another rate or is variable-rate
@@ -1059,7 +1076,7 @@ class Executor:
         prof = self.profile(r)
         if rate is None or not prof.get("fps"):
             return None
-        if abs(prof["fps"] - float(rate)) > FPS_TOLERANCE or prof.get("vfr"):
+        if not _same_probed_rate(prof["fps"], rate) or prof.get("vfr"):
             return "rate"
         return "length"
 
@@ -1081,7 +1098,7 @@ class Executor:
         rate = self._edit_rate(ref)
         assert rate is not None
         # at the edit's rate a length within 1 ms of the next whole frame keeps that frame (the same 1 ms as the measured-length check)
-        frames = math.floor(d.value * rate + Fraction(1, 2)) if kind == "rate" else math.floor((d.value + Fraction(1, 1000)) * rate)
+        frames = frames_at(d, rate, "nearest" if kind == "rate" else "down")
         return Time(Fraction(frames) / rate)
 
     def whole_frames_plan(self, ref: str) -> Dict[str, Any]:
@@ -1232,12 +1249,12 @@ class Executor:
                             "not cover the frame", {"operation": ref, "input": st, "reason": "stinger_aspect"})
         fps = self.target_fps(ref) or self.profile(op.video_inputs[0]).get("fps")
         sfps = sp.get("fps")
-        if fps and sfps and abs(fps - sfps) > FPS_TOLERANCE:
+        if fps and sfps and not _same_probed_rate(fps, sfps):
             raise EditError("INVALID_INPUT", f"{what}: the stinger runs at {sfps:g} fps and the edit at {fps:g} fps; its cut point would fall between frames",
                             {"operation": ref, "input": st, "reason": "stinger_fps"})
         if sfps:
             cp = op.params["transition"]["cut_point"].value
-            frames = cp * Fraction(sfps).limit_denominator(1001)
+            frames = cp * parse_rate(sfps)
             if abs(frames - round(frames)) > Fraction(1, 1000):
                 raise EditError("INVALID_REQUEST", f"{what}: cut_point {float(cp):.4f}s is not on a frame of the stinger ({sfps:g} fps)",
                                 {"operation": ref, "reason": "cut_point_not_on_frame"})
@@ -1402,7 +1419,7 @@ class Executor:
                 fps = prof.get("fps")
                 args: Dict[str, Any] = {"transition": "none", "width": prof["width"], "height": prof["height"]}
                 if fps:
-                    args["fps"] = _fps_text(Fraction(fps).limit_denominator(1001))
+                    args["fps"] = _fps_text(parse_rate(fps))
                 os.replace(self._engine_call(op, st, t0, "join", args, parts, temps, acc), partial)
         finally:
             for t in temps:
@@ -1476,8 +1493,7 @@ class Executor:
             if len(parts) == 1:
                 os.replace(parts[0], partial)
             else:
-                from fractions import Fraction
-                joined = call("join", {"transition": "none", "width": fw, "height": fh, "fps": _fps_text(Fraction(prof["fps"]).limit_denominator(1001))}, parts)
+                joined = call("join", {"transition": "none", "width": fw, "height": fh, "fps": _fps_text(parse_rate(prof["fps"]))}, parts)
                 os.replace(joined, partial)
         finally:
             for t in temps:
@@ -1571,11 +1587,11 @@ class Executor:
                 raise EditError("VALIDATION_ERROR", f"{what}: video codec {codec} is not the engine's {want} for this source",
                                 {"observed": codec, "expected": want, "reason": "codec"})
         fps = _fps_of(doc)
-        if "fps" in p and fps is not None and abs(fps - float(p["fps"])) > FPS_TOLERANCE:
+        if "fps" in p and fps is not None and not _same_probed_rate(fps, p["fps"]):
             raise EditError("VALIDATION_ERROR", f"{what}: frame rate {fps:g} is not the requested {float(p['fps']):g}",
                             {"observed": fps, "expected": float(p["fps"]), "reason": "fps"})
         rate = self._edit_rate(op.ref) if "fps" not in p and self.joins_whole_frames(op.ref) else None
-        if rate is not None and fps is not None and abs(fps - float(rate)) > FPS_TOLERANCE:   # the contract's "else the first input" (ADR-033)
+        if rate is not None and fps is not None and not _same_probed_rate(fps, rate):   # the contract's "else the first input" (ADR-033)
             raise EditError("VALIDATION_ERROR", f"{what}: frame rate {fps:g} is not the first input's {float(rate):g}",
                             {"observed": fps, "expected": round(float(rate), 6), "reason": "fps"})
         expected_audio = self.profile_expected_audio(op)

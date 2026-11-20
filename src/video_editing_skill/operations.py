@@ -10,7 +10,7 @@ from fractions import Fraction
 from typing import Any, Dict, List
 
 from .errors import EditError
-from .timebase import Time, fraction_text, parse_fraction
+from .timebase import RateError, Time, fraction_text, parse_fraction, parse_rate
 
 TRANSITIONS = ("fade", "dissolve", "wipeleft", "wiperight", "wipeup", "wipedown", "slideleft", "slideright",
                "circleopen", "circleclose", "fadeblack", "fadewhite", "smoothleft", "smoothright", "radial")
@@ -333,7 +333,10 @@ def _keys(params: Dict[str, Any], what: str, allowed: tuple, required: tuple = (
 
 def _frame(params: Dict[str, Any], what: str, out: Dict[str, Any]) -> None:
     if "fps" in params:
-        fps = parse_fraction(params["fps"], what + ".fps")
+        try:   # velisa/timebase@1 (ADR-040): 29.97 is 30000/1001, an explicit N/D is taken as written
+            fps = parse_rate(params["fps"])
+        except RateError as e:
+            raise EditError("INVALID_REQUEST", f"{what}.fps: {e}") from None
         if not (Fraction(1) <= fps <= Fraction(240)):
             raise EditError("INVALID_REQUEST", f"{what}.fps: must be between 1 and 240")
         out["fps"] = fps
