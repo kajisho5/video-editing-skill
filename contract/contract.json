@@ -1969,6 +1969,61 @@
       "automatic application"
     ]
   },
+  "ripple": {
+    "invocation": [
+      "video-editing",
+      "ripple",
+      "-",
+      "--json",
+      "--workspace",
+      "<dir>",
+      "--allowed-input",
+      "<root>"
+    ],
+    "request_schema": "video-editing/ripple@1",
+    "response_schema": "video-editing/ripple-result@1",
+    "edl_schema": "video-editing/ripple-edl@1",
+    "request_shape": {
+      "schema": "video-editing/ripple@1",
+      "source": "the video to cut (under an allowed root): its rate (r_frame_rate) and frames (nb_frames) from ffmpeg-skill/probe",
+      "selection": "transcription-skill transcription/select result (rule transcript-selection@1), inline, as a `run -` response, or a .json file; or spans",
+      "spans": "[{start, end, in?: {lo, hi, after_kept}, out?: {lo, hi, before_kept}, id?, text?, speaker_ids?, segment_ids?}]: without in / out, each edge is the nearest frame of the time given",
+      "fps": "the source's rate (N/D or a decimal, velisa/timebase@1) instead of probing; with duration and silence false, no engine is needed",
+      "duration": "seconds, instead of probing",
+      "margins": "{after_kept: s (default 0.2), before_kept: s (default 0.1)}, 0..2",
+      "silence": "{threshold_db: -90..-5 (default -40), min_seconds: 0.02..10 (default 0.05)} | false: ffmpeg-skill/silence --list",
+      "transcript": "transcription-skill Transcript (.json) to retime",
+      "subtitles": "[.srt | .vtt] (at most 8) to retime",
+      "outputs": "{edl?, transcript?, subtitles?: [one per input], video?} relative to the workspace (default ripple/<name>...); an existing file is replaced only with --overwrite"
+    },
+    "rule": {
+      "version": "ripple@1",
+      "margins": "in edge: after_kept (default 0.20 s) after the kept speech before it; out edge: before_kept (default 0.10 s) before the kept speech after it; never past the middle of the window; no kept speech on that side: the window's end",
+      "silence": "ffmpeg-skill/silence --list (default -40 dB, 0.05 s): an edge whose window holds silence moves to the silent point nearest its margin target; false turns it off",
+      "frames": "nearest frame of the source's rate (velisa/timebase@1, a half up); outside the window: the nearest frame inside it; a window with no frame: the frame on the removed side (a sliver of a removed word may stay, a kept word is never cut)",
+      "merge": "cuts that meet or overlap are one cut; a cut of no frames is dropped and listed under dropped",
+      "positions": "record positions counted in frames (TB-5)",
+      "retime": "a word (or a segment without words) whose middle lies in a cut is removed; every other time t maps to its record time, a start inside a cut to the frame after it, an end to the frame before it; a cue that loses all its time is dropped, one that loses part is shortened (its text is kept as written)"
+    },
+    "response_shape": {
+      "cuts": "[{id, span_ids, source_in: {frame, seconds}, source_out, frames, seconds, text, speaker_ids, segment_ids, edges: [{in: {target, silence, placed, frame, rule, window}, out}]}]",
+      "dropped": "[{span_ids, reason, edges}]",
+      "removed": "{frames, seconds}",
+      "record": "{frames, seconds}",
+      "events": "[{event, source_in, source_out, record_in, record_out}] in frames",
+      "edl": "path of the EDL sidecar (velisa/sidecar-envelope fields: schema, producer, generated_at, inputs)",
+      "transcript": "{path, words_removed, segments_removed, segments_shortened} | null",
+      "subtitles": "[{input, path, cues, dropped, shortened}]",
+      "edit_request": "a video-editing/request@1 with one CONDENSE: the cuts as segments in frames of the source's rate, label 'transcript' rule cut, default keep",
+      "applied": "false"
+    },
+    "applies": "nothing to the media: `video-editing run` with edit_request cuts it; the EDL and the retimed files are written",
+    "not_provided": [
+      "choosing what to cut (the caller's selection)",
+      "speaker-specific cuts of one mixed track",
+      "subtitle text edits"
+    ]
+  },
   "stinger": {
     "request_field": "CONCAT params.transition: {type: stinger, stinger, cut_point, cover: {start, end}}",
     "file": "a video source with an alpha plane (ProRes 4444, QuickTime Animation, PNG in MOV, ...), the edit's aspect and frame rate; its length is the file's; its sound, if any, is mixed in. hyperframes-skill / remotion-ffmpeg-skill / blender-skill write one with its stinger.json: cut_point and cover come from it (the caller reads it and passes them)",

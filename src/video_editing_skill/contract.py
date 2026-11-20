@@ -246,6 +246,44 @@ def proposals_block() -> Dict[str, Any]:
     }
 
 
+def ripple_block() -> Dict[str, Any]:
+    """`video-editing ripple` (docs/decisions.md ADR-042, Velisa ADR-032): an additive top-level block, like `proposals`; no operation type."""
+    from .ripple import EDL_SCHEMA, LABEL, MARGIN_DEFAULTS, RESULT_SCHEMA, RIPPLE_SCHEMA, RULE, SELECTION_RULE, SILENCE_DEFAULTS
+    return {
+        "invocation": ["video-editing", "ripple", "-", "--json", "--workspace", "<dir>", "--allowed-input", "<root>"],
+        "request_schema": RIPPLE_SCHEMA, "response_schema": RESULT_SCHEMA, "edl_schema": EDL_SCHEMA,
+        "request_shape": {"schema": RIPPLE_SCHEMA,
+                          "source": "the video to cut (under an allowed root): its rate (r_frame_rate) and frames (nb_frames) from ffmpeg-skill/probe",
+                          "selection": f"transcription-skill transcription/select result (rule {SELECTION_RULE}), inline, as a `run -` response, or a .json file; "
+                                       "or spans",
+                          "spans": "[{start, end, in?: {lo, hi, after_kept}, out?: {lo, hi, before_kept}, id?, text?, speaker_ids?, segment_ids?}]: "
+                                   "without in / out, each edge is the nearest frame of the time given",
+                          "fps": "the source's rate (N/D or a decimal, velisa/timebase@1) instead of probing; with duration and silence false, no engine is needed",
+                          "duration": "seconds, instead of probing",
+                          "margins": f"{{after_kept: s (default {float(MARGIN_DEFAULTS['after_kept']):g}), before_kept: s (default "
+                                     f"{float(MARGIN_DEFAULTS['before_kept']):g})}}, 0..2",
+                          "silence": f"{{threshold_db: -90..-5 (default {SILENCE_DEFAULTS['threshold_db']:g}), min_seconds: 0.02..10 (default "
+                                     f"{SILENCE_DEFAULTS['min_seconds']:g})}} | false: ffmpeg-skill/silence --list",
+                          "transcript": "transcription-skill Transcript (.json) to retime",
+                          "subtitles": "[.srt | .vtt] (at most 8) to retime",
+                          "outputs": "{edl?, transcript?, subtitles?: [one per input], video?} relative to the workspace (default ripple/<name>...); "
+                                     "an existing file is replaced only with --overwrite"},
+        "rule": dict(RULE),
+        "response_shape": {"cuts": "[{id, span_ids, source_in: {frame, seconds}, source_out, frames, seconds, text, speaker_ids, segment_ids, "
+                                   "edges: [{in: {target, silence, placed, frame, rule, window}, out}]}]",
+                           "dropped": "[{span_ids, reason, edges}]", "removed": "{frames, seconds}", "record": "{frames, seconds}",
+                           "events": "[{event, source_in, source_out, record_in, record_out}] in frames",
+                           "edl": "path of the EDL sidecar (velisa/sidecar-envelope fields: schema, producer, generated_at, inputs)",
+                           "transcript": "{path, words_removed, segments_removed, segments_shortened} | null",
+                           "subtitles": "[{input, path, cues, dropped, shortened}]",
+                           "edit_request": f"a video-editing/request@1 with one CONDENSE: the cuts as segments in frames of the source's rate, label "
+                                           f"{LABEL!r} rule cut, default keep",
+                           "applied": "false"},
+        "applies": "nothing to the media: `video-editing run` with edit_request cuts it; the EDL and the retimed files are written",
+        "not_provided": ["choosing what to cut (the caller's selection)", "speaker-specific cuts of one mixed track", "subtitle text edits"],
+    }
+
+
 def ffmpeg_skill_version_range() -> str:
     """The version range this Skill's own `version_supported()` check enforces at runtime (`ffmpeg_skill.py`'s
     `MIN_VERSION`), as the range-string shape `dependencies[].version_range` uses (never an exact pin:
@@ -419,6 +457,8 @@ def skill_contract() -> Dict[str, Any]:
                        "report": "execution.outputs[].size_limit: {limit_bytes, bytes, ratio, attempts: [{target_mib, bytes, ratio}], two_pass}"},
         # ---- cut proposals (docs/decisions.md ADR-024)
         "proposals": proposals_block(),
+        # ---- ripple cuts from a transcript selection (docs/decisions.md ADR-042)
+        "ripple": ripple_block(),
         # ---- stinger transition (docs/decisions.md ADR-023)
         "stinger": STINGER,
         # ---- every CONCAT input (and an xfade transition) at whole frames (docs/decisions.md ADR-030, ADR-033, ADR-034)
