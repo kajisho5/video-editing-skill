@@ -17,7 +17,7 @@ from fractions import Fraction
 from typing import Any, Dict, List, Optional, Tuple
 
 from .errors import EditError
-from .timebase import Time
+from .timebase import RateError, Time, frames_at, parse_rate
 
 # ---- language profiles. English is the default; others are regional profiles selected by the caller.
 PROFILES: Dict[str, Dict[str, Any]] = {
@@ -237,25 +237,34 @@ def _secs(v: Any) -> Fraction:
     return Fraction(repr(float(v))).limit_denominator(100000)
 
 
+def _nonempty(spans: List[Tuple[Fraction, Fraction]]) -> List[Tuple[Fraction, Fraction]]:
+    """Spans still longer than nothing once snapped to the frame grid (a span shorter than a frame can snap to one instant)."""
+    return [(a, b) for a, b in spans if b > a]
+
+
 def measure_spans(skill: Any, path: str, silence: Optional[Dict[str, Any]], static: Optional[Dict[str, Any]], fps: Optional[float]) -> Dict[str, Any]:
     """Silent and motionless spans of one video, as the engine measures them, snapped to its frame grid."""
+    try:   # 29.97 is 30000/1001 (velisa/timebase@1, ADR-040), never limit_denominator's 2997/100
+        f = parse_rate(fps) if fps else None
+    except RateError:
+        f = None
+
     def snap(t: Fraction) -> Fraction:
-        if not fps:
+        if f is None:
             return t
-        f = Fraction(fps).limit_denominator(1001)
-        return Fraction(round(t * f)) / f
+        return Fraction(frames_at(t, f, "nearest")) / f   # a half up, as the joins do; round() took a half to the even frame
     out: Dict[str, Any] = {}
     if silence is not None:
         argv = [path, "--list", f"--threshold={silence['threshold_db']:g}", "--min-silence", f"{silence['min_seconds']:g}"]
         doc = _engine_json(skill, "silence", argv, "silence")
-        out["silence"] = _spans_union([(snap(_secs(a)), snap(_secs(b))) for a, b in (doc.get("silences") or []) if float(b) > float(a)])
+        out["silence"] = _spans_union(_nonempty([(snap(_secs(a)), snap(_secs(b))) for a, b in (doc.get("silences") or []) if float(b) > float(a)]))
     if static is not None:
         doc = _engine_json(skill, "scenes", [path, "--shots"], "static")
         shots = doc.get("shots")
         if not isinstance(shots, list):
             raise EditError("TOOL_ERROR", "static: ffmpeg-skill/scenes --shots reported no shots", retryable=False)
-        out["static"] = _spans_union([(snap(_secs(s["start"])), snap(_secs(s["end"]))) for s in shots
-                                      if isinstance(s, dict) and s.get("label") == "static" and float(s["end"]) > float(s["start"])])
+        out["static"] = _spans_union(_nonempty([(snap(_secs(s["start"])), snap(_secs(s["end"]))) for s in shots
+                                                if isinstance(s, dict) and s.get("label") == "static" and float(s["end"]) > float(s["start"])]))
         out["static_shots"] = [{"start": s.get("start"), "end": s.get("end"), "label": s.get("label"), "flow_magnitude": s.get("flow_magnitude")}
                                for s in shots if isinstance(s, dict)]
     return out

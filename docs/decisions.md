@@ -1631,6 +1631,56 @@ The release commit is pushed with the default token, so no workflow runs on it o
 - A version bumped by hand in a pull request is released whatever its labels.
 - A release that fails the tests is not made; a later push retries.
 
+## ADR-040 — Frame rates are read by the Velisa timebase spec: 29.97 is 30000/1001, rates compare exactly, a half rounds up
+
+2026-11-20. The ecosystem rule is Velisa ADR-026 (decision D40, `velisa/timebase@1`). Issue #59.
+
+### Context
+
+- The edit's rate was `Fraction(fps).limit_denominator(1001)` of ffmpeg-skill's 3-decimal probe `fps` (`_edit_rate`, the
+  stinger checks, the smart-cut and punch-in joins, the proposals' frame grid). That reads 29.97 as 2997/100 and 59.94 as
+  2997/50, while ffmpeg-skill's own join counts 30000/1001: the planned timeline and the file parted by a frame in about
+  9 hours at 29.97 (4.6 hours at 59.94).
+- Rates were compared as floats within 0.02 fps (`FPS_TOLERANCE`), so 29.97 and 29.98 were one rate.
+- `proposals.py` snapped spans to the frame grid with `round()`, which takes a half to the even frame, while the joins
+  and transitions take a half up. `Time.text()` rounded its last place with `round()` too.
+
+### Decision
+
+- `timebase.py` gains the spec's rate functions: `parse_rate` (an `N/D` is taken as written; a decimal within 0.005 of
+  base x 1000/1001 for base 24, 30, 48, 60, 120, 240 is that NTSC rate; any other decimal is its exact value; the rate is
+  in (0, 1000]), `rate_str`, `nominal`, `same_rate`, `round_half_up`, `frames_at` (`nearest` / `down`), `seconds_of`,
+  `transition_frames` and `format_seconds`. `limit_denominator` is no longer used on a rate.
+- Every rate the Skill reads goes through `parse_rate`: the probe's `fps`, `params.fps` (so `"29.97"` is 30000/1001;
+  `"2997/100"` stays 2997/100), and the `{frames, fps}` time form.
+- A measured rate is compared with an expected one as exact fractions, both read back at the probe's precision
+  (`probed_rate`: 3 decimals, a half up, then `parse_rate`). This is how a probe that writes 3 decimals can tell rates
+  apart: 29.97 and 30000/1001 are one rate, 29.97 and 29.98 are not, and a 7/3 request matches its 2.333 probe.
+  `FPS_TOLERANCE` is gone.
+- Whole frames use `frames_at`: `nearest` (a half up) for positions, a clip at another rate and the proposals' grid,
+  `down` (1 ms tolerance) for a clip joined at its own rate, `transition_frames` for an xfade. `Time.text()` rounds a half
+  up (`format_seconds`).
+- The rate handed to ffmpeg-skill (`--fps`) is still decimal text, since its `--fps` is a float; 30000/1001 is written
+  `29.97003`, which ffmpeg-skill reads back as 30000/1001.
+- ffmpeg-skill is not changed: its probe keeps 3 decimals, and the reading happens here, on the consumer side.
+
+### Contract
+
+Additive only. `whole_frames` (outside the pinned blocks) gains `rate_reading`, which states the reading and the exact
+comparison. The existing `validation` text ("within 0.02") is left as it is, since changing a value is breaking for a
+dependent that pins the contract; the exact comparison is within it. No pinned block, error code or argument changes. Plans at 29.97 and 59.94 now give whole
+frames of 30000/1001 and 60000/1001 (for example a 2.0 s clip joins as `59059/30000`, not `5900/2997`), so
+video-production-agent's `concat_rate` moves in the same release window (its issue #167).
+
+### Verified
+
+- `tests/test_timebase_vectors.py` runs the spec's conformance vectors, copied unchanged into
+  `tests/fixtures/velisa/timebase-vectors.json` with the Velisa commit and sha256 in `provenance.json`. All 74 vectors of
+  the functions offered here pass; the optional `p` / `i` suffix is refused rather than misread; the timecode, seek, join
+  and `parse_seconds` vectors are for functions this Skill does not offer and are counted, not run.
+- `test_engine_contract.ConcatWholeFramesTests`: two 29.97 fps inputs are joined at 30000/1001; a 29.98 fps input next to
+  a 29.97 one is conformed as another rate.
+
 ## ADR-041 — A refused copy join records the engine's reason and the predicted AAC drift; the long-form test cuts on AAC frames
 
 2026-11-20.

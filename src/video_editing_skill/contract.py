@@ -139,6 +139,12 @@ WHOLE_FRAMES: Dict[str, Any] = {
               "joined_length, action: none | cut | conform (a plan: cut_if_needed | conform | none), measured_length}], and with an xfade "
               "transition: {type, duration, joined_duration, frames}}; the join's own arguments (plan.steps[].arguments.duration) carry "
               "the joined duration",
+    "rate_reading": "velisa/timebase@1 (docs/decisions.md ADR-040): a rate is an exact fraction; params.fps 'N/D' is taken as written, and a "
+                    "decimal (params.fps, or the 3-decimal fps of ffmpeg-skill's probe) within 0.005 of an NTSC rate is that rate (29.97 is "
+                    "30000/1001, 59.94 is 60000/1001, 23.976 and 23.98 are 24000/1001), any other decimal its exact value; whole frames are "
+                    "nearest = floor(t x rate + 1/2) (a half up) or down = floor((t + 1 ms) x rate); the output's rate (validation) and an "
+                    "input's rate are compared as exact fractions after both are read back at the probe's 3 decimals (29.97 and 30000/1001 "
+                    "are one rate, 29.97 and 29.98 are not), which is within the 0.02 that validation states",
     "validation": "the output's frame rate is the rate within 0.02, also when params.fps is not given (VALIDATION_ERROR fps)",
     "refused": ["an input whose whole-frame length is no frame at all (INVALID_TIME_RANGE shorter_than_a_frame), before anything runs",
                 "with an xfade transition, an input whose whole-frame length is not longer than twice the joined transition (INVALID_TIME_RANGE), "
