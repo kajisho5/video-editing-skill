@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.7 - 2026-11-20
+
+- fix(segments): record join_copy_mismatch and AAC drift on a copy-join fallback; long-form test cuts on AAC frames (ADR-041) (#61) (409681e)
+- ci: Velisa's reusable changelog-check/release-guard; dependencies PRs release a patch (D36, D37) (#58) (4ae9440)
+
 ## v0.8.6 - 2026-11-19
 
 - ci(release): test the release commit before pushing; no release for chore/ci/docs-only changes (#57) (b8e6aa4)

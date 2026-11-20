@@ -47,6 +47,16 @@ SEGMENT_CACHE: Dict[str, Any] = {
                                  "the bytes differ from the single-pass render, so the idempotency key carries render: segments"],
     "fallback": "when ffmpeg-skill refuses the copy join (the parts' picture and sound do not line up within its limit), the operation is rendered in one "
                 "pass as without the cache; the parts stay cached and the record says single_pass_fallback with the engine's reason",
+    # ADR-041: added beside "report" (whose text is unchanged), so the record's fallback fields are additive
+    "fallback_record": {
+        "fallback_reason": "string: the engine's refusal message, prefixed once with 'join --copy: '",
+        "fallback_error_reason": "string, optional: the engine's error.reason when it gives one (join_copy_mismatch)",
+        "aac_drift_ms": "number, optional: the sound's predicted delay against the picture at the worst seam, from the engine's "
+                        "error.details (ffmpeg-skill 4.0+, #610: AAC priming at each seam plus each part's sound beyond its picture; "
+                        "more than 50 ms is refused)",
+        "when": "execution.operations[].segments, only when join is single_pass_fallback; the optional fields are left out when the "
+                "engine does not give them",
+    },
     "needs": "ffmpeg-skill/join --copy (from ffmpeg-skill 2.24.0, detected); without it a request asking for the cache is refused before execution (TOOL_ERROR)",
     "reuse_false": "options.reuse false also bypasses the segment cache (every part is encoded again and the cache is refreshed)",
 }
