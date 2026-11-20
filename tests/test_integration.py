@@ -2072,6 +2072,8 @@ class MediaMatrixE2ETests(unittest.TestCase):
 
 
 @unittest.skipUnless(READY and "silence" in (FFMPEG_SKILL.tools if FFMPEG_SKILL else []), REASON)
+@unittest.skipUnless(JOIN_HOLDS_CLIPS, "join.py holds a clip's sound to its picture only from ffmpeg-skill 2.4.1 (ADR-033); 0.11.0 joins the three kept "
+                     "pieces 3 frames long (149 for 146), measured in CI")
 class RippleTests(unittest.TestCase):
     """docs/decisions.md ADR-042 (Velisa ADR-032): a 9 s clip at 30000/1001 whose sound is ten 440 Hz bursts standing for words
     (We measured um the noise. / Sorry, wrong slide. / Now results.). The word "um" and the second sentence are removed as

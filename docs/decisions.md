@@ -1758,5 +1758,6 @@ so it places the cuts. It holds no judgement: what to cut is the caller's select
   middle, silence at 29.97, no frame in the window, keep with lead-in and tail, a merge, a drop) and the command offline.
   `RippleTests` (real media, ffmpeg-skill 3.8.3 here): ten tone bursts standing for words at 30000/1001; "um" and a sentence
   removed; every edge in a measured silence; the run delivers 146 frames, as the EDL says; the kept bursts are heard within 25 ms
-  of where the retimed transcript puts them.
+  of where the retimed transcript puts them. With ffmpeg-skill 0.11.0 the same run delivers 149 frames for 146 (its join, ADR-033), so
+  `RippleTests` runs from 2.4.1, like the other whole-frame join tests; CI runs it on 2.24.1, 3.0.0 and main.
 - Contract: additive (`contract --check`: `[additive] top-level key added: ripple`). `contract_version` stays "7.0".
