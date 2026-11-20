@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.0 - 2026-11-20
+
+- ripple: cuts from a transcript selection, the transcript and subtitles retimed (ADR-042) (#64) (f68e7b5)
+- ci: release gate leaves contract:* labels out of the count (#62) (b703379)
+
 ## v0.8.8 - 2026-11-20
 
 - fix(timebase): read 29.97 as 30000/1001, compare rates exactly, round a half up (#59) (#60) (a0f5c00)
