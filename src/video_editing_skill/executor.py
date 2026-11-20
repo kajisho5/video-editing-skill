@@ -77,6 +77,25 @@ def _remove(path: str) -> None:
         pass
 
 
+def _join_copy_refusal(run: Any) -> Dict[str, Any]:
+    """Why ffmpeg-skill/join --copy refused, for the segment record (ADR-041): the message, the engine's error.reason
+    (join_copy_mismatch) when it gives one, and from ffmpeg-skill 4.0 the predicted AAC drift at the seams."""
+    message = tool_error(run, "join --copy").message
+    # the engine's own message already starts with "--copy:"; say it once
+    if message.startswith("join --copy: --copy: "):
+        message = "join --copy: " + message[len("join --copy: --copy: "):]
+    out: Dict[str, Any] = {"fallback_reason": message}
+    err = run.document.get("error") if isinstance(run.document, dict) else None
+    if isinstance(err, dict):
+        if isinstance(err.get("reason"), str):
+            out["fallback_error_reason"] = err["reason"]
+        details = err.get("details")
+        drift = details.get("aac_drift_ms") if isinstance(details, dict) else None
+        if isinstance(drift, (int, float)) and not isinstance(drift, bool):
+            out["aac_drift_ms"] = drift
+    return out
+
+
 class Executor:
     def __init__(self, project: EditProject, skill: FfmpegSkill, tool_versions: Dict[str, Optional[str]], log=None,
                  engine_doctor: Optional[Dict[str, Any]] = None):
@@ -892,14 +911,15 @@ class Executor:
         if run.ok:
             return commands, seconds, self._segments_report(parts, "stream_copy")
         _remove(partial)
-        reason = tool_error(run, "join --copy").message
+        refusal = _join_copy_refusal(run)
+        reason = refusal["fallback_reason"]
         self.log(f"{ref}: the engine refused the stream-copy join ({reason}); rendering in one pass")
         argv = self._argv(ref)
         run = run_tool(self.skill, st.script, argv, timeout=self.project.options.timeout_seconds)
         commands += run.commands
         seconds += run.seconds
         report = self._segments_report(parts, "single_pass_fallback")
-        report["fallback_reason"] = reason
+        report.update(refusal)
         if not run.ok:
             _remove(partial)
             err = tool_error(run, f"operation {ref!r} ({st.tool})")

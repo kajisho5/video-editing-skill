@@ -1630,3 +1630,45 @@ The release commit is pushed with the default token, so no workflow runs on it o
 
 - A version bumped by hand in a pull request is released whatever its labels.
 - A release that fails the tests is not made; a later push retries.
+
+## ADR-041 — A refused copy join records the engine's reason and the predicted AAC drift; the long-form test cuts on AAC frames
+
+2026-11-20.
+
+### Context
+
+ffmpeg-skill 4.0.0 (#610) refuses `join --copy` with `kind: input`, `error.reason: join_copy_mismatch` when the copy join
+would put the sound more than 50 ms behind or ahead of the picture at any seam. The prediction is the AAC priming played at
+each later seam, plus each part's sound beyond its picture. Earlier releases joined such parts and the sound came out late.
+
+`SegmentCacheLongFormTests` cut parts of 3 s, 2 s and 4 s. 4.0 predicts 56 ms at the third part, refuses the copy join, and
+the operation falls back to one pass (ADR-018's fallback), so the test's `stream_copy` assertion failed against ffmpeg-skill
+main. This was measured: 3.15.1's copy-join output of the same parts is 56 ms late. The engine is right; the test's ranges were
+the problem.
+
+The fallback record kept only the message, built as `join --copy: ` plus the engine's message, which itself starts with
+`--copy: `, so it read `join --copy: --copy: ...`. A caller could not tell a drift refusal from a stream mismatch without
+parsing that prose.
+
+### Decision
+
+- The long-form test cuts on AAC frame boundaries (multiples of 1.6 s, 75 frames of 1024 samples at 48 kHz): 600–603.2,
+  1800–1801.6 and 3500–3504.8, and the changed cut 1800–1803.2. No part's sound runs past its picture, so the drift is the
+  priming alone, 42.7 ms at the third part, under the limit. The expected duration is 11.2 s.
+- A new test, on ffmpeg-skill 4.0 and later, keeps the 3 / 2 / 4 s parts and checks the fallback: `join:
+  single_pass_fallback`, `fallback_error_reason: join_copy_mismatch`, `aac_drift_ms` above 50.
+- The segment record of a fallback gains `fallback_error_reason` (the engine's `error.reason`) and `aac_drift_ms` (from the
+  engine's `error.details`), next to `fallback_reason`. Each is left out when the engine does not give it (before 4.0, or a
+  timeout). `fallback_reason` says `join --copy:` once.
+
+### Contract
+
+Additive. A new `segment_cache.fallback_record` key documents the three fields. The existing `segment_cache.report` and
+`fallback` texts are unchanged, and `segment_cache` is outside the pinned blocks. No error code, operation or argument changes.
+
+### Verified
+
+- `test_engine_contract`: a fake engine refuses `join --copy` as 4.0 does; the record has the reason, the drift and a
+  message with one `--copy:`.
+- `test_integration.SegmentCacheLongFormTests` against ffmpeg-skill 4.0.0 (both tests pass) and 3.15.1 (the copy-join test
+  passes; the 4.0 test is skipped).

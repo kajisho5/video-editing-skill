@@ -16,6 +16,7 @@ Modes (written to <root>/MODE):
   no_ffmpeg      doctor reports ffmpeg / ffprobe missing (tools never run)
   no_xfade       doctor reports filter:xfade / filter:acrossfade missing (CONCAT unavailable, the rest fine)
   stale_reuse    probe reports no video stream for a *finished* work-dir intermediate (a reuse candidate), never for a partial
+  join_drift     like ok, but join --copy refuses as ffmpeg-skill 4.0 does on AAC drift (join_copy_mismatch, aac_drift_ms 56.0)
 Probe facts: "alpha" in a video's name -> pix_fmt yuva444p10le (a stinger, ADR-023); look.py writes a real RGBA PNG of that frame, opaque, or with its
 left half transparent when the name contains "holey" (ADR-032); a video whose name contains "noaudio" has no audio stream; an image whose bytes start with "corrupt" does
 not decode (no frame size, the pre-3.8.17 probe), one whose bytes start with "unreadable" is refused by probe (kind input, reason
@@ -163,6 +164,10 @@ SCRIPT = textwrap.dedent('''
         time.sleep(60)
     if mode == "missing_tool":
         emit({"status": "failed", "error": {"kind": "missing_tool", "message": "ffmpeg not found"}}); sys.exit(127)
+    if mode == "join_drift" and name == "join" and "--copy" in args:
+        emit({"status": "failed", "error": {"kind": "input", "reason": "join_copy_mismatch",
+                                            "message": "--copy: a copy join would put the sound 56 ms behind the picture by clip 3",
+                                            "details": {"aac_drift_ms": 56.0, "tolerance_ms": 50.0, "clips": []}}}); sys.exit(1)
     if mode == "ffmpeg_fail":
         sys.stderr.write("error: command failed (1): ffmpeg\\nConversion failed!\\n")
         emit({"status": "failed", "error": {"kind": "ffmpeg", "message": "command failed (1): ffmpeg"}}); sys.exit(1)
