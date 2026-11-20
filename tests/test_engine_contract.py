@@ -550,6 +550,18 @@ class SegmentCacheTests(FakeEngineHarness):
         self.assertIn("none", header["args"])
         self.assertAlmostEqual(header["duration"], 1.5)
 
+    def test_a_refused_copy_join_falls_back_and_says_why(self):
+        """ADR-041: when the engine refuses join --copy (4.0's AAC drift check), the operation is rendered in one pass and the
+        record carries the engine's message once, its error.reason and the predicted drift."""
+        set_mode(self.root, "join_drift")
+        rc, out = self.run_(self.doc(), expect=0)
+        seg = out["execution"]["operations"][0]["segments"]
+        self.assertEqual(seg["join"], "single_pass_fallback")
+        self.assertEqual(seg["fallback_error_reason"], "join_copy_mismatch")
+        self.assertEqual(seg["aac_drift_ms"], 56.0)
+        self.assertTrue(seg["fallback_reason"].startswith("join --copy: a copy join"), seg["fallback_reason"])
+        self.assertNotIn("--copy: --copy:", seg["fallback_reason"])
+
     def test_an_upstream_key_change_invalidates_what_is_made_from_it(self):
         """segment_cache changes how the CUT is made (its idempotency key), not any operation_id: the RESIZE made from it is not
         reused either, though its own key fields are the same (each key carries the keys of the operations it takes)."""

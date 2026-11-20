@@ -43,6 +43,7 @@ HAS_STINGER = (READY and all(t in FFMPEG_SKILL.tools for t in ("broll", "audio",
 HAS_SHOTS = READY and "scenes" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("scenes", ["--shots"]) == []   # static spans (ADR-025)
 HAS_EXPORT_SIZE = READY and "export" in FFMPEG_SKILL.tools and FFMPEG_SKILL.missing_flags("export", ["--max-mb", "--no-scale", "--allow-long"]) == []
 HAS_JOIN_COPY = READY and FFMPEG_SKILL.missing_flags("join", ["--copy"]) == []   # join.py --copy, from 2.24.0 (segment cache, ADR-018)
+ENGINE_VERSION = (parse_version(FFMPEG_SKILL.version) or (0, 0, 0)) if READY else (0, 0, 0)
 # join.py holds each clip's picture and sound to one length only from 2.4.1 (behaviour, no flag): before it, a clip's AAC tail starts the
 # next clip late, by a frame at 60 fps (ADR-033). The whole-frame CONCAT timeline is exact from there.
 JOIN_HOLDS_CLIPS = READY and (parse_version(FFMPEG_SKILL.version) or (0, 0, 0)) >= (2, 4, 1)
@@ -671,7 +672,11 @@ def framemd5(path):
 class SegmentCacheLongFormTests(unittest.TestCase):
     """ECOSYSTEM_ROADMAP step 8 (ADR-018): a 1-hour source, three cuts; after one cut changes, only that segment is encoded
     again, and the result equals a render of the changed request from an empty cache (framemd5)."""
-    KEEP = [{"start": 600, "end": 603}, {"start": 1800, "end": 1802}, {"start": 3500, "end": 3504}]
+    # Lengths are whole AAC frames (1.6 s = 75 frames of 1024 samples at 48 kHz), so no part's sound runs past its picture and
+    # a copy join adds only the AAC priming at each later seam: 2 x 21.3 = 42.7 ms at the third part, inside ffmpeg-skill 4.0's
+    # 50 ms (#610). 3 / 2 / 4 s parts drift 56 ms, which 4.0 refuses (ADR-041; test_aac_drift_falls_back_to_one_pass).
+    KEEP = [{"start": 600, "end": 603.2}, {"start": 1800, "end": 1801.6}, {"start": 3500, "end": 3504.8}]
+    DRIFTING = [{"start": 600, "end": 603}, {"start": 1800, "end": 1802}, {"start": 3500, "end": 3504}]
 
     @classmethod
     def setUpClass(cls):
@@ -713,13 +718,13 @@ class SegmentCacheLongFormTests(unittest.TestCase):
         first = self.run_cli(ws, self.KEEP)["execution"]["operations"][0]["segments"]
         self.assertEqual((first["encoded"], first["reused"], first["join"]), (3, 0, "stream_copy"))
         changed = [dict(r) for r in self.KEEP]
-        changed[1] = {"start": 1800, "end": 1803}
+        changed[1] = {"start": 1800, "end": 1803.2}
         out = self.run_cli(ws, changed)
         seg = out["execution"]["operations"][0]["segments"]
         self.assertEqual([p["status"] for p in seg["parts"]], ["reused", "encoded", "reused"])
         self.assertEqual((seg["encoded"], seg["reused"], seg["join"]), (1, 2, "stream_copy"))
         partial = os.path.join(ws, "out", "cut.mp4")
-        self.assertAlmostEqual(duration(partial), 10.0, delta=0.15)
+        self.assertAlmostEqual(duration(partial), 11.2, delta=0.15)
         # the same changed request from an empty cache: every segment encoded, and the same frames
         fresh = tempfile.mkdtemp(prefix="ws-", dir=self.root)
         full = self.run_cli(fresh, changed)["execution"]["operations"][0]["segments"]
@@ -728,6 +733,19 @@ class SegmentCacheLongFormTests(unittest.TestCase):
         # and the same request a third time writes nothing new
         again = self.run_cli(ws, changed)
         self.assertEqual(again["status"], "reused")
+
+    @unittest.skipUnless(HAS_JOIN_COPY and ENGINE_VERSION >= (4, 0, 0), "needs ffmpeg-skill 4.0+, whose join --copy predicts AAC drift (#610)")
+    def test_aac_drift_falls_back_to_one_pass(self):
+        """ADR-041: three AAC parts whose copy join would put the sound 56 ms late are refused by the engine (join_copy_mismatch);
+        the operation is rendered in one pass and the record says why, with the predicted drift."""
+        ws = tempfile.mkdtemp(prefix="ws-", dir=self.root)
+        seg = self.run_cli(ws, self.DRIFTING)["execution"]["operations"][0]["segments"]
+        self.assertEqual(seg["join"], "single_pass_fallback")
+        self.assertEqual(seg["fallback_error_reason"], "join_copy_mismatch")
+        self.assertGreater(seg["aac_drift_ms"], 50)
+        self.assertNotIn("--copy: --copy:", seg["fallback_reason"])
+        self.assertEqual(seg["encoded"], 3)
+        self.assertAlmostEqual(duration(os.path.join(ws, "out", "cut.mp4")), 9.0, delta=0.15)
 
 
 def packet_md5s(path):
