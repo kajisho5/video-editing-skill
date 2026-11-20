@@ -45,7 +45,8 @@ class VectorFileTests(unittest.TestCase):
             rec = json.load(fh)["files"]["timebase-vectors.json"]
         self.assertEqual(rec["repository"], "kajisho5/Velisa")
         self.assertRegex(rec["commit"], r"^[0-9a-f]{40}$")
-        self.assertEqual(hashlib.sha256(raw).hexdigest(), rec["sha256"], "the vectors were edited after they were copied")
+        # a Windows checkout may turn the line ends into CRLF; the recorded hash is of the file as Velisa has it (LF)
+        self.assertEqual(hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest(), rec["sha256"], "the vectors were edited after they were copied")
         self.assertEqual(doc["spec"], rec["spec"])
 
     def test_every_function_is_either_offered_or_listed_as_not_offered(self):

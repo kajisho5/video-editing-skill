@@ -1666,8 +1666,9 @@ The release commit is pushed with the default token, so no workflow runs on it o
 
 ### Contract
 
-Additive. `whole_frames` (outside the pinned blocks) gains `rate_reading`, and its `validation` text names the exact
-comparison instead of 0.02. No pinned block, error code or argument changes. Plans at 29.97 and 59.94 now give whole
+Additive only. `whole_frames` (outside the pinned blocks) gains `rate_reading`, which states the reading and the exact
+comparison. The existing `validation` text ("within 0.02") is left as it is, since changing a value is breaking for a
+dependent that pins the contract; the exact comparison is within it. No pinned block, error code or argument changes. Plans at 29.97 and 59.94 now give whole
 frames of 30000/1001 and 60000/1001 (for example a 2.0 s clip joins as `59059/30000`, not `5900/2997`), so
 video-production-agent's `concat_rate` moves in the same release window (its issue #167).
 
