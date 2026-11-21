@@ -58,7 +58,7 @@ jobs:
         continue-on-error: true   # bootstrap (no prior tag) can leave this with nothing to resolve;
                                   # compute_version.sh only reads its output when it actually needs to
         # v7: v6 has no dry-run input (it was silently ignored), and v7 dropped disable-autolabeler
-        uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+        uses: release-drafter/release-drafter@d1a19e60e81a7e650d00a7de9277f87e439117ea # v7.11.0
         with:
           dry-run: true
           config-name: release-drafter.yml
