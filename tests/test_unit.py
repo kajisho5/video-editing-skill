@@ -286,6 +286,21 @@ class ProjectTests(unittest.TestCase):
         t = steps["t1"].argv_for(["/x/1.mp4"], "/x/o.mp4")
         self.assertEqual(t, ["/x/1.mp4", "-o", "/x/o.mp4", "--start", "1.000000", "--end", "3.000000", "--accurate"])
 
+    def test_concat_passes_duration_only_with_a_transition(self):
+        """A CONCAT with no transition (and a stinger one, butt-joined first) passes no --duration: join.py ignores it under
+        --transition none, and ffmpeg-skill 4.26.0+ refuses it there. An xfade transition still passes its length."""
+        from video_editing_skill import operations
+
+        def argv_of(params):
+            op = EditOperation("c", "CONCAT", ["A", "B"], operations.validate_params("CONCAT", params, "c"))
+            return compile_operation(op).argv_for(["/x/1.mp4", "/x/2.mp4"], "/x/o.mp4")
+        plain = argv_of({})
+        self.assertEqual(plain[plain.index("--transition") + 1], "none")
+        self.assertNotIn("--duration", plain)
+        fade = argv_of({"transition": {"type": "fade", "duration": 0.5}})
+        self.assertEqual(fade[fade.index("--transition") + 1], "fade")
+        self.assertEqual(fade[fade.index("--duration") + 1], "0.500000")
+
     def test_precision_auto_is_a_copy_with_a_tolerance(self):
         """precision auto (ADR-019): cut.py's lossless mode with --tolerance 0.2, never --accurate."""
         from video_editing_skill.timebase import Time

@@ -160,6 +160,10 @@ SCRIPT = textwrap.dedent('''
         emit({"status": "failed", "error": {"kind": "input", "message": "output directory does not exist; create it first (this tool never creates directories)"}}); sys.exit(1)
     if NEW_PROBE and os.path.exists(out) and "--overwrite" not in args:
         emit({"status": "failed", "error": {"kind": "input", "message": "output exists; pass --overwrite"}}); sys.exit(1)
+    if name == "join" and "--duration" in args and flag("--transition", "none") == "none":   # ffmpeg-skill 4.26.0+ refuses it
+        emit({"status": "failed", "exit_code": 1, "error": {"kind": "input", "code": "INVALID_INPUT", "retryable": False,
+                                                           "message": "--duration " + flag("--duration") + " is a transition's length, and this join has none"}})
+        sys.exit(1)
     if mode == "hang":
         time.sleep(60)
     if mode == "missing_tool":

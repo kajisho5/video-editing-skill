@@ -149,7 +149,8 @@ def _compile(op: EditOperation) -> Step:
         tr = p.get("transition")
         if tr and tr["type"] == "stinger":   # butt-joined here; the stinger is laid over each join afterwards (ADR-023)
             tr = None
-        args = {"transition": tr["type"] if tr else "none", "duration": tr["duration"].tool_arg() if tr else "0",
+        # --duration only with a transition: join.py ignores it under --transition none, and ffmpeg-skill 4.26.0+ refuses it there
+        args = {"transition": tr["type"] if tr else "none", **({"duration": tr["duration"].tool_arg()} if tr else {}),
                 "fit": p["mode"], "pad_color": p["pad_color"]}
         for k in ("width", "height"):
             if k in p:

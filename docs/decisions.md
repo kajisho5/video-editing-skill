@@ -1761,3 +1761,36 @@ so it places the cuts. It holds no judgement: what to cut is the caller's select
   of where the retimed transcript puts them. With ffmpeg-skill 0.11.0 the same run delivers 149 frames for 146 (its join, ADR-033), so
   `RippleTests` runs from 2.4.1, like the other whole-frame join tests; CI runs it on 2.24.1, 3.0.0 and main.
 - Contract: additive (`contract --check`: `[additive] top-level key added: ripple`). `contract_version` stays "7.0".
+
+## ADR-043 — A join with no transition passes no `--duration`
+
+2026-11-28.
+
+### Context
+
+A CONCAT compiled to `join --transition none --duration 0` when it had no transition, and so did a stinger CONCAT, which is
+butt-joined first (ADR-023). Every ffmpeg-skill release up to 4.25.0 accepted `--duration` under `--transition none` and
+ignored it (the join's overlap is `duration if transition != "none" else 0`). ffmpeg-skill 4.26.0 refuses the pair:
+`INVALID_INPUT: --duration 0 is a transition's length, and this join has none`. Every plain, stinger and image-insert CONCAT
+failed against ffmpeg-skill main.
+
+### Decision
+
+- The compiled join step passes `--duration` only with an xfade transition. Without one, `--transition none` alone.
+- An xfade transition is unchanged: its duration is required by the request (0.01..10 s) and joined at whole frames
+  (ADR-034), so a non-zero `--duration` always goes with a transition that is not `none`.
+- The other joins the executor builds (CONDENSE, PUNCH_IN, the segment copy join, the stinger route) already pass no
+  `--duration`.
+- The fake engine refuses `join --duration` with `--transition none`, as 4.26.0 does, so the offline suite catches a return.
+
+### Contract
+
+Unchanged. `CONCAT`'s required flags still include `--duration` (an xfade CONCAT passes it, and every supported release has
+it). Only the argv of a CONCAT with no transition changes.
+
+### Verified
+
+- Without `--duration`, `join --transition none` decodes to the same picture and sound as with `--duration 0` on
+  ffmpeg-skill 0.11.0 and 4.25.0 (same MD5 of every decoded stream), and as 4.26.1 without it.
+- `test_unit`: a plain CONCAT has no `--duration`; a fade CONCAT has `--duration 0.500000`. Without this change, 16
+  offline tests fail against the fake engine (plain, stinger, image-insert and whole-frame CONCATs).
